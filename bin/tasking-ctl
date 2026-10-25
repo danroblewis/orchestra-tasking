@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# The simulated team and its tracker (Beads), and Orchestra watching from outside.
+#   bin/tasking-ctl init       a fresh tracker (Beads on a Dolt server; destroys the issues)
+#   bin/tasking-ctl start      Dolt, bd serve (:7811), Orchestra's host and web (:$PORT), and the team
+#   bin/tasking-ctl stop | status | restart <name>
+# Team size: WORKERS (4), REVIEWERS (2). Pace: TASKING_SPEED (12 simulated minutes per minute).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+RUN=run; mkdir -p "$RUN"
+PORT="${PORT:-8060}"
+WORKERS="${WORKERS:-4}"; REVIEWERS="${REVIEWERS:-2}"
+ORCHESTRA="${ORCHESTRA:-$HOME/orchestra_2/.venv/bin/orchestra}"
+export BD_NON_INTERACTIVE=1 TASKING_REVIEWERS="$REVIEWERS"
+TEAM="planner qa release $(for i in $(seq 1 "$WORKERS"); do printf 'worker-%s ' "$i"; done)$(for i in $(seq 1 "$REVIEWERS"); do printf 'reviewer-%s ' "$i"; done)"
+
+start() {
+  local name=$1; shift
+  if [ -f "$RUN/$name.pid" ] && kill -0 "$(cat "$RUN/$name.pid")" 2>/dev/null; then echo "$name: already running"; return; fi
+  nohup "$@" >> "$RUN/$name.log" 2>&1 &
+  echo $! > "$RUN/$name.pid"; echo "$name: started (pid $!)"
+}
+stop() {
+  local name=$1
+  if [ -f "$RUN/$name.pid" ]; then pkill -P "$(cat "$RUN/$name.pid")" 2>/dev/null || true; kill "$(cat "$RUN/$name.pid")" 2>/dev/null || true; rm -f "$RUN/$name.pid"; echo "$name: stopped"; fi
+}
+role() { case $1 in worker-*) start "$1" python3 -m sim.cli worker "${1#worker-}" ;; reviewer-*) start "$1" python3 -m sim.cli reviewer "${1#reviewer-}" ;; *) start "$1" python3 -m sim.cli "$1" ;; esac; }
+serve() {
+  bd dolt start >/dev/null 2>&1 || true
+  start bd-serve bd serve --addr 127.0.0.1:7811
+  for _ in $(seq 60); do curl -s 127.0.0.1:7811/healthz >/dev/null && return; sleep 0.5; done; echo "bd serve did not come up"; exit 1
+}
+
+case "${1:-status}" in
+  init)
+    "$0" stop >/dev/null 2>&1 || true
+    bd dolt stop >/dev/null 2>&1 || true
+    rm -rf .beads
+    bd init --prefix tk --server >/dev/null
+    rm -rf .agents .claude .codex .cursor AGENTS.md CLAUDE.md          # bd init's agent hooks: this tracker is driven by the simulation, not by agents here
+    bd dolt start >/dev/null
+    bd config set events-journal true >/dev/null
+    bd config set status.custom "in_review:wip" >/dev/null
+    bd metrics off >/dev/null
+    echo "a fresh tracker: $(bd dolt show 2>/dev/null | grep -E 'Database|Port' | tr -s ' ' | tr '\n' ' ')" ;;
+  start)
+    serve
+    start host "$ORCHESTRA" run
+    start web "$ORCHESTRA" web --port "$PORT"
+    for r in $TEAM; do role "$r"; done ;;
+  stop)
+    for f in "$RUN"/*.pid; do [ -e "$f" ] || continue; n=$(basename "$f" .pid); case $n in host|web|bd-serve) ;; *) stop "$n" ;; esac; done
+    stop web; stop host; stop bd-serve
+    bd dolt stop >/dev/null 2>&1 && echo "dolt: stopped" || true ;;
+  restart)
+    n="${2:?which: host, web, bd-serve, or a role}"; stop "$n"
+    case $n in host) start host "$ORCHESTRA" run ;; web) start web "$ORCHESTRA" web --port "$PORT" ;; bd-serve) serve ;; *) role "$n" ;; esac ;;
+  status)
+    for n in bd-serve host web $TEAM; do
+      if [ -f "$RUN/$n.pid" ] && kill -0 "$(cat "$RUN/$n.pid")" 2>/dev/null; then echo "$n: running (pid $(cat "$RUN/$n.pid"))"; else echo "$n: stopped"; fi
+    done
+    curl -s 127.0.0.1:7811/v0/beads/stats 2>/dev/null | python3 -c "import json,sys; s=json.load(sys.stdin)['summary']; print('tracker:', ', '.join(f'{k.replace(\"_issues\",\"\")} {v}' for k,v in s.items() if k.endswith('_issues')))" 2>/dev/null || echo "tracker: not answering" ;;
+  *) echo "usage: $0 init | start | stop | status | restart <name>"; exit 2 ;;
+esac

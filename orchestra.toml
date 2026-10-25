@@ -1,0 +1,15 @@
+# Orchestra watching this repository's simulated team from outside. The team never talks to
+# Orchestra: it uses its tracker (Beads). Getting the tracker's events and numbers into Orchestra
+# is the open question this project is for.
+
+[events]
+url = "redis://127.0.0.1:6379/3"
+
+[metrics]
+url = "http://127.0.0.1:8428"
+
+[discovery]
+strategy = "conservation"
+window = "60m"
+step = "30s"
+every = "5m"
