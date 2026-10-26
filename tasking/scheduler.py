@@ -331,7 +331,14 @@ class Scheduler:
         for ev in self.follow.new():
             try:
                 aid = ev.get("assignment")
-                if ev.get("type") not in (ACCEPTED, WORKING, REPORTED) or aid not in out:
+                if ev.get("type") not in (ACCEPTED, WORKING, REPORTED):
+                    continue
+                if aid not in out:
+                    # an assignment this scheduler does not hold: released (a restart, a lease that ran
+                    # out, the operator) or settled already; a heartbeat for one is not worth a line
+                    if ev["type"] != WORKING:
+                        log(f"{ev.get('ticket')}: {ev['type']} from {ev.get('source')} for assignment {aid} ignored: not held "
+                            "(released or already settled); the ticket is offered afresh")
                     continue
                 a = out[aid]
                 if ev["type"] == ACCEPTED:

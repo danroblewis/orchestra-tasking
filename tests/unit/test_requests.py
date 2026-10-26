@@ -134,3 +134,72 @@ def test_reads_are_queries_the_desk_answers(env):
     assert got["ok"] and [m["id"] for m in got["milestones"]] == ["M1"]
     queries = [e for e in Events.for_project(p, source="test").bus.read(0, limit=100)[0] if e["type"] == "task.query_requested"]
     assert [(e["data"]["op"], e["source"]) for e in queries] == [("list_milestones", "coordinator")]
+
+
+def answers(p) -> dict[str, str]:
+    """request id -> the type of its answer, as they are on the bus."""
+    return {e["data"]["request"]: e["type"] for e in Events.for_project(p, source="test").bus.read(0, limit=10000)[0]
+            if e["type"] in ("request.done", "request.refused")}
+
+
+def test_a_request_made_while_no_desk_ran_is_answered_when_one_starts(project):
+    """The desk reads on from the last request it answered: a request published while the
+    scheduler was down is applied when it comes back, if its asker may still be waiting; one older
+    than that is refused with the reason, never applied late; and a restart answers nothing twice."""
+    from datetime import UTC, datetime, timedelta
+
+    from tasking.requests import RESUME_S
+
+    events = Events.for_project(project, source="task_scheduler")
+    store = LocalStore(project, events)
+    new_desk = lambda: Desk(project, store, events, log=lambda m: None)
+    first = new_desk()
+    first.start()
+    planner = Events.for_project(project, source="planner")
+    assert ask(planner, "create_milestone", {"name": "M"}, "planner")["ok"]
+    first.stop.set()
+    first.thread.join()
+    # no desk runs: a planner asks twice, one just now and one from before anyone would still wait
+    planner.publish("task.requested", {"request": "fresh", "args": {"title": "fresh", "milestone_id": "M1"}, "by": "planner"})
+    long_ago = (datetime.now(UTC) - timedelta(seconds=RESUME_S + 5)).isoformat(timespec="milliseconds")
+    planner.publish("task.requested", {"request": "stale", "args": {"title": "stale", "milestone_id": "M1"}, "by": "planner"}, time=long_ago)
+    assert [t.title for t in store.list_tickets()] == []
+    second = new_desk()
+    second.start()
+    wait_for(lambda: {"fresh", "stale"} <= set(answers(project)))
+    second.stop.set()
+    second.thread.join()
+    assert answers(project)["fresh"] == "request.done" and answers(project)["stale"] == "request.refused"
+    assert "no scheduler was running when this was asked" in refusals(project)[-1] and "ask again" in refusals(project)[-1]
+    assert [t.title for t in store.list_tickets()] == ["fresh"]
+    before = answers(project)
+    new_desk().serve()                                      # a third desk: everything before it is answered already
+    assert answers(project) == before
+
+
+def test_a_desk_that_stops_halfway_through_a_batch_answers_nothing_twice(project, monkeypatch):
+    from tasking import api
+
+    events = Events.for_project(project, source="task_scheduler")
+    store = LocalStore(project, events)
+    planner = Events.for_project(project, source="planner")
+    planner.publish("milestone.requested", {"request": "m", "args": {"name": "M"}, "by": "planner"})
+    planner.publish("task.requested", {"request": "a", "args": {"title": "a", "milestone_id": "M1"}, "by": "planner"})
+    planner.publish("task.requested", {"request": "b", "args": {"title": "b", "milestone_id": "M1"}, "by": "planner"})
+    handle, calls = api.handle, []
+
+    def crash_on_the_third(*a, **kw):
+        calls.append(1)
+        if len(calls) == 3:
+            raise KeyboardInterrupt                         # the process dies between two answers of one batch
+        return handle(*a, **kw)
+    monkeypatch.setattr(api, "handle", crash_on_the_third)
+    store.set_desk(0, [])                                   # a desk ran before: read from the start
+    with pytest.raises(KeyboardInterrupt):
+        Desk(project, store, events, log=lambda m: None).serve()
+    assert answers(project) == {"m": "request.done", "a": "request.done"}
+    monkeypatch.setattr(api, "handle", handle)
+    Desk(project, store, events, log=lambda m: None).serve()
+    assert answers(project) == {"m": "request.done", "a": "request.done", "b": "request.done"}
+    assert sorted(t.title for t in store.list_tickets()) == ["a", "b"]   # a was not created twice
+    assert store.desk()["answered"] == []

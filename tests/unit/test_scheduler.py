@@ -58,3 +58,38 @@ def test_an_error_on_one_event_does_not_lose_the_rest_of_the_batch(project, monk
     sched.tick()
     assert store.get_ticket(t.id).state == State.READY_FOR_REVIEW   # the report after the bad event was applied
     assert a["assignment"] not in store.assignments()
+
+
+def test_a_report_for_an_assignment_a_restart_dropped_is_ignored_with_a_line_in_the_log(project, monkeypatch):
+    """On start the scheduler releases what the previous one left and offers it afresh (SPEC
+    section 2: no zombies); a report that then arrives for the old assignment changes nothing,
+    and the log says so."""
+    from tasking import scheduler
+
+    events = Events.for_project(project, source="task_scheduler")
+    store = LocalStore(project, events)
+    first = Scheduler(project, store, events)
+    first.recover()
+    follow = Follower(events, start=0)
+    ms = store.create_milestone(name="m")
+    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    first.tick()
+    old = [e for e in follow.new() if e["type"] == ASSIGNED][-1]
+    say = lambda kind, **d: events.publish(kind, {"assignment": old["assignment"], "ticket": t.id, "role": "worker", **d},
+                                           source="worker/1", subject=t.id)
+    say(ACCEPTED)
+    first.tick()
+    assert store.get_ticket(t.id).state == State.IN_PROGRESS
+    lines = []
+    monkeypatch.setattr(scheduler, "log", lines.append)
+    second = Scheduler(project, store, events)                     # the scheduler restarts
+    second.recover()
+    assert store.get_ticket(t.id).state == State.OPEN and old["assignment"] not in store.assignments()
+    assert [e["data"]["assignment"] for e in on_bus(events, "task.released")] == [old["assignment"]]   # worker/1 was told to stop
+    say(REPORTED, report={"state": "READY_FOR_REVIEW", "summary": "done"}, failed=False, text="")   # it reported anyway
+    second.tick()
+    x = store.get_ticket(t.id)
+    assert x.state == State.OPEN and x.worker_turns == 1                 # not applied: offered afresh, nobody took it yet
+    offers = [e["data"]["assignment"] for e in on_bus(events, ASSIGNED)]
+    assert len(offers) == 2 and offers[0] == old["assignment"] and offers[1] in store.assignments()
+    assert any("task.reported from worker/1" in ln and old["assignment"] in ln and "ignored" in ln for ln in lines)

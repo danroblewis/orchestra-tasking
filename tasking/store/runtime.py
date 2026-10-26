@@ -13,7 +13,7 @@ from .files import read, write
 
 EMPTY_RUNTIME = {"assignments": {}, "worktrees": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
                  "capacity": {}, "operator_capacity": {}, "pickup_paused": False, "scheduler": None, "staging": {},
-                 "pipeline": {"paused": False, "reason": None}}
+                 "pipeline": {"paused": False, "reason": None}, "desk": None}
 
 
 class Runtime:
@@ -165,6 +165,14 @@ class Runtime:
     def clear_scheduler(self, pid: int) -> None:
         """Only the scheduler that wrote the record clears it: a replacement may already have started."""
         self._mutate_runtime(lambda d: d.__setitem__("scheduler", None) if (d["scheduler"] or {}).get("pid") == pid else None)
+
+    def desk(self) -> dict | None:
+        """Where the desk reads requests from next (a bus offset) and the request ids it answered
+        from there on, or None before a desk ever ran. A desk that starts reads on from here."""
+        return self._r()["desk"]
+
+    def set_desk(self, offset: int, answered: list[str]) -> None:
+        self._mutate_runtime(lambda d: d.__setitem__("desk", {"offset": offset, "answered": list(answered), "at": now()}))
 
     def staging(self) -> dict:
         return dict(self._r()["staging"])

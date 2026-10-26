@@ -8,13 +8,21 @@ A request is an event named for what it asks (``task.requested`` to create a tic
 Reads are one event type, ``task.query_requested``, with the operation in ``op``. The scheduler's
 desk (``Desk``, in the scheduler's process) checks and applies each with the task system's rules
 (``api.handle``) and answers ``request.done`` with the result or ``request.refused`` with why. So
-every change to a ticket is the task system's own, and Orchestra sees who asked for what."""
+every change to a ticket is the task system's own, and Orchestra sees who asked for what.
+
+The desk reads on from where the last one stopped (the offset and the ids it answered from there,
+kept in the runtime record), so a request made while no scheduler ran is answered when one
+starts: applied if its asker may still be waiting (``RESUME_S``, twice what ``ask`` waits),
+refused with the reason if older, since applying a change long after its asker gave up would
+surprise everyone. A request is never applied twice: the ids answered since the saved offset are
+saved with it."""
 
 from __future__ import annotations
 
 import threading
 import time
 import uuid
+from datetime import datetime
 
 from . import api
 from .assignments import Follower
@@ -29,7 +37,16 @@ QUERY = "task.query_requested"
 QUERIES = ("list_tickets", "get_ticket", "project_status", "list_milestones", "get_capacity", "snapshot",
            "list_gate_runs", "get_gate_run", "get_staging_status")
 DONE, REFUSED = "request.done", "request.refused"
-WAIT_S = 30.0
+WAIT_S = 30.0            # how long an asker waits for the answer
+RESUME_S = 2 * WAIT_S    # a request older than this when the desk reads it is refused, not applied
+
+
+def _age(ev: dict) -> float:
+    """Seconds since the event was published (its CloudEvents time), 0 when it says none."""
+    try:
+        return max(0.0, time.time() - datetime.fromisoformat(ev["ts"]).timestamp())
+    except (KeyError, TypeError, ValueError):
+        return 0.0
 
 
 def _subject(args: dict) -> str | None:
@@ -60,11 +77,15 @@ def ask(events, command: str, args: dict, by: str) -> dict:
 
 
 class Desk:
-    """The scheduler's side: every request on the bus, checked and applied, and answered."""
+    """The scheduler's side: every request on the bus since the last one answered, checked and
+    applied, and answered."""
 
     def __init__(self, project, store, events, log=print):
         self.project, self.store, self.events, self.log = project, store, events, log
-        self.follow = Follower(events)
+        rec = store.desk() or {}
+        start = min(int(rec.get("offset", 0)), events.end()) if rec else None     # a stream shorter than the record: from its end
+        self.follow = Follower(events, start=start)
+        self.answered: list[str] = list(rec.get("answered") or [])   # answered from ``start`` on before this desk started
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True, name="requests")
 
@@ -79,24 +100,40 @@ class Desk:
                 self.log(f"requests: {e!r}")
 
     def serve(self) -> None:
+        """One batch of new events. The offset is saved after the batch and, while it is being
+        answered, the ids answered from the batch's start, so a desk that stops halfway (a crash)
+        picks up without answering any request twice."""
+        start, served = self.follow.offset, False
         for ev in self.follow.new():
             query = ev.get("type") == QUERY
             op = ev.get("op") if query else OP_OF.get(ev.get("type") or "")
-            if not query and not op:
+            if (not query and not op) or ev.get("request") in self.answered:
                 continue
-            args, by = dict(ev.get("args") or {}), ev.get("by") or ""
-            if query and op not in QUERIES:
-                result = {"ok": False, "error": f"no query op {op!r}; queries: {', '.join(QUERIES)}"}
-            elif op in REQUESTS and not by:
-                result = {"ok": False, "error": "a request names who asks (by)"}
-            else:
-                try:
-                    result = api.handle(self.project, self.store, self.events, op, args, role=by)
-                except Exception as e:  # noqa: BLE001 - a refused request is an answer, not a crash
-                    result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-            ok = bool(result.get("ok", True))
-            self.events.publish(DONE if ok else REFUSED, {"request": ev.get("request"), "op": op, "by": by,
-                                                          **({"result": result} if ok else {"error": result.get("error")})},
-                                subject=_subject(args) or (result.get("ticket") or {}).get("id"))
-            if op not in QUERIES:
-                self.log(f"request {op} by {by or 'someone'}: {'done' if ok else 'refused: ' + str(result.get('error'))[:80]}")
+            self._answer(ev, op, query)
+            self.answered.append(ev.get("request"))
+            self.store.set_desk(start, self.answered)
+            served = True
+        if served:
+            self.answered = []
+            self.store.set_desk(self.follow.offset, [])
+
+    def _answer(self, ev: dict, op: str, query: bool) -> None:
+        args, by, age = dict(ev.get("args") or {}), ev.get("by") or "", _age(ev)
+        if age > RESUME_S:
+            result = {"ok": False, "error": f"no scheduler was running when this was asked, {int(age)} s ago, longer than an asker "
+                                           f"waits ({int(WAIT_S)} s); not applied now: ask again if it still holds"}
+        elif query and op not in QUERIES:
+            result = {"ok": False, "error": f"no query op {op!r}; queries: {', '.join(QUERIES)}"}
+        elif op in REQUESTS and not by:
+            result = {"ok": False, "error": "a request names who asks (by)"}
+        else:
+            try:
+                result = api.handle(self.project, self.store, self.events, op, args, role=by)
+            except Exception as e:  # noqa: BLE001 - a refused request is an answer, not a crash
+                result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        ok = bool(result.get("ok", True))
+        self.events.publish(DONE if ok else REFUSED, {"request": ev.get("request"), "op": op, "by": by,
+                                                      **({"result": result} if ok else {"error": result.get("error")})},
+                            subject=_subject(args) or (result.get("ticket") or {}).get("id"))
+        if op not in QUERIES or age > RESUME_S:
+            self.log(f"request {op} by {by or 'someone'}: {'done' if ok else 'refused: ' + str(result.get('error'))[:80]}")

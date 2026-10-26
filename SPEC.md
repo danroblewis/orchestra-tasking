@@ -198,8 +198,14 @@ again. A ticket whose folder or worktree is gone at review time is rejected by t
 without a review round, since nothing was reviewed. On shutdown the scheduler lets a gate run
 finish before it releases anything.
 
-**Requests** are served by the desk, a thread in the same process (section 3). The scheduler's
-log is `<state>/logs/scheduler.log`, which it announces so Orchestra can show it.
+**Requests** are served by the desk, a thread in the same process (section 3). It reads on from
+where the last desk stopped (the bus offset and the request ids answered from there, in the
+runtime record), so a request made while no scheduler ran is answered when one starts: applied
+if it is younger than twice what `ask` waits (`RESUME_S`, 60 s), refused with the reason if
+older, since its asker gave up long ago and a change applied late would surprise everyone. A
+restart answers no request twice. A machine's report for an assignment the restart dropped is
+ignored, with a line in the log: the ticket was offered afresh. The scheduler's log is
+`<state>/logs/scheduler.log`, which it announces so Orchestra can show it.
 
 ## 5. Work modes: tasks and code
 
@@ -352,7 +358,8 @@ in one place. Capacity and the config are re-read every tick, so a change is liv
   tasks/                               # the task system's
     tickets.json                       # tickets, milestones, notes, counters, the metric counters
     runtime.json                       # scheduler pid, assignments, capacity, pause, kill requests,
-                                       # worktrees, gate runs, builds, pipeline, probes, staging
+                                       # worktrees, gate runs, builds, pipeline, probes, staging,
+                                       # where the desk reads requests from next
     .lock                              # one file lock around every read-modify-write
     workspaces/<ticket>/               # tasks mode
     worktrees/<ticket>/                # code mode
