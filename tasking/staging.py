@@ -279,7 +279,7 @@ class Staging:
 
     def _deploy(self, build: dict) -> bool:
         """Promote a build: stop the previous, start this one, probe health and tunnel.
-        On failure restart the previous build and wake the Pipeline Manager."""
+        On failure restart the previous build and wake the Supervisor."""
         if not self.cfg.staging_configured:
             return False
         prev_id = self.state().get("current_build_id")
@@ -291,7 +291,7 @@ class Staging:
                              local_url=self.local_url(), public_url=self.public_url())
             return True
         self.events.emit("staging_failed", build=build["id"])
-        self.store.add_wakeup("pipeline_manager",
+        self.store.add_wakeup("supervisor",
                               f"staging deploy of build {build['id']} failed (see staging log); rolled back")
         prev = self.store.runtime().get("builds", {}).get(prev_id or "")
         if prev:

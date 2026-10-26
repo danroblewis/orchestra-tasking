@@ -2,7 +2,7 @@
 // session phases. Loaded after Orchestra's /static/app.js (its $, esc, md, openDrawer, highlightLog).
 // Lifted from Orchestra's app.js as it was before the task system was removed (5006caf^).
 const API = "/api/plugins/tasks";
-const kindColor = (k) => ({ supervisor: "#bc8cff", coordinator: "#58a6ff", pipeline_manager: "#f0883e", worker: "#3fb950", reviewer: "#f85149" }[k] || "#8a90a3");
+const kindColor = (k) => ({ supervisor: "#bc8cff", coordinator: "#58a6ff", worker: "#3fb950", reviewer: "#f85149" }[k] || "#8a90a3");
 
 // opening any drawer ends the paging of a transcript that was open in it
 const orchestraOpenDrawer = openDrawer;
@@ -280,7 +280,7 @@ function sessionChip(s, now) {
 }
 
 // ---- machines: AI agents and programs from the factory model (dashboard and Machines page) ----
-const MACHINE_COLOR = { supervisor: "var(--r-supervisor)", coordinator: "var(--r-coordinator)", "pipeline-manager": "var(--r-pipeline)",
+const MACHINE_COLOR = { supervisor: "var(--r-supervisor)", coordinator: "var(--r-coordinator)",
   worker: "var(--r-worker)", reviewer: "var(--r-reviewer)" };
 const MACHINE_STATUS_CHIP = { running: "resident", working: "working", waiting: "resident", idle: "", stopped: "down", "not running": "down", observed: "" };
 const MACHINE_STOPPED = ["stopped", "not running"];

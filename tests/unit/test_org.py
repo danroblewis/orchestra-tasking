@@ -47,7 +47,7 @@ def test_builtins_are_agents_in_teams(project):
     assert ags["worker"].kind == "ad_hoc" and not ags["worker"].resident
     assert ags["supervisor"].team is None
     assert teams["engineering"].lead == "coordinator" and teams["engineering"].agents == ["coordinator", "worker", "reviewer"]
-    assert teams["pipeline"].lead == "pipeline_manager"
+    assert "pipeline" not in teams                                   # no Pipeline Manager: the Supervisor handles the gate and staging
 
 
 def test_validation():

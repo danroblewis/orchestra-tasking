@@ -363,7 +363,7 @@ def built_in_agents() -> dict[str, AgentDef]:
     out: dict[str, AgentDef] = {}
     for b in BUILTIN_ROLES.values():
         team = {"supervisor": None, "coordinator": "engineering", "worker": "engineering",
-                "reviewer": "engineering", "pipeline_manager": "pipeline"}.get(b.name)
+                "reviewer": "engineering"}.get(b.name)
         kind = "ad_hoc" if not b.resident else "scheduled" if b.every else "continuous"
         out[b.name] = AgentDef(name=b.name, roles=[b.name], team=team, kind=kind,
                                session="ephemeral" if not b.resident else "resident", wake_on=list(b.wake_on),
@@ -377,8 +377,6 @@ BUILTIN_TEAMS: dict[str, TeamDef] = {
                            created_by="orchestra",
                            description="Turns tickets into landed code: the Coordinator keeps the plan executable, "
                                        "workers implement, reviewers review, the merge gate lands."),
-    "pipeline": TeamDef(name="pipeline", lead="pipeline_manager", builtin=True, created_by="orchestra",
-                        description="On call for build, merge, and staging health."),
 }
 
 

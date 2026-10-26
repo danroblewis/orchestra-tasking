@@ -72,7 +72,7 @@ class MilestoneStatus(StrEnum):
 
 @dataclass
 class Note:
-    author: str  # worker | reviewer | merge_gate | supervisor | coordinator | pipeline_manager | orchestra
+    author: str  # worker | reviewer | merge_gate | supervisor | coordinator | orchestra
     text: str
     kind: str = "note"  # note | review | gate | blocker
     created_at: str = field(default_factory=now)

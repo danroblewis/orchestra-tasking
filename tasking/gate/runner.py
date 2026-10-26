@@ -242,7 +242,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
             run["status"] = "base_broken"
             run["summary"] = f"{base} fails the gate with nothing merged; pipeline paused"
             store.set_pipeline(True, f"{base} fails the gate (run {run_id})")
-            store.add_wakeup("pipeline_manager", f"{base} is broken: gate run {run_id} failed with no branches applied")
+            store.add_wakeup("supervisor", f"{base} is broken: gate run {run_id} failed with no branches applied")
             events.emit("gate_base_broken", gate_run=run_id)
             return run
         for tid in merged:
@@ -259,7 +259,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
             if t.state == State.MERGING:
                 store.transition(tid, t.version, State.APPROVED)
         store.set_pipeline(True, f"gate run {run_id} git error: {e}")
-        store.add_wakeup("pipeline_manager", f"gate run {run_id} hit a git error and the pipeline is paused: {e}. "
+        store.add_wakeup("supervisor", f"gate run {run_id} hit a git error and the pipeline is paused: {e}. "
                          "Fix the cause (or ask the human to), then call resume_pipeline.")
         events.emit("gate_error", gate_run=run_id, error=str(e))
         return run

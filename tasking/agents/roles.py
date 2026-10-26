@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Role:
-    name: str                       # ORCHESTRA_ROLE value, e.g. "pipeline_manager"
-    session_id: str                 # Pi session id, e.g. "pipeline-manager"
+    name: str                       # ORCHESTRA_ROLE value, e.g. "coordinator"
+    session_id: str                 # session id, e.g. "coordinator"
     prompt: str                     # prompt file stem under agents/prompts/
     tools: tuple[str, ...]          # tool groups
     resident: bool = True           # kept alive for the life of `tasking run`
@@ -47,6 +47,7 @@ def register(role: Role) -> Role:
 register(Role(
     name="supervisor", session_id="supervisor", prompt="supervisor",
     tools=("tickets", "context", "pipeline", "roles", "team", "events"),
+    wake_on=("gate_base_broken", "gate_error", "staging_failed", "pipeline_paused"),
     triggers=("a message from the human", "escalate_to_supervisor from any agent"),
     emits=("ticket_created", "ticket_updated", "milestone_created", "milestone_closed", "context_updated",
            "role_created", "agent_created", "team_created", "agent_messaged"),
@@ -59,14 +60,6 @@ register(Role(
     triggers=("a ticket rejected at the review threshold",),
     emits=("ticket_updated", "ticket_transition:CANCELLED", "note_added", "capacity_changed"),
     description="Keeps the plan executable: clarity, size, order, dependencies. Never changes intent.",
-))
-register(Role(
-    name="pipeline_manager", session_id="pipeline-manager", prompt="pipeline_manager",
-    tools=("tickets", "pipeline", "escalate"),
-    wake_on=("gate_base_broken", "gate_error", "staging_failed", "pipeline_paused"),
-    triggers=("repeated gate rejections of one ticket",),
-    emits=("pipeline_resumed", "staging_restarted"),
-    description="On-call for build, merge, and staging health.",
 ))
 # Per-ticket roles are not resident; the loop starts them on demand.
 register(Role(name="worker", session_id="worker-{ticket}", prompt="worker", tools=("report_ticket",), resident=False,

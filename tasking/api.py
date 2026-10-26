@@ -12,7 +12,7 @@ from .config import Project
 from .model import ACTIVE, TERMINAL, Note, State
 from .store import LocalStore, StoreError
 
-AGENT_ROLES = {"supervisor", "coordinator", "pipeline_manager"}
+AGENT_ROLES = {"supervisor", "coordinator"}
 
 
 def _has_tools(project: Project, role: str, group: str) -> bool:

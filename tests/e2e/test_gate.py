@@ -123,7 +123,7 @@ def test_broken_base_pauses_pipeline_and_keeps_ticket_approved(env):
     assert run["base_check"] and any(s["status"] == "failed" for s in run["base_check"])
     p = store.pipeline()
     assert p["paused"] is True and run["id"] in p["reason"]
-    wake = store.drain_wakeups("pipeline_manager")
+    wake = store.drain_wakeups("supervisor")
     assert wake and "broken" in wake[0]["reason"]
     assert "gate_base_broken" in event_types(events)
     assert not (project.gate_dir / f"{run['id']}-base").exists()
@@ -161,7 +161,7 @@ def test_batch_with_one_conflict_lands_the_rest(env):
 
 def test_missing_build_artifact_is_a_base_problem(env):
     """A build that produces no artifact fails on the base too, so the gate blames the
-    configuration (pipeline paused, Pipeline Manager woken), not the ticket."""
+    configuration (pipeline paused, Supervisor woken), not the ticket."""
     project, store, events, ms, repo = env
     set_config(project, repo, f'[build]\ncommand = "true"\nartifact = "dist/*.whl"\n[[gate.unit]]\nname = "unit"\ncommand = "{UNIT}"\n')
     t = merging_ticket(store, ms, repo, "no artifact", lambda wt: (wt / "NEW.md").write_text("ok\n"))
@@ -170,7 +170,7 @@ def test_missing_build_artifact_is_a_base_problem(env):
     assert run["stages"][-1] == {"stage": "build", "name": "artifact", "status": "failed", "tail": "no artifact matched dist/*.whl"}
     assert "unit" not in [s["name"] for s in run["stages"]]  # later stages did not run
     assert store.get_ticket(t.id).state == State.APPROVED and store.pipeline()["paused"]
-    assert store.drain_wakeups("pipeline_manager")
+    assert store.drain_wakeups("supervisor")
 
 
 def test_build_start_and_acceptance_stages(env):

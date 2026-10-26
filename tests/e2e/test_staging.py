@@ -45,7 +45,7 @@ def test_deploy_restart_rollback(project, tmp_path):
         time.sleep(0.5)
         assert st.state()["current_build_id"] == "b1"
         assert urllib.request.urlopen("http://127.0.0.1:18765/").read() == b"v1"
-        wake = store.drain_wakeups("pipeline_manager")
+        wake = store.drain_wakeups("supervisor")
         assert wake and "staging deploy" in wake[0]["reason"]
         # Supervision restarts a dead process.
         import os, signal

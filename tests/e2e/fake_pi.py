@@ -11,7 +11,7 @@ Speaks just enough of the RPC protocol for tasking.harness.pi: `get_state`, `pro
   requires), so the merge gate rejects it; the next attempt restores the file.
 - reviewer: calls `tasking api report_review` with APPROVED, or REJECTED the first
   time if FAKE_PI_REJECT_FIRST is set (tracked by a marker file in the worktree).
-- supervisor / coordinator / pipeline_manager: replies with text only.
+- supervisor / coordinator: replies with text only.
 
 It writes a Pi-format session file so transcripts work."""
 

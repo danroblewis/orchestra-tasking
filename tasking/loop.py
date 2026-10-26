@@ -123,7 +123,7 @@ class Loop:
         self._start_control()
         paused = self.store.pipeline()
         if paused.get("paused"):
-            self.store.add_wakeup("pipeline_manager", f"the pipeline is still paused after a restart: {paused.get('reason')}. "
+            self.store.add_wakeup("supervisor", f"the pipeline is still paused after a restart: {paused.get('reason')}. "
                                   "Diagnose, fix what you can or escalate, then call resume_pipeline.")
         # Staging survives loop restarts; only bring it back if its process is gone.
         if self.cfg.staging_configured and self.staging.state().get("current_build_id"):
@@ -725,7 +725,7 @@ class Loop:
     # -- project agents --------------------------------------------------------
 
     def _start_project_agents(self) -> None:
-        """Start the resident supervisor, coordinator, and pipeline-manager sessions up
+        """Start the resident supervisor and coordinator sessions up
         front so they live for the life of `tasking run`."""
         for target in RESIDENT_AGENTS:
             sid = ROLES[target].session_id
