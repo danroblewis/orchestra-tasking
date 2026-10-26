@@ -13,7 +13,7 @@ from tasking.store import LocalStore
 
 
 def test_escalation_fires_at_the_threshold_and_its_multiples(project):
-    events = Events(project.events_file, source="task_scheduler")
+    events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
     sched = Scheduler(project, store, events)
     sched.recover()

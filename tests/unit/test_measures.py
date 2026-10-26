@@ -10,7 +10,7 @@ from tasking.store import LocalStore
 
 @pytest.fixture
 def store(project):
-    return LocalStore(project, Events(project.events_file, source="worker/2"))
+    return LocalStore(project, Events.for_project(project, source="worker/2"))
 
 
 def test_ticket_levels_and_flows_balance(store):
@@ -27,6 +27,6 @@ def test_ticket_levels_and_flows_balance(store):
     moved = lambda f, t: m.latest("tasks_ticket_transitions_total", {"project": key, "from": f, "to": t, "machine": "worker"})[1]
     assert moved("OPEN", "IN_PROGRESS") == 1 and moved("IN_PROGRESS", "READY_FOR_REVIEW") == 1
     # the counters live with the tickets, so another process (or a restart) carries on from them
-    again = LocalStore(store.project, Events(store.project.events_file, source="worker/1"))
+    again = LocalStore(store.project, Events.for_project(store.project, source="worker/1"))
     again.create_ticket(title="c", milestone_id=ms.id)
     assert m.latest("tasks_tickets_created_total", {"project": key, "machine": "worker"})[1] == 3

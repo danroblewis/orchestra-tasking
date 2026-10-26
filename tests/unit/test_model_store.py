@@ -8,7 +8,7 @@ from tasking.store import Conflict, LocalStore, StoreError
 
 @pytest.fixture
 def store(project):
-    return LocalStore(project, Events(project.events_file, source="task_scheduler"))
+    return LocalStore(project, Events.for_project(project, source="task_scheduler"))
 
 
 def test_transitions():

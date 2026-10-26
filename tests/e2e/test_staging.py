@@ -28,7 +28,7 @@ def staged(project):
 def test_deploy_restart_rollback(staged, tmp_path):
     project, port = staged
     url = f"http://127.0.0.1:{port}/"
-    events = Events(project.events_file, source="task_scheduler")
+    events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
     st = Staging(project, store, events)
     good = tmp_path / "good"
@@ -63,7 +63,7 @@ def test_a_port_held_by_another_process_is_not_taken(staged, tmp_path):
     """The task system kills only what it started: a deploy onto a port someone else holds
     fails and says so, and the other process is left alone."""
     project, port = staged
-    events = Events(project.events_file, source="task_scheduler")
+    events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
     st = Staging(project, store, events)
     (tmp_path / "good").mkdir()

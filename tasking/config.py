@@ -164,10 +164,6 @@ class Project:
         return self.orchestra.state_dir / "tasks"
 
     @property
-    def events_file(self) -> Path:
-        return self.orchestra.events_file                  # Orchestra's (the file bus), not the task system's
-
-    @property
     def tickets_file(self) -> Path:
         return self.state_dir / "tickets.json"
 
