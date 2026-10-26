@@ -278,8 +278,8 @@ class Scheduler:
             return False
         aid = new_id(t.id, role)
         turns = {"worker_turns": t.worker_turns + 1, "branch": branch} if role == "worker" else {}   # as the ticket will read once accepted
-        offer = {"assignment": aid, "role": role, "ticket": t.id, "kind": "work" if role == "worker" else "review",
-                 "workspace": str(path), "branch": branch, "lease_s": LEASE_S, "brief": {**brief(t), **turns}}
+        offer = {"assignment": aid, "role": role, "ticket": t.id, "workspace": str(path), "branch": branch,
+                 "lease_s": LEASE_S, "brief": {**brief(t), **turns}}
         if role == "worker" and not tasks and self.cfg.unit:
             offer["unit_command"] = self.cfg.unit[0].command
         record = {"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch,

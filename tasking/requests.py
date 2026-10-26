@@ -132,7 +132,7 @@ class Desk:
             except Exception as e:  # noqa: BLE001 - a refused request is an answer, not a crash
                 result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         ok = bool(result.get("ok", True))
-        self.events.publish(DONE if ok else REFUSED, {"request": ev.get("request"), "op": op, "by": by,
+        self.events.publish(DONE if ok else REFUSED, {"request": ev.get("request"),
                                                       **({"result": result} if ok else {"error": result.get("error")})},
                             subject=_subject(args) or (result.get("ticket") or {}).get("id"))
         if op not in QUERIES or age > RESUME_S:
