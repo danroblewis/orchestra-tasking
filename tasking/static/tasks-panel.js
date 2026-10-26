@@ -1,6 +1,6 @@
 // The Tasks panel on Orchestra's Dashboard (Orchestra.panels; loaded by tasks-boot.js after
 // tasks.js). One card per ticket in flight (not waiting to start, not finished), in the ticket's
-// state colour, with its id, title, re-engagement badge and state, and a lane that says which
+// state colour, with its id, title, worker-turns badge and state, and a lane that says which
 // machine instance holds it now and since when (the scheduler offers it: worker/1 takes it, then
 // reviewer/1, then a worker again after a rejection), that it is offered and to whom, or what it
 // waits for. Above the cards, the queue by state and the operator's capacity and pause controls.
@@ -16,7 +16,7 @@
     if (t.reviewer_rejections) bits.push(`✗${t.reviewer_rejections}`);
     if (t.gate_rejections) bits.push(`⛔${t.gate_rejections}`);
     if (other > 0) bits.push(`⟳${other}`);
-    return `<span class="turns" title="worker opened ${t.worker_turns} times: ${t.reviewer_rejections || 0} after a reviewer rejection${other > 0 ? `, ${other} after a crash, timeout or operator stop` : ""}">${bits.join(" ")}</span>`;
+    return `<span class="turns" title="worker turns: ${t.worker_turns} (${turnsWhy(t).join(", ")}); ✗ reviewer rejections, ⛔ gate rejections, ⟳ crashes, timeouts or operator stops">${bits.join(" ")}</span>`;
   }
 
   Orchestra.panels.register({ id: "tasks", title: "Tasks", size: { w: 12, h: 9 }, mount(body, ui) {
@@ -34,9 +34,8 @@
           <div class="top"><span><span class="id">${esc(t.id)}</span> <span class="title">${esc(t.title)}</span></span>
             <span class="right">${turns(t)}<span class="pill">${esc(t.state.replace(/_/g, " "))}</span></span></div>
           <div class="lane"><span class="msg">${esc(says(t))}</span></div></div>`).join("");
-      const open = D.counts.OPEN || 0, done = D.counts.DONE || 0, blocked = D.counts.BLOCKED || 0;
-      const held = D.tickets.filter((t) => t.assignment && t.assignment.instance).length, offered = D.tickets.filter((t) => t.assignment && !t.assignment.instance).length;
-      ui.setSub(`${held} being worked${offered ? ` · ${offered} offered` : ""} · ${blocked} blocked · ${open} waiting to start · ${done} done${D.scheduler ? "" : " · the scheduler is not running"}`);
+      const sum = taskSummary(D), open = sum.start;
+      ui.setSub(sum.text + (D.scheduler ? "" : " · the scheduler is not running"));
       body.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin-bottom:10px">
           <span style="flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:6px">${q || '<span class="muted">no tickets yet</span>'}</span>
           <span style="display:flex;gap:10px;align-items:center;font-size:11.5px;color:var(--text2)">${taskControls(D, "TasksPanel")}</span></div>

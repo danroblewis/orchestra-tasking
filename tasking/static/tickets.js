@@ -93,7 +93,7 @@ function pathFor(points) {   // smooth curve through dagre's points
 let bounds = { w: 800, h: 600 }, liveBox = null;
 function render() {
   const s = STATE; if (!s) return;
-  $("legend").innerHTML = Object.entries(s.counts).filter(([, v]) => v).map(([k, v]) => `<span class="badge" style="background:${color(k)}">${k} ${v}</span>`).join(" ");
+  $("legend").innerHTML = Object.entries(s.counts).filter(([, v]) => v).map(([k, v]) => `<span class="badge" style="background:${color(k)}">${esc(k.replace(/_/g, " "))} ${v}</span>`).join(" ");
   $("chips").innerHTML = [...opened].map((m) => `<span class="ms-chip" onclick="toggleMs('${m}')">▼ ${esc(m)} · open</span>`).join("");
   if (!s.tickets.length) { $("nodes").innerHTML = `<text x="20" y="40" fill="#8a90a3">No tickets yet. A planner creates them (tasking api create_ticket …).</text>`; $("edges").innerHTML = ""; return; }
   const model = buildModel(s);

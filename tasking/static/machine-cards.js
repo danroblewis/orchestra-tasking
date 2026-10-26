@@ -36,8 +36,7 @@
     rank: () => 20,
     summary(m) {
       if (m.id !== "task_scheduler" || !D) return null;
-      const held = D.tickets.filter((t) => t.assignment && t.assignment.instance).length, offered = D.tickets.filter((t) => t.assignment && !t.assignment.instance).length;
-      return `${held} being worked${offered ? ` · ${offered} offered` : ""} · ${D.counts.BLOCKED || 0} blocked · ${D.counts.OPEN || 0} waiting`;
+      return taskSummary(D, { finished: false }).text;
     },
     card(m, { compact } = {}) { return m.id === "task_scheduler" ? schedulerCard(m, compact) : null; },
     open() { return false; },

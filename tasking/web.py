@@ -94,31 +94,30 @@ def router(project: Project) -> APIRouter:
     async def attention() -> dict:
         """What waits on a planner's decision: blocked tickets (a worker could not go on). Read on
         every page (static/attention.js)."""
-        blocked = [{"id": t["id"], "title": t["title"], "reason": t.get("blocked_reason") or "", "since": t.get("state_since"),
-                    "milestone": t.get("milestone_id")} for t in store.ticket_views()["tickets"] if t["state"] == "BLOCKED"]
+        blocked = [{"id": t["id"], "reason": t.get("blocked_reason") or ""} for t in store.ticket_views()["tickets"] if t["state"] == "BLOCKED"]
         return {"ok": True, "blocked": blocked, "count": len(blocked)}
 
     @r.get("/board")
     async def board() -> dict:
         """The Tasks panel: every ticket in flight (not waiting to start, not finished; an offered
         one counts), with the machine instance it is assigned to now (and since when it holds it,
-        or since when it is offered), newest activity first; and the queue by state, the capacity
-        and the pause."""
+        or since when it was first offered), blocked ones first, then the held, then the offered,
+        then the rest by when they reached their state; and the queue by state, the capacity and
+        the pause."""
         views = store.ticket_views()
         held = {a["ticket"]: a for a in store.assignments().values()}
         waiting = {"READY_FOR_REVIEW": "waiting for a reviewer", "REJECTED": "rejected: waiting for its worker",
                    "APPROVED": "approved", "BLOCKED": "blocked: waiting for a decision"}
+        rank = lambda t: (0 if t["state"] == "BLOCKED" else 1 if (held.get(t["id"]) or {}).get("instance") else 2 if t["id"] in held else 3)
         flight = []
-        for t in views["tickets"]:
+        for t in sorted(views["tickets"], key=lambda t: (rank(t), t.get("state_since") or "")):
             if t["state"] in ("OPEN", "DONE", "CANCELLED") and t["id"] not in held:
                 continue
             a = held.get(t["id"])
-            flight.append({**{k: t.get(k) for k in ("id", "title", "state", "state_since", "worker_turns", "reviewer_rejections",
-                                                       "gate_rejections", "blocked_reason", "milestone_id")},
+            flight.append({**{k: t.get(k) for k in ("id", "title", "state", "worker_turns", "reviewer_rejections", "gate_rejections", "blocked_reason")},
                            "waiting": None if a else waiting.get(t["state"], ""),
-                           "assignment": ({"role": a["role"], "instance": a.get("instance"), "since": a.get("accepted_at") or a.get("assigned_at")}
+                           "assignment": ({"role": a["role"], "instance": a.get("instance"), "since": a.get("accepted_at") or a.get("offered_since")}
                                           if a else None)})
-        flight.sort(key=lambda x: (x["assignment"] is None, x["state_since"] or ""))
         return {"ok": True, "now": time.time(), "tickets": flight, "counts": {k: v for k, v in views["counts"].items() if v}, "capacity": store.capacity(),
                 "pickup_paused": store.pickup_paused(), "scheduler": scheduler()["alive"]}
 

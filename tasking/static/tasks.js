@@ -7,15 +7,45 @@ if (!document.querySelector('link[href^="/plugins/tasks/static/tasks.css"]')) {
   const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "/plugins/tasks/static/tasks.css"; document.head.appendChild(l);
 }
 
-function turnsText(t) {
-  const n = t.worker_turns || 0;
-  if (n < 2) return n === 1 ? "1 (first attempt)" : "none yet";
+// Worker turns: how many times a worker took the ticket, and why it took it again.
+function turnsWhy(t) {
   const why = [];
   if (t.reviewer_rejections) why.push(`${t.reviewer_rejections} after a reviewer rejection`);
   if (t.gate_rejections) why.push(`${t.gate_rejections} after the merge gate sent it back`);
-  const other = n - 1 - (t.reviewer_rejections || 0) - (t.gate_rejections || 0);
-  if (other > 0) why.push(`${other} after a crash, timeout, or operator stop`);
-  return `${n} · re-engaged ${n - 1}×` + (why.length ? ` (${why.join(", ")})` : "");
+  const other = (t.worker_turns || 0) - 1 - (t.reviewer_rejections || 0) - (t.gate_rejections || 0);
+  if (other > 0) why.push(`${other} after a crash, timeout or operator stop`);
+  return why;
+}
+function turnsText(t) {
+  const n = t.worker_turns || 0;
+  if (n < 2) return n === 1 ? "1 (first attempt)" : "none yet";
+  return `${n} (${turnsWhy(t).join(", ")})`;
+}
+
+// The headline over the tickets, from a /board answer D: a partition of the tickets (every
+// ticket in exactly one bucket, so the numbers add up to the ticket count), drawn by the Tasks
+// panel and the scheduler's card. Zero buckets are left out except the two always shown; the
+// finished ones (done, cancelled) are left out when finished is false.
+function taskSummary(D, { finished = true } = {}) {
+  const c = D.counts || {}, n = (s) => c[s] || 0;
+  const offers = D.tickets.filter((t) => t.assignment && !t.assignment.instance);
+  const k = {
+    working: D.tickets.filter((t) => t.assignment && t.assignment.instance).length,
+    offered: offers.length,
+    blocked: n("BLOCKED"),
+    start: n("OPEN") + n("REJECTED") - offers.filter((t) => t.assignment.role === "worker").length,
+    review: n("READY_FOR_REVIEW") - offers.filter((t) => t.assignment.role === "reviewer").length,
+    landing: n("APPROVED") + n("MERGING"),
+    done: n("DONE"), cancelled: n("CANCELLED") };
+  const parts = [`${k.working} being worked`];
+  if (k.offered) parts.push(`${k.offered} offered`);
+  if (k.blocked) parts.push(`${k.blocked} blocked`);
+  parts.push(`${k.start} waiting to start`);
+  if (k.review) parts.push(`${k.review} waiting for review`);
+  if (k.landing) parts.push(`${k.landing} landing`);
+  if (finished && k.done) parts.push(`${k.done} done`);
+  if (finished && k.cancelled) parts.push(`${k.cancelled} cancelled`);
+  return { ...k, text: parts.join(" · ") };
 }
 
 async function openTicket(id) {

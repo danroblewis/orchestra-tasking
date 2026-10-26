@@ -3,6 +3,7 @@ mode the merge gate and the pipeline; staging when it is configured."""
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime
 
@@ -31,7 +32,7 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
     sch = store.scheduler() or {}
     workers = [{"id": a.get("instance") or f"(offered to a {a['role']})", "kind": a["role"], "ticket": a["ticket"],
                 "title": by_id[a["ticket"]].title if a["ticket"] in by_id else "",
-                "elapsed": round(now - (a.get("assigned_at") or now))}
+                "elapsed": round(now - (a.get("accepted_at") or a.get("offered_since") or now))}   # an unanswered offer's age spans its re-offers
                for a in store.assignments().values()]
 
     runs = store.gate_runs()
@@ -42,7 +43,7 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
         done = len(cur.get("stages", []))
         failed = any(s.get("status") == "failed" for s in cur.get("stages", []))
         started = cur.get("started_at")
-        gate = {"id": cur["id"], "tickets": [{"id": t, "title": by_id[t].title if t in by_id else ""} for t in [cur["ticket"]]],
+        gate = {"id": cur["id"], "ticket": {"id": cur["ticket"], "title": by_id[cur["ticket"]].title if cur["ticket"] in by_id else ""},
                 "stages_done": done, "stages_total": total, "percent": int(100 * min(done, total) / total),
                 "failed_stage": failed, "current_stage": (cur["stages"][-1]["stage"] + ":" + cur["stages"][-1]["name"]) if cur.get("stages") else "assembling",
                 "started_at": started}
@@ -61,8 +62,7 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
     return {
         "project": {"key": project.key, "repo_root": str(project.repo_root), "base_branch": cfg.base_branch, "work": cfg.work},
         "scheduler": {"running": alive(sch.get("pid")), "pid": sch.get("pid")},
-        "blocked": [{"id": t.id, "title": t.title, "reason": (t.blocked_reason or "").splitlines()[0] if t.blocked_reason else ""}
-                    for t in tickets if t.state == State.BLOCKED],
+        "blocked": [{"id": t.id, "title": t.title, "reason": _first_paragraph(t.blocked_reason)} for t in tickets if t.state == State.BLOCKED],
         "workers": workers,
         "slots": {"workers": f"{sum(1 for w in workers if w['kind'] == 'worker')}/{store.capacity()['workers']}",
                   "reviewers": f"{sum(1 for w in workers if w['kind'] == 'reviewer')}/{store.capacity()['reviewers']}"},
@@ -77,6 +77,11 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
         "counts": {k: v for k, v in counts.items() if v},
         "staging": staging,
     }
+
+
+def _first_paragraph(text: str | None) -> str:
+    """A blocked reason's first paragraph, without its markdown backticks (the drawer has it whole)."""
+    return " ".join(re.split(r"\n\s*\n", text or "", maxsplit=1)[0].replace("`", "").split())
 
 
 def _ts(iso: str) -> float:
@@ -103,7 +108,8 @@ def render(d: dict) -> str:
         L.append("")
         L.append(f"needs a decision: {len(d['blocked'])} blocked ticket{'s' if len(d['blocked']) != 1 else ''}")
         for b in d["blocked"]:
-            L.append(f"  ■ {b['id']:10} {b['title'][:40]:40}  {b['reason'][:70]}")
+            L.append(f"  ■ {b['id']:10} {b['title'][:40]}")
+            L.append(f"      {b['reason']}")
     L.append("")
     sc = d["scheduler"]
     L.append(f"scheduler: {'RUNNING' if sc['running'] else 'DOWN'}" + (f"  pid {sc['pid']}" if sc["running"] else "   (start with `tasking run`)"))
@@ -118,8 +124,7 @@ def render(d: dict) -> str:
         if g:
             bar = "#" * (g["percent"] // 5) + "-" * (20 - g["percent"] // 5)
             L.append(f"merge gate: run {g['id']}  [{bar}] {g['percent']}%  stage {g['stages_done']}/{g['stages_total']} ({g['current_stage']})" + ("  FAILING" if g["failed_stage"] else ""))
-            for t in g["tickets"]:
-                L.append(f"  in gate:  {t['id']} {t['title'][:50]}")
+            L.append(f"  in gate:  {g['ticket']['id']} {g['ticket']['title'][:50]}")
         else:
             lg = d["last_gate"]
             L.append("merge gate: idle" + (f"  (last: {lg['status']} {lg['summary'][:60]})" if lg else ""))
