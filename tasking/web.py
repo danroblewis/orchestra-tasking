@@ -361,19 +361,24 @@ def router(project) -> APIRouter:
         loop = store.runtime().get("control") or {}
         # every agent session as the machine instance it runs (or last ran) as, with its ticket
         tickets = {t["id"]: t for t in snap["tickets"]}
+        loop_alive = _alive(loop.get("pid"))
+        # a resident agent between turns: on Pi a live process; on Claude Code or Codex there is no
+        # process between turns, and it is up as long as the scheduler that runs it is
+        residents = {a["session_id"] for a in out if a.get("resident")}
         insts = []
         for s in snap["sessions"]:
             t = tickets.get(s.get("ticket_id") or "")
-            insts.append({"session": s["id"], "instance": s.get("instance") or s.get("kind"), "role": s.get("kind"),
-                          "status": s.get("status"), "alive": _alive(s.get("pid")), "phase": s.get("phase"),
-                          "phase_since": s.get("phase_since"), "tool": s.get("tool_name"), "started_at": s.get("started_at"),
-                          "settled_at": s.get("settled_at"), "last_text": (s.get("partial_text") or s.get("last_text") or "")[-300:],
-                          "ticket": {"id": t["id"], "title": t["title"], "state": t["state"]} if t else None})
+            insts.append({**{k: v for k, v in s.items() if k not in ("partial_text", "last_text")},       # what sessionChip reads
+                          "session": s["id"], "instance": s.get("instance") or s.get("kind"), "role": s.get("kind"),
+                          "alive": _alive(s.get("pid")) or (s["id"] in residents and s.get("status") != "running" and loop_alive),
+                          "tool": s.get("tool_name"),
+                          "last_text": (s.get("partial_text") or s.get("last_text") or "")[-300:],
+                          "ticket": {k: t.get(k) for k in ("id", "title", "state", "worker_turns", "reviewer_rejections", "gate_rejections")} if t else None})
         counts = {}
         for t in snap["tickets"]:
             counts[t["state"]] = counts.get(t["state"], 0) + 1
-        return {"ok": True, "loop": {**loop, "alive": _alive(loop.get("pid"))}, "agents": out, "sessions": insts,
+        return {"ok": True, "loop": {**loop, "alive": loop_alive}, "agents": out, "sessions": insts,
                 "tickets": counts, "capacity": store.capacity(), "pickup_paused": store.pickup_paused(),
-                "harness": project.config.harness, "model": project.config.model}
+                "harness": project.config.harness, "model": project.config.model, "now": time.time()}
 
     return r

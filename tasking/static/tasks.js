@@ -284,22 +284,12 @@ const MACHINE_COLOR = { supervisor: "var(--r-supervisor)", coordinator: "var(--r
   worker: "var(--r-worker)", reviewer: "var(--r-reviewer)" };
 const MACHINE_STATUS_CHIP = { running: "resident", working: "working", waiting: "resident", idle: "", stopped: "down", "not running": "down", observed: "" };
 const MACHINE_STOPPED = ["stopped", "not running"];
-const stockName = (s) => (s || "").toLowerCase().replace(/_/g, " ");
-function machineFlowText(f, detail) {
-  const [a, b] = f.id.split(">");
-  const arrow = `<span class="fl">${esc(stockName(a))} → ${esc(stockName(b))}</span>`;
-  if (f.rate == null) return `${arrow}<span class="muted">no data</span>`;
-  const rate = f.form === "proportional" ? `${f.rate.toFixed(2)} × ${esc(stockName(f.src))}` : f.rate.toFixed(2);
-  const more = detail ? ` <span class="muted">± ${(f.se || 0).toFixed(3)} · ${f.events} events · disp ${(f.dispersion ?? 0).toFixed(1)} · ${esc(f.form)}, ${esc(f.origin)}</span>` : "";
-  return `${arrow}<span class="num" title="${esc(f.form)} · ${esc(f.origin)} from ${f.events} events · ± ${(f.se || 0).toFixed(3)}">${rate} /h${more}</span>`;
-}
 function machineCard(m, { detail = false, controls = "" } = {}) {
   const agent = m.kind === "agent", rc = MACHINE_COLOR[m.id] || (agent ? "#c4b5fd" : "#94a3b8");
   const eng = m.engagement.map((e) => `${e.mode.replace("_", " ")} · ${e.driver}`).join(", ") || "observed only";
   const jobs = m.jobs.map((j) => `<div class="job" onclick="event.stopPropagation();openTranscript('${esc(j.session)}')"><span class="id">${esc(j.ticket || j.session)}</span><span class="msg">${esc(j.text || "working")}</span></div>`).join("");
   const desc = detail && m.description ? `<div class="mdesc">${esc(m.description)}</div>` : "";
-  const flows = m.flows.length ? `<div class="mflows">${detail ? '<div class="mfh">attributed flows: hypotheses, with the equations fitted from the history</div>' : ""}${m.flows.map((f) => `<div>${machineFlowText(f, detail)}</div>`).join("")}</div>`
-    : detail ? '<div class="mflows"><div class="muted">No flows attributed yet.</div></div>' : "";
+  const flows = "";                // the factory model's attributed flows are gone (Orchestra discovers the model)
   return `<div class="machine ${detail ? "detail" : ""}" style="--rc:${rc}" title="${esc(m.description)}">
     <div class="mhead"><div class="av ${agent ? "" : "prog"}">${agent ? esc(m.name[0]) : "⚙"}</div>
       <div class="mname">${esc(m.name)}${m.bootstrap ? ' <span class="tag">bootstrap</span>' : ""}<div class="msub">${agent ? "AI agent" : "program"} · ${esc(eng)}${detail ? ` · <span class="num">${esc(m.id)}</span>` : ""}</div></div>
