@@ -1,5 +1,5 @@
 """Staging: one long-lived instance of the most recent build that passed the gate.
-SPEC.md section 7.5. Kept running by the scheduler; redeployed by the gate on every landing."""
+SPEC.md section 5. Kept running by the scheduler; redeployed by the gate on every landing."""
 
 from __future__ import annotations
 

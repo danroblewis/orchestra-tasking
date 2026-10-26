@@ -1,4 +1,4 @@
-"""The merge gate: assemble, build, unit, start, acceptance, land. SPEC.md section 7.
+"""The merge gate: assemble, build, unit, start, acceptance, land. SPEC.md section 5.
 
 v1 gates one ticket per run (batch size 1), so a failure is attributed to that ticket unless
 the base branch itself fails. Batching and bisection plug in here later."""

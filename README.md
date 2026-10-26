@@ -1,28 +1,36 @@
 # orchestra-tasking
 
-A task system for AI agents and programs, observed by Orchestra. Tickets and milestones, the loop
-that assigns ready tickets to workers and reviewers, the AI agent harnesses (Pi, Claude Code,
-Codex), the merge gate and staging.
+A task system observed by Orchestra. Tickets and milestones, a scheduler that offers ready
+tickets to the `worker` and `reviewer` roles over Orchestra's event bus and applies what the
+machines that take them report, a merge gate for code, and the Tickets page and Tasks panel
+inside Orchestra's web UI (an Orchestra plugin, `tasks`).
 
-It was part of Orchestra until 2026-10-25, when Orchestra was reduced to its fundamentals (an
-event bus, a metrics store, a system dynamics model). It lives here now, lifted nearly as it was
-(`SPEC.md` says what changed), and is to be reshaped into machines that talk over the bus.
-Beads was tried in between and removed: its agents choose their own work.
+It runs no machine of its own. Whatever fills a role is another program that speaks the
+contract in `tasking/assignments.py`: the demo's are a shell runner and a file checker, each a
+page of Python using only Orchestra's library (`demo/machines/`). `SPEC.md` is the design;
+`AGENTS.md` the rules.
 
-## Running it
+## Try it
 
     uv sync --extra dev
-    bin/orchestra-ctl start            # Orchestra's host and web, http://127.0.0.1:8060
-    .venv/bin/tasking run              # the loop: starts the resident AI agents (Supervisor, Coordinator, …)
-    .venv/bin/tasking chat             # talk to the Supervisor
+    uv run demo/run.py                 # a fresh demo project at ~/orchestra-tasking-demo, http://127.0.0.1:8071
 
-Orchestra is installed in this repository's environment from `../orchestra_2` (editable). The
-task system adds its pages to Orchestra's web app as a plugin (`tasking/web.py`, the entry point
-in `pyproject.toml`): **Tickets** (the ticket graph) and **Agents**.
+Four tickets are created and worked while you watch: two are done, two end blocked for a
+planner to decide. `demo/README.md` says what you will see and where. Ctrl-C stops everything.
 
-Its settings are the sections of `orchestra.toml` that Orchestra ignores ([project], [agents],
-[gate], …); its state is in `~/.orchestrator/<key>/tasks/`; its events go on Orchestra's bus.
+## Use it on a repository
+
+    cd <repo> && uv run --project <this repo> tasking init     # the task system's sections in orchestra.toml
+    uv run orchestra web                                        # Orchestra's UI with the Tickets page
+    uv run tasking run                                          # the scheduler
+    uv run tasking api --as planner create_milestone --args '{"name": "First"}'
+    uv run tasking api --as planner create_ticket --args '{"title": "…", "milestone_id": "M1", "description": "…", "acceptance": "…"}'
+
+Then run something that fills the roles (`demo/machines/` as they are, or your own). Settings
+are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
+`~/.orchestrator/<key>/tasks/`; events go on Orchestra's bus.
 
 ## Tests
 
-    .venv/bin/python -m pytest -q      # about five minutes: the e2e tests drive fake agents through whole tickets
+    uv run python -m pytest -q         # about two minutes: the e2e tests drive whole tickets, one suite through a real Orchestra
+    uv run ruff check tasking tests demo

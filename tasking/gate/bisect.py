@@ -1,4 +1,4 @@
-"""Pure bisection over an ordered batch of branches. SPEC.md section 7.3 step 2.
+"""Pure bisection over an ordered batch of branches. Not yet wired into the gate (SPEC.md section 5).
 
 `is_failing(subset)` must be monotone: a superset of a failing subset also fails."""
 

@@ -1,105 +1,75 @@
-# Proposal: the task system and the agents, apart
+# The task system and the agents, apart
 
-Status: steps 1 and 2 built (2026-10-25: `tasking/assignments.py`, `tasking/runner.py`, `tasking/requests.py`; a shell worker in the demo); the rest is a proposal.
+Status: done, 2026-10-26. Two repositories, each an Orchestra plugin, meeting only on
+Orchestra's bus: orchestra-tasking (this one, plugin `tasks`) and orchestra-agents (plugin
+`agents`). This note keeps the reasoning and says what was done; `SPEC.md` describes the task
+system as it is.
 
-## 1. Why
+## Why
 
 The task system holds tasks and decides who does what next. AI agents are one kind of machine
-that can do a task. Today the two are one program: the scheduler (`tasking/loop.py`) assigns a
-ticket by starting a Claude Code or Pi session itself, in a thread, and reads the agent's report
-from a shared store. So the task system cannot assign work to anything but an AI agent, and the
-agents cannot grow (system dynamics tools, simulation, proposing and checking changes) without
-growing the task system with them.
-
-The goal: two packages, each an Orchestra plugin, that meet only through Orchestra's bus.
-
-| Package | Owns |
-|---|---|
-| **orchestra-tasking** | Tasks and milestones, their states and dependency graph, readiness and topological order, priority (aging, inheritance) and later leverage measures; **roles to fill** and how many of each (capacity); assignment and ownership; leases (no zombies); datetime schedules of machines (wake a machine every 10 minutes, daily at 09:00); the ticket metrics; the Tickets page and the Tasks panel |
-| **orchestra-agents** | AI agents as machines: harnesses (Claude Code, Pi, Codex), sessions (resident, ad hoc, resumed), transcripts, prompts and prompt templates, context, tools, roles as job descriptions, teams; the Supervisor chat; the Agents page; later the system dynamics tools, simulation and experiments |
+that can do a task. Until 2026-10-25 the two were one program: the scheduler assigned a ticket
+by starting a Claude Code or Pi session itself, in a thread, and read the agent's report from a
+shared store. So the task system could not assign work to anything but an AI agent, and the
+agents could not grow without growing the task system with them.
 
 The test of the split: **the task system works when none of its machines is an AI agent**, and
 the agents package works for a task system that is not ours.
 
-## 2. What is coupled today
+## What went where
 
-| In `tasking/` now | Belongs to |
-|---|---|
-| `model.py`, `store/` (tickets, milestones, notes, capacity, pause, kills, ownership), `measures.py`, `probes.py`, `events.py`, `config.py` ([project]) | tasking |
-| `loop.py` `tick`, readiness, priorities, capacity, `_work`/`_review` as assignment, `_apply_worker_report`, `_verdict`, `_reject`, recovery | tasking (rewritten to assign over the bus) |
-| `loop.py` sessions: `_open_session`, residents, `_wake*`, `_schedule_wakeups` (the agent part), compaction, crash loops, `_on_event`, transcript markers | agents |
-| `harness/`, `agents/` (prompts, built-in roles), `roles.py`, `org.py`, `api_org.py`, `control.py` (Supervisor chat) | agents |
-| `api.py` (the tools agents call: create, update, report, unblock …) | split: the **requests** go to tasking over the bus; the **tool definitions** stay with agents |
-| `gate/`, `staging.py`, `git.py` (`work = "code"`) | tasking for now; later its own package with pull request trees |
-| web: Tickets page, Tasks panel, `/board`, ticket and attention (blocked) endpoints | tasking |
-| web: Agents page, `/eventmap`, transcripts, Supervisor chat, agent machine cards, the Supervisor button | agents |
-
-## 3. The protocol between them
-
-Everything goes over Orchestra's bus as CloudEvents, so Orchestra observes the coordination
-(the lesson of Beads: publish decisions, not storage changes). The ticket is the `subject`.
-
-**Assignment** (the scheduler fills a role):
-
-| Event | From | Data |
+| | orchestra-tasking | orchestra-agents |
 |---|---|---|
-| `task.assigned` | task_scheduler | role (`worker`, `reviewer`, …), assignment id, the brief (title, objective, description, acceptance, verification, feedback from a rejection), the workspace, lease seconds |
-| `task.accepted` | the assignee (`worker/1`) | assignment id |
-| `task.working` | the assignee | assignment id (a heartbeat: extends the lease) |
-| `task.reported` | the assignee | assignment id; for work: `ready` or `blocked` with a summary or reason; for review: `approved` or `rejected` with feedback |
-| `task.released` | task_scheduler | assignment id, why (lease expired, the operator stopped it): the ticket goes back to waiting |
+| owns | tickets and milestones, states and dependency graph, readiness, priority (aging, inheritance); roles as names with a capacity and a lease; assignment and ownership; the merge gate, worktrees and staging for code; probes; the Tickets page, the Tasks panel, the scheduler's card, the blocked-ticket banner; the ticket metrics | the roles as job descriptions (Supervisor, Coordinator, worker, reviewer, custom), prompts, teams and the organisation; the harnesses (Pi, Claude Code, Codex); sessions and transcripts; the host that runs them; the runner that answers assignments for the roles it serves; the agents' tools; the Agents page, the agents' machine cards, the Supervisor chat; its own metrics |
+| state | `~/.orchestrator/<key>/tasks/` | `~/.orchestrator/<key>/agents/` |
+| config | `[project]`, `[tasks]`, `[build]`, `[acceptance]`, `[gate]`, `[staging]`, `[[probes]]` | `[agents]` (and `[project]` base_branch, ticket_prefix, work, read for its prompts) |
 
-The scheduler applies every transition itself (the old rule "only the task system changes ticket
-state" holds) and owns the leases: no `task.working` before the lease ends means the assignee is
-gone, and the ticket goes back. Which machine answers is decided by who subscribes for that
-role; capacity is how many assignments of a role may be out at once.
+Neither imports the other. The agents package does no branching or worktree management (the
+task system prepares the workspace and names it in the offer) and changes no ticket itself:
+every change is a request on the bus that the task system applies.
 
-**Requests** (anyone who plans: the Supervisor, the Coordinator, a person, a script):
-`task.requested` (create), `task.change_requested`, `task.unblock_requested`,
-`task.cancel_requested`, `milestone.requested`. The scheduler validates each and answers with
-what happened (`ticket_created`, a transition, or `request_refused` with the reason). Reads stay
-an HTTP API (`/api/plugins/tasks/...`), which agents' tools call.
+## The protocol
 
-**Schedules**: a machine that runs on a clock (the Coordinator every 10 minutes) is woken by the
-task system's scheduler with `machine.due` {machine, reason}. Wake-ups on events need nothing:
-the machine subscribes to the events.
+Everything goes over Orchestra's bus as CloudEvents, so Orchestra observes the coordination (the
+lesson of Beads: publish decisions, not storage changes). The ticket is the `subject`.
 
-## 4. When the machines are not AI agents
+- **Assignment**: `task.assigned` from the scheduler to a role; `task.accepted`, `task.working`,
+  `task.reported` from the machine instance that took it; `task.released` from the scheduler.
+  The table with every field is the docstring of `tasking/assignments.py`; the agents implement
+  the same names in `orchestra_agents/protocol.py`.
+- **Requests**: `task.requested`, `task.change_requested`, `task.note_requested`,
+  `task.cancel_requested`, `task.unblock_requested`, `milestone.requested`,
+  `milestone.change_requested`, `milestone.close_requested`, `capacity.change_requested`,
+  `pipeline.resume_requested`, and `task.query_requested` with an `op`; answered with
+  `request.done` or `request.refused` (`tasking/requests.py`).
+- **Attention**: `task.attention_needed` {to: role, reason, ticket?} from the task system to a
+  planner role (`coordinator`, `supervisor`): names, which the agents package gives programs.
+- **Announcement**: `orchestra.machine.started` from every machine; Orchestra's Machines page
+  reads `mode`, `listens_for`, `log` and `package` and passes the rest to the package's card.
+
+## When the machines are not AI agents
 
 | Role | As an AI agent (orchestra-agents) | As something else |
 |---|---|---|
-| Supervisor (the human's way in) | as now | a program that turns the CLI and the chat box into `task.requested` events; or none, with the Tickets page offering "new task" |
-| Coordinator | as now | deterministic checks (dependencies on cancelled tickets, a milestone whose tickets are all done) as a small program; or none: the task system runs without one |
-| Worker | as now | a script per kind of task (`task.assigned` → run a command in the workspace → `task.reported`); a person, through a work queue page |
-| Reviewer | as now | automatic checks (a test, a schema); a person, with approve and reject on the ticket |
+| Supervisor (the human's way in) | as there | a script that sends requests (`tasking api`, `demo/run.py`) |
+| Coordinator | as there | none: the task system runs without one; its attention events go unanswered |
+| Worker | as there | `demo/machines/shell_worker.py`: a ticket's ```` ```sh ```` blocks, run in its workspace |
+| Reviewer | as there | `demo/machines/check_reviewer.py`: RESULT.md and the acceptance text's files and lines |
 
-What the task system must not assume, and today does: that an assignee has a session, a
-transcript, a prompt or a harness; that a report comes from a tool call; that the Supervisor
-exists; that roles are AI roles. Roles in the task system become plain names with a capacity
-and a lease; their job descriptions, prompts and teams are the agents package's.
+A person as a worker or reviewer would be a human acting other than through a planner, which
+Orchestra's rule 9 does not allow today; human roles wait on that decision.
 
-Open question: a person as a worker or reviewer is a human acting in the system other than
-through the Supervisor, which Orchestra's rule 9 does not allow today. Either that rule becomes
-"humans act only through machines that say so" or human roles wait.
+## Steps, as they went
 
-## 5. Steps
+1. The protocol inside orchestra-tasking: assign and apply over the bus, leases, releases;
+   planners' changes as requests (commits `885fe5f`, `1df3367`, `cc3f170`).
+2. orchestra-agents created with everything in its column, its own tests, meeting the task
+   system only on the bus.
+3. orchestra-tasking stripped of the agents (`344364d`), then of every last trace of them: no
+   session in an acceptance or on a ticket, no `[agents]` compatibility, no harness options in
+   the CLI (`f586dfc`).
+4. The demo with two programs filling the roles, and an e2e test that runs it through a real
+   Orchestra (`f523797`).
 
-1. **The protocol inside orchestra-tasking.** *(Done.)* The scheduler assigns by publishing
-   `task.assigned` and applies `task.reported`, owns the leases (`task.working` extends one, and
-   one that runs out is released, `task.released`, and its ticket goes back as a crash); the
-   machine that accepts owns the ticket. An adapter in the same process (`tasking/runner.py`)
-   runs the agents on assignments. Tests run the whole flow through the bus, and a lease that
-   runs out. *(Done.)* The planners' changes are requests too: an agent's tool publishes
-   `task.requested`, `task.unblock_requested`, … and waits for the scheduler's desk to answer
-   (`tasking/requests.py`); reads, the agents' reports to their runner, the project context and
-   escalations stay the agents' own until they move. `[agents] serves` says which roles the AI
-   agents fill; when two machines accept one assignment the first keeps it.
-2. **A non-AI worker** (a script that answers `task.assigned` for a role) and the demo project
-   using it, to prove the task system no longer needs agents.
-3. **orchestra-agents**, a new repository and plugin: the harnesses, sessions, prompts, roles,
-   teams, Supervisor chat and Agents page move there, with their tests; it runs as its own
-   process (`agents run`), subscribing for the roles it serves. orchestra-tasking loses them.
-4. **The demo installs three packages** and works as before, then with the script worker in
-   place of the AI worker.
-5. Later: Orchestra's lease-aware subscriptions take over the leases; `orchestra run` starts
-   the plugins' processes; the agents get the system dynamics tools.
+Later, and not decided: Orchestra's lease-aware subscriptions taking over the leases;
+`orchestra run` starting the plugins' processes; batching and bisection in the gate.

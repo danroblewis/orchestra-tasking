@@ -1,4 +1,4 @@
-"""Tickets, milestones, notes, and the state machine. See SPEC.md section 3."""
+"""Tickets, milestones, notes, and the state machine. SPEC.md section 2."""
 
 from __future__ import annotations
 
