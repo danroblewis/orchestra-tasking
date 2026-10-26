@@ -322,7 +322,7 @@ def router(project) -> APIRouter:
             jobs = [{"session": s["id"], "ticket": s.get("ticket"), "text": (s.get("partial_text") or s.get("last_text") or "")[-160:]}
                     for s in mine if s.get("status") == "running"]
             alive = any(_alive(s.get("pid")) for s in mine)
-            out.append({"id": a.name, "name": a.name, "kind": "agent", "description": a.description, "team": a.team,
+            out.append({"id": a.name, "name": a.name, "kind": "agent", "description": a.description, "team": a.team, "session_id": a.session_id,
                         "resident": a.resident, "paused": bool(store.agent_state(a.name).get("paused")),
                         "status": "working" if jobs else ("waiting" if alive else "not running"), "jobs": jobs})
         loop = store.runtime().get("control") or {}

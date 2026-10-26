@@ -69,6 +69,7 @@ class ControlServer:
                     emit({"type": "done", "error": str(e)})
 
         self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        self.port = self._server.server_address[1]          # port 0: the one the system chose
         self.prompt_supervisor = prompt_supervisor
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True, name="control")
 

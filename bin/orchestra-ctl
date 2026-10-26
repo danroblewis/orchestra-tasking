@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Orchestra watching this repository: its host and web UI, run from this repository's environment
 # (.venv, `uv sync`), where Orchestra is installed with the task system's plugin (its Tickets and
-# Agents pages). The task system's loop (`tasking run`) is started apart: it runs AI agents.
+# Agents pages), and the task system's loop (`tasking run`, "tasks"), which runs AI agents.
 #   bin/orchestra-ctl start | stop | status | restart <name>
 set -euo pipefail
 cd "$(dirname "$0")/.."
 RUN=run; mkdir -p "$RUN"
 PY=.venv/bin/python; PORT="${PORT:-8060}"
-NAMES="host web"
+NAMES="host web tasks"
 start() {
   local name=$1; shift
   if [ -f "$RUN/$name.pid" ] && kill -0 "$(cat "$RUN/$name.pid")" 2>/dev/null; then echo "$name: already running"; return; fi
@@ -15,10 +15,11 @@ start() {
   echo $! > "$RUN/$name.pid"; echo "$name: started (pid $!)"
 }
 stop() { local n=$1; if [ -f "$RUN/$n.pid" ]; then kill "$(cat "$RUN/$n.pid")" 2>/dev/null || true; rm -f "$RUN/$n.pid"; echo "$n: stopped"; fi; }
-one() { case $1 in host) start host "$PY" -m orchestra run ;; web) start web "$PY" -m orchestra web --port "$PORT" ;; esac; }
+one() { case $1 in host) start host "$PY" -m orchestra run ;; web) start web "$PY" -m orchestra web --port "$PORT" ;;
+        tasks) start tasks "$PY" -m tasking run ;; esac; }
 case "${1:-status}" in
   start) for n in $NAMES; do one "$n"; done; echo "web: http://127.0.0.1:$PORT" ;;
-  stop) for n in web host; do stop "$n"; done ;;
+  stop) for n in tasks web host; do stop "$n"; done ;;
   restart) n="${2:?which: $NAMES}"; stop "$n"; one "$n" ;;
   status) for n in $NAMES; do if [ -f "$RUN/$n.pid" ] && kill -0 "$(cat "$RUN/$n.pid")" 2>/dev/null; then echo "$n: running"; else echo "$n: stopped"; fi; done ;;
   *) echo "usage: $0 start | stop | status | restart <name>"; exit 2 ;;

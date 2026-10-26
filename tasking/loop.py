@@ -740,12 +740,13 @@ class Loop:
                 log(f"{sid}: could not start: {e}")
 
     def _start_control(self) -> None:
-        port = int(self.cfg.raw.get("agents", {}).get("control_port", 8010))
+        port = int(self.cfg.raw.get("agents", {}).get("control_port", 0))   # 0: any free port; it is recorded for the web
         try:
             self.control = ControlServer(port, self.prompt_supervisor)
             self.control.start()
+            port = self.control.port
             self.store._mutate_runtime(lambda d: d.__setitem__("control", {"port": port, "pid": os.getpid()}))
-            log(f"control endpoint on 127.0.0.1:{port} (orchestra chat attaches here)")
+            log(f"control endpoint on 127.0.0.1:{port} (tasking chat and the web attach here)")
         except OSError as e:
             log(f"control endpoint unavailable on port {port}: {e}")
 

@@ -15,6 +15,7 @@
 <div class="layout two">
   <div class="col on">
     <div class="col-head"><h1>Agents</h1><span class="sub" id="agents-sub"></span></div>
+    <button class="ctl" style="margin-bottom:10px" onclick="openTranscript('supervisor')">💬 Talk to the Supervisor</button>
     <div id="loop" class="panel"></div>
     <div id="agents"></div>
   </div>
@@ -50,7 +51,10 @@ function render() {
   const ms = AGENTS.agents.map((a) => ({ ...a, engagement: [{ mode: a.resident ? "continuous" : "per ticket", driver: "harness" }], flows: [], bootstrap: false }));
   const working = ms.reduce((n, m) => n + m.jobs.length, 0);
   $("agents-sub").textContent = `${ms.length} agents · ${working} job${working === 1 ? "" : "s"}`;
-  $("agents").innerHTML = ms.map((m) => machineCard(m)).join("") || `<div class="empty">No agents defined.</div>`;
+  // a resident agent's card opens its transcript; the Supervisor's has the message box, the human's one way in
+  $("agents").innerHTML = ms.map((m) => m.resident
+    ? `<div style="cursor:pointer" title="${m.id === "supervisor" ? "Talk to the Supervisor" : "Open its transcript"}" onclick="openTranscript('${esc(m.session_id)}')">${machineCard(m)}</div>`
+    : machineCard(m)).join("") || `<div class="empty">No agents defined.</div>`;
 }
 
 async function control(body) {
