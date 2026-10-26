@@ -55,13 +55,13 @@ def test_version_conflict_and_blocked_reason(project):
     store.transition(t.id, t.version, State.BLOCKED, blocked_reason="need creds")
 
 
-def test_operator_capacity_is_the_ceiling_the_coordinator_dials_under(project):
+def test_operator_capacity_is_the_ceiling_a_planner_dials_under(project):
     store = LocalStore(project)
     base = store.capacity()
     assert base["max_workers"] == base["configured_workers"] and not base["operator_set"]
     cap = store.set_operator_capacity(base["configured_workers"] + 3, None)
     assert cap["max_workers"] == base["configured_workers"] + 3 and cap["workers"] == cap["max_workers"]   # live, above the file's number
-    store.set_capacity(1, None, note="model is slow", by="coordinator")
+    store.set_capacity(1, None, note="slow today", by="coordinator")
     cap = store.capacity()
     assert cap["workers"] == 1 and cap["max_workers"] == base["configured_workers"] + 3                     # the dial sits under the ceiling
     store.set_capacity(99, None, by="coordinator")
@@ -75,8 +75,6 @@ def test_operator_capacity_is_the_ceiling_the_coordinator_dials_under(project):
 def test_config_durations():
     cfg = Config.from_toml('[tasks]\nworkers = 2\n[build]\ntimeout = "2m"\n[[gate.unit]]\nname="u"\ncommand="true"\n')
     assert cfg.build_timeout == 120 and cfg.workers == 2 and cfg.unit[0].command == "true"
-    old = Config.from_toml('[agents]\nworkers = 4\nreviewers = 2\n')        # before the agents left, these were [agents]
-    assert (old.workers, old.reviewers) == (4, 2)
 
 
 @pytest.mark.parametrize("n", range(1, 9))

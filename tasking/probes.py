@@ -1,10 +1,10 @@
-"""Probes: conditions Orchestra checks on an interval and turns into events.
+"""Probes: conditions the scheduler checks on an interval and turns into events.
 
 A probe is a command with a schedule, declared in ``orchestra.toml`` (``[[probes]]``). Exit 0
-means the condition holds. Orchestra remembers each probe's last state and emits
+means the condition holds. The scheduler remembers each probe's last state and emits
 ``probe_failed`` and ``probe_recovered`` only on the transition, so a failing probe wakes
-the agents subscribed to it once, not every interval. Agents never run probes; Orchestra
-supplies the clock and the event, the repository or the team supplies the check."""
+whatever listens for it once, not every interval. The task system supplies the clock and the
+event; the repository supplies the check."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Project
@@ -37,9 +37,6 @@ class ProbeSpec:
     every: float                 # seconds
     timeout: float = 120.0
     cwd: Path | None = None
-    team: str | None = None
-    path_dirs: tuple[str, ...] = ()
-    env: dict[str, str] = field(default_factory=dict)
 
 
 def _spec(d: dict, project: Project) -> ProbeSpec:
@@ -88,10 +85,8 @@ class Prober:
                 self.store.set_probe_state(name, removed=True)
 
     def _run(self, s: ProbeSpec) -> None:
-        env = {**os.environ, **s.env, "ORCHESTRA_REPO": str(self.project.repo_root), "ORCHESTRA_PROBE": s.name,
+        env = {**os.environ, "ORCHESTRA_REPO": str(self.project.repo_root), "ORCHESTRA_PROBE": s.name,
                "STAGING_URL": staging_url(self.project)}
-        if s.path_dirs:
-            env["PATH"] = os.pathsep.join([*s.path_dirs, env.get("PATH", "")])
         started = time.time()
         try:
             p = subprocess.run(s.command, shell=True, cwd=str(s.cwd or self.project.repo_root), env=env,
@@ -104,11 +99,11 @@ class Prober:
         status = "ok" if ok else "failed"
         prev = self.store.probe_state(s.name).get("status")
         fields = {"status": status, "last_run": started, "duration": time.time() - started, "output": output,
-                  "every": s.every, "team": s.team, "command": s.command, "removed": False}
+                  "every": s.every, "command": s.command, "removed": False}
         if prev != status:
             fields["since"] = started
         self.store.set_probe_state(s.name, **fields)
         if status == "failed" and prev != "failed":
-            self.events.emit("probe_failed", probe=s.name, team=s.team, output=output[-600:])
+            self.events.emit("probe_failed", probe=s.name, output=output[-600:])
         elif status == "ok" and prev == "failed":
-            self.events.emit("probe_recovered", probe=s.name, team=s.team)
+            self.events.emit("probe_recovered", probe=s.name)

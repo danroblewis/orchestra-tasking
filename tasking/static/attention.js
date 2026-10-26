@@ -1,15 +1,11 @@
 // Blocked tickets, on every page of Orchestra's web UI (a plugin script: Orchestra loads it and
 // knows nothing of it): a banner under the navigation that says which tickets wait for a decision,
 // "(n)" in the tab's title, and the ticket a click away. A blocked ticket is answered by whoever
-// plans the work (the Supervisor, when orchestra-agents is installed: its own attention script then
-// shows these tickets beside the Supervisor's messages, and this one stands aside).
-(async function () {
+// plans the work; a package that shows these tickets in its own way calls
+// window.TaskAttention.standAside() and this banner stays hidden.
+(function () {
   const API = "/api/plugins/tasks";
   const POLL_MS = 5000;
-  try {
-    const p = await (await fetch("/api/plugins")).json();
-    if ((p.scripts || []).some((s) => s.startsWith("/plugins/agents/") && s.endsWith("/attention.js"))) return;
-  } catch (e) { /* no listing: show the banner */ }
   window.__tasksJs = window.__tasksJs || new Promise((ok) => { const s = document.createElement("script"); s.src = "/plugins/tasks/static/tasks.js"; s.onload = ok; s.onerror = ok; document.head.appendChild(s); });
 
   const css = document.createElement("style");
@@ -24,7 +20,7 @@
     @media (max-width:640px) { .att-bar .att-what { white-space:normal } }`;
   document.head.appendChild(css);
 
-  let A = { blocked: [], count: 0 }, dismissed = "";
+  let A = { blocked: [], count: 0 }, dismissed = "", aside = false;
   const baseTitle = document.title;
   const sig = () => JSON.stringify(A.blocked.map((b) => b.id));
   const e_ = (s) => (typeof esc === "function" ? esc(s) : String(s ?? ""));
@@ -34,8 +30,8 @@
   if (nav) nav.insertAdjacentElement("afterend", bar);
 
   function render() {
-    document.title = (A.count ? `(${A.count}) ` : "") + baseTitle;
-    const show = A.blocked.length && sig() !== dismissed;
+    document.title = (A.count && !aside ? `(${A.count}) ` : "") + baseTitle;
+    const show = !aside && A.blocked.length && sig() !== dismissed;
     bar.classList.toggle("on", !!show);
     if (show) bar.innerHTML = `<span>⚠</span><span class="att-what"><b>${A.blocked.length} ticket${A.blocked.length === 1 ? " is" : "s are"} blocked</b> waiting for a decision: `
       + A.blocked.slice(0, 5).map((b) => `<a title="${e_(b.reason)}" onclick="window.TaskAttention.ticket('${e_(b.id)}')">${e_(b.id)}</a>`).join(", ")
@@ -45,6 +41,7 @@
   window.TaskAttention = {
     ticket: (id) => window.__tasksJs.then(() => openTicket(id)),
     dismiss: () => { dismissed = sig(); render(); },
+    standAside: () => { aside = true; render(); },
   };
   async function refresh() {
     try { const d = await (await fetch(API + "/attention")).json(); if (d.ok) { A = d; render(); } }

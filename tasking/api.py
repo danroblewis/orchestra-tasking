@@ -1,7 +1,8 @@
 """The task system's operations on tickets, milestones, capacity, the gate and staging: what a
-planner's request asks for (tasking/requests.py, applied by the scheduler's desk), and what
-`tasking api` and the web server call. ``by`` (the role) is whoever asked, as the request said;
-which agent may ask for what is the agents' to decide (orchestra-agents checks its grants)."""
+planner's request asks for (tasking/requests.py), applied by the scheduler's desk. ``role`` is
+whoever asked, as the request said: it names the author of what it makes, and a few operations
+are kept for the planner roles that own them (the objective is the supervisor's; capacity is the
+coordinator's or the supervisor's)."""
 
 from __future__ import annotations
 
@@ -18,15 +19,9 @@ def _ticket_view(store: LocalStore, ticket_id: str) -> dict:
     return t
 
 
-def handle(project: Project, store: LocalStore, command: str, args: dict[str, Any],
-           role: str = "", ticket_env: str = "", direct: bool = False) -> dict:
+def handle(project: Project, store: LocalStore, command: str, args: dict[str, Any], role: str = "") -> dict:
     a = args or {}
     author = role or "orchestra"
-    # An agent's change to tickets or milestones is a request to the task system, over the bus
-    # (tasking/requests.py); the scheduler's desk applies it here, with direct=True.
-    from . import requests
-    if not direct and (command in requests.REQUESTS or command in requests.QUERIES) and requests.via_bus():
-        return requests.ask(project, command, a, role)
 
     if command == "project_status":
         snap = store.snapshot()
@@ -86,7 +81,7 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
         changes = {k: a[k] for k in ("title", "description", "acceptance", "objective", "verification",
                                      "priority", "milestone_id", "depends_on") if k in a and a[k] is not None}
         if role == "coordinator" and "objective" in changes:
-            raise StoreError("the coordinator may not change a ticket's objective; use escalate_to_supervisor")
+            raise StoreError("the coordinator may not change a ticket's objective; that is the supervisor's")
         return {"ok": True, "ticket": store.update_ticket(a["id"], None, **changes).to_dict()}
 
     if command == "add_note":
@@ -98,7 +93,7 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
         if t.state in TERMINAL:
             raise StoreError(f"{t.id} is already {t.state}")
         if t.state in ACTIVE:
-            raise StoreError(f"{t.id} is {t.state} with a live agent; wait for it to settle, then cancel")
+            raise StoreError(f"{t.id} is {t.state}: someone holds it; wait for it to settle, then cancel")
         store.add_note(t.id, Note(author=author, text=f"cancelled: {a.get('reason', '')}"))
         t = store.transition(t.id, t.version, State.CANCELLED)
         return {"ok": True, "ticket": t.to_dict()}

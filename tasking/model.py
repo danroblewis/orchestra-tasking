@@ -72,7 +72,7 @@ class MilestoneStatus(StrEnum):
 
 @dataclass
 class Note:
-    author: str  # worker | reviewer | merge_gate | supervisor | coordinator | orchestra
+    author: str  # worker | reviewer | merge_gate | orchestra (the task system itself) | a planner's role
     text: str
     kind: str = "note"  # note | review | gate | blocker
     created_at: str = field(default_factory=now)
@@ -117,9 +117,7 @@ class Ticket:
     priority: int = 5
     depends_on: list[str] = field(default_factory=list)
     branch: str | None = None
-    worker_session: str | None = None
     owner: str | None = None        # the machine instance working it now (worker/1, reviewer/2); set by the scheduler
-    reviewer_session: str | None = None
     reviewed_commit: str | None = None
     blocked_reason: str | None = None
     feedback: str | None = None
@@ -128,7 +126,7 @@ class Ticket:
     worker_turns: int = 0         # times a worker was opened for this ticket (re-engagements = turns - 1)
     reviewer_rejections: int = 0  # how many of those turns followed a reviewer rejection
     gate_rejections: int = 0      # how many followed a merge-gate send-back (test failure or conflict)
-    created_by: str = "supervisor"
+    created_by: str = ""         # the role that asked for it
     version: int = 1
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)

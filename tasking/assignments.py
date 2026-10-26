@@ -1,20 +1,21 @@
 """Assignment: how the task system gives a ticket to whoever fills a role, over Orchestra's bus.
 
-The scheduler does not start the machine that does the work. It offers the work to a role, and
-whatever machine serves that role answers (orchestra-agents' AI agents, a script, anything that
-speaks this): docs/proposals/agents-split.md.
+The scheduler does not start the machine that does the work. It offers the work to a role
+(``worker``, ``reviewer``), and whatever machine serves that role answers: a program, a person's
+tool, a machine from another package, anything that speaks this. The ticket is every event's
+subject; ``assignment`` is the id that ties an offer to its answers.
 
 | Event | From | Data |
 |---|---|---|
-| ``task.assigned`` | task_scheduler | assignment, role, ticket, kind (work or review), workspace, branch, lease_s, the brief (the ticket's fields); a code worker's unit_command; a reviewer's review (the worker's summary; in code mode the commit and the unit tests' output, run by the scheduler) |
-| ``task.accepted`` | the machine instance (worker/1) | assignment, instance, session |
-| ``task.working`` | the instance | assignment (a heartbeat: the lease goes on) |
-| ``task.reported`` | the instance | assignment, report (a worker's: state READY_FOR_REVIEW or BLOCKED with a summary or reason; a reviewer's: verdict APPROVED or REJECTED with feedback; none when it ended without one), failed, text |
-| ``task.released`` | task_scheduler | assignment, reason (the lease ran out; the operator stopped it) |
+| ``task.assigned`` | task_scheduler | assignment, role, ticket, kind (work or review), workspace (a folder; in code mode a git worktree), branch (null in tasks mode), lease_s, brief (the ticket's fields: id, title, objective, description, acceptance, verification, feedback, rejected_by, review_rounds, priority, milestone_id, depends_on, branch, reviewed_commit, worker_turns); a code worker's unit_command; a reviewer's review {summary (the worker's), commit, test_output} (in code mode the scheduler runs the unit tests before offering the review) |
+| ``task.accepted`` | the machine instance (worker/1) | assignment, instance. The first to accept holds it; a later one is told ``task.released`` with the reason |
+| ``task.working`` | the instance | assignment (a heartbeat every ``HEARTBEAT_S``: the lease goes on) |
+| ``task.reported`` | the instance | assignment, report (a worker's: state READY_FOR_REVIEW or BLOCKED, summary, blocked_reason; a reviewer's: verdict APPROVED or REJECTED, summary, feedback; null when it ended without one), failed, text, commit (a reviewer's, in code mode) |
+| ``task.released`` | task_scheduler | assignment, reason (the lease ran out; the operator stopped it; another instance holds it; the task system shut down). The machine stops what it was doing |
 
 The scheduler applies every ticket transition itself, from these, and owns the leases: an
 assignment with no word from its machine for ``LEASE_S`` is released and its ticket goes back to
-waiting (no zombies). The ticket is every event's subject."""
+waiting (no zombies)."""
 
 from __future__ import annotations
 

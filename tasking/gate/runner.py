@@ -161,7 +161,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
             return
         store.add_note(tid, Note(author="merge_gate", kind="gate", text=reason[-4000:]))
         # A merge conflict is routine: the branch simply needs the base merged in. It goes
-        # straight back to the ticket's own worker session and does not count as a review
+        # straight back to the ticket's worker and does not count as a review
         # round, so it never triggers the repeated-rejection escalation.
         rounds = t.review_rounds if conflict else t.review_rounds + 1
         store.transition(tid, t.version, State.REJECTED, rejected_by="merge_gate", feedback=reason[-8000:],

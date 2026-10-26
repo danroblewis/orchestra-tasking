@@ -46,7 +46,7 @@ def test_a_task_is_done_in_its_folder_and_reviewed_with_nothing_merged(env):
     assert review["review"] == {"summary": "wrote RESULT.md"} and review["branch"] is None
 
 
-def test_the_scheduler_is_a_program_and_runs_no_agent(env):
+def test_the_scheduler_is_a_program_and_starts_no_machine(env):
     project, store, events, repo = env
     ms = store.create_milestone(name="m")
     store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
@@ -59,8 +59,7 @@ def test_the_scheduler_is_a_program_and_runs_no_agent(env):
 
 def test_work_is_assigned_over_the_bus_and_the_machine_that_accepts_owns_it(env):
     """The scheduler offers the ticket to a role (task.assigned); the machine that serves it
-    accepts (and so owns the ticket), and reports (task.reported); the scheduler applies it.
-    docs/proposals/agents-split.md."""
+    accepts (and so owns the ticket), and reports (task.reported); the scheduler applies it."""
     project, store, events, repo = env
     ms = store.create_milestone(name="m")
     t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")

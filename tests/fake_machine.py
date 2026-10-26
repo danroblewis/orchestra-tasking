@@ -1,7 +1,6 @@
 """A machine that fills the task system's roles for its tests, speaking only the assignment
 protocol on the bus (tasking/assignments.py): it accepts what is offered to its roles, does the
-work, and reports. No agent and no harness: what the scheduler does with the answers is under
-test, not who gives them.
+work, and reports. What the scheduler does with the answers is under test, not who gives them.
 
 - worker: in a task's folder it writes RESULT.md; in a code worktree it adds a line to WORK.md
   and commits. ``block`` reports BLOCKED instead; ``break_first`` also deletes README.md on the
@@ -48,7 +47,7 @@ class FakeMachine:
         inst = f"{role}/1"
         say = lambda kind, **d: self.events.publish(kind, {"assignment": a["assignment"], "ticket": tid, "role": role, **d},
                                                     source=inst, subject=tid)
-        say(ACCEPTED, instance=inst, session=f"fake-{role}-{tid}")
+        say(ACCEPTED, instance=inst)
         report, commit = (self._work if role == "worker" else self._review)(a, Path(a["workspace"]))
         say(REPORTED, report=report, failed=False, text="done", commit=commit)
 

@@ -4,10 +4,9 @@ import subprocess
 
 import pytest
 
-from tasking import api
 from tasking.config import init_project
 from tasking.events import Events
-from tasking.requests import Desk
+from tasking.requests import Desk, ask
 from tasking.store import LocalStore
 
 
@@ -18,24 +17,23 @@ def env(tmp_path, monkeypatch):
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
     p = init_project(repo, prefix="T")
-    store = LocalStore(p, Events(p.events_file, source="task_scheduler"))
-    desk = Desk(p, store, Events(p.events_file, source="task_scheduler"), log=lambda m: None)
+    store = LocalStore(p, Events(p.events_file))
+    desk = Desk(p, store, Events(p.events_file), log=lambda m: None)
     desk.start()
     yield p, store
     desk.stop.set()
 
 
-def test_an_agents_change_is_a_request_the_scheduler_applies_and_answers(env, monkeypatch):
+def test_a_planners_change_is_a_request_the_scheduler_applies_and_answers(env):
     p, store = env
-    monkeypatch.setenv("TASKING_REQUESTS", "bus")                     # as in an agent's session
-    monkeypatch.setenv("ORCHESTRA_SOURCE", "supervisor")
-    agent_store = LocalStore(p, Events(p.events_file))                 # the tool's own, in the agent's process
-    m = api.handle(p, agent_store, "create_milestone", {"name": "M"}, role="supervisor")
+    planner = Events(p.events_file, source="supervisor")                # the planner's own process
+    m = ask(planner, "create_milestone", {"name": "M"}, "supervisor")
     assert m["ok"] and m["milestone"]["id"] == "M1"
-    t = api.handle(p, agent_store, "create_ticket", {"title": "a task", "milestone_id": "M1", "description": "x"}, role="supervisor")
-    assert t["ok"] and store.get_ticket(t["ticket"]["id"]).title == "a task"
-    bad = api.handle(p, agent_store, "create_ticket", {"title": "lost", "milestone_id": "M9"}, role="supervisor")
+    t = ask(planner, "create_ticket", {"title": "a task", "milestone_id": "M1", "description": "x"}, "supervisor")
+    assert t["ok"] and store.get_ticket(t["ticket"]["id"]).title == "a task" and store.get_ticket(t["ticket"]["id"]).created_by == "supervisor"
+    bad = ask(planner, "create_ticket", {"title": "lost", "milestone_id": "M9"}, "supervisor")
     assert bad["ok"] is False and "M9" in bad["error"]
+    assert ask(planner, "no_such_op", {}, "supervisor")["ok"] is False
     evs = Events(p.events_file).bus.read(0, limit=1000)[0]
     asked = [(e["type"], e["source"]) for e in evs if e["type"].endswith("requested")]
     answered = [(e["type"], e["source"]) for e in evs if e["type"].startswith("request.")]
@@ -45,13 +43,10 @@ def test_an_agents_change_is_a_request_the_scheduler_applies_and_answers(env, mo
     assert created and all(e["source"] == "task_scheduler" for e in created)     # the task system made it, on request
 
 
-def test_reads_are_queries_the_desk_answers(env, monkeypatch):
-    p, store = env
-    monkeypatch.setenv("TASKING_REQUESTS", "bus")
-    monkeypatch.setenv("ORCHESTRA_SOURCE", "coordinator")
-    agent_store = LocalStore(p, Events(p.events_file))
-    api.handle(p, agent_store, "create_milestone", {"name": "M"}, role="supervisor")
-    got = api.handle(p, agent_store, "list_milestones", {}, role="coordinator")
+def test_reads_are_queries_the_desk_answers(env):
+    p, _store = env
+    ask(Events(p.events_file, source="supervisor"), "create_milestone", {"name": "M"}, "supervisor")
+    got = ask(Events(p.events_file, source="coordinator"), "list_milestones", {}, "coordinator")
     assert got["ok"] and [m["id"] for m in got["milestones"]] == ["M1"]
     queries = [e for e in Events(p.events_file).bus.read(0, limit=100)[0] if e["type"] == "task.query_requested"]
     assert [(e["data"]["op"], e["source"]) for e in queries] == [("list_milestones", "coordinator")]

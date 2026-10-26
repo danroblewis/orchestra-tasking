@@ -1,8 +1,7 @@
 """The task system's scheduler: it offers ready tickets to the roles that work them (a worker, a
 reviewer) over Orchestra's bus, applies what the machines that took them report, lands approved
-code through the merge gate, and runs the probes in ``orchestra.toml``. It runs no agent: whatever
-fills a role answers (orchestra-agents' AI agents, a script; tasking/assignments.py). SPEC.md
-section 6."""
+code through the merge gate, and runs the probes in ``orchestra.toml``. It starts no machine:
+whatever fills a role answers (tasking/assignments.py). SPEC.md section 4."""
 
 from __future__ import annotations
 
@@ -27,23 +26,23 @@ from .events import Events
 from .gate import run_gate
 from .gate.runner import run_specs
 from .git import Git, GitError
-from .model import ACTIVE, RECOVERY, Note, State, Ticket, effective_priorities, is_ready
+from .model import ACTIVE, RECOVERY, Note, State, Ticket, effective_priorities, is_ready, now
 from .probes import Prober, config_probes
 from .staging import Staging
 from .store import Conflict, LocalStore, StoreError
 
-HOST_LOG: Path | None = None          # <state>/logs/orchestra-host.log once a loop starts
-HOST_LOG_MAX = 5_000_000              # bytes; the file is rotated to .1 past this
+LOG: Path | None = None               # <state>/logs/scheduler.log once a scheduler starts
+LOG_MAX = 5_000_000                   # bytes; the file is rotated to .1 past this
 
 
 def log(msg: str) -> None:
-    line = f"[orchestra {time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    line = f"[tasking {time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
     print(line, flush=True)
-    if HOST_LOG is not None:            # the bootstrap machine's log, shown on the Core page
+    if LOG is not None:                 # the scheduler's log, announced to Orchestra's Machines page
         try:
-            if HOST_LOG.exists() and HOST_LOG.stat().st_size > HOST_LOG_MAX:
-                HOST_LOG.replace(HOST_LOG.with_suffix(".log.1"))
-            with HOST_LOG.open("a", encoding="utf-8") as f:
+            if LOG.exists() and LOG.stat().st_size > LOG_MAX:
+                LOG.replace(LOG.with_suffix(".log.1"))
+            with LOG.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except OSError:
             pass
@@ -51,9 +50,9 @@ def log(msg: str) -> None:
 
 class Loop:
     def __init__(self, project: Project, store: LocalStore, events: Events):
-        global HOST_LOG
-        HOST_LOG = project.logs_dir / "orchestra-host.log"
-        HOST_LOG.parent.mkdir(parents=True, exist_ok=True)
+        global LOG
+        LOG = project.logs_dir / "scheduler.log"
+        LOG.parent.mkdir(parents=True, exist_ok=True)
         self.project = project
         self.store = store
         self.events = events
@@ -82,7 +81,7 @@ class Loop:
             if run.get("status") == "running":
                 run["status"] = "aborted"
                 run["summary"] = "orchestrator restarted during the run"
-                run["finished_at"] = run.get("finished_at") or __import__("tasking.model", fromlist=["now"]).now()
+                run["finished_at"] = run.get("finished_at") or now()
                 self.store.save_gate_run(run)
         for p in self.project.gate_dir.glob("*"):
             self.git.worktree_remove(p)
@@ -101,14 +100,16 @@ class Loop:
             except ValueError:  # not the main thread (tests)
                 pass
         self.recover()
-        me = {"pid": os.getpid(), "started_at": time.time()}
-        self.store._mutate_runtime(lambda d: d.__setitem__("scheduler", me))
-        from .requests import REQUESTS, Desk
+        from .requests import QUERY, REQUESTS, Desk
         self.desk = Desk(self.project, self.store, self.events, log)   # planners' requests (tasking/requests.py)
         self.desk.start()
+        # the record says the scheduler is up: by then the desk listens, so a request sent now is heard
+        me = {"pid": os.getpid(), "started_at": time.time()}
+        self.store._mutate_runtime(lambda d: d.__setitem__("scheduler", me))
         self.events.emit("loop_started")
         self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
-                                                          "listens_for": sorted({*REQUESTS.values(), ACCEPTED, WORKING, REPORTED}),
+                                                          "listens_for": sorted({*REQUESTS.values(), QUERY, ACCEPTED, WORKING, REPORTED}),
+                                                          "log": str(LOG),
                                                           "does": "offers ready tickets to workers and reviewers and applies their reports"})
         log(f"project {self.project.key} on {self.project.repo_root}; workers={self.cfg.workers} reviewers={self.cfg.reviewers}")
         paused = self.store.pipeline()
@@ -195,7 +196,6 @@ class Loop:
                     log(f"{tid}: {a['role']} stopped by the operator")
                     self.events.publish(RELEASED, {"assignment": aid, "ticket": tid, "role": a["role"], "reason": "the operator stopped it"},
                                         subject=tid)
-                    self.events.emit("agent_killed", ticket=tid, session=f"{a['role']}-{tid}")
 
     def _reap(self) -> None:
         for k in [k for k, th in self.preparing.items() if not th.is_alive()]:
@@ -307,12 +307,10 @@ class Loop:
                                                "reason": f"already taken by {a['instance']}"}, subject=a["ticket"])
                 continue
             if ev["type"] == ACCEPTED:
-                a = self.store.update_assignment(aid, instance=ev.get("instance"), session=ev.get("session"),
-                                                 lease_until=time.time() + LEASE_S) or a
+                a = self.store.update_assignment(aid, instance=ev.get("instance"), lease_until=time.time() + LEASE_S) or a
                 t = self.store.get_ticket(a["ticket"])
-                if t.state in ACTIVE:                                     # the owner, and the session it works in, if it has one
-                    self.store.update_ticket(t.id, None, owner=ev.get("instance"),
-                                             **({f"{a['role']}_session": ev["session"]} if ev.get("session") else {}))
+                if t.state in ACTIVE:                                     # the instance that holds it is the ticket's owner
+                    self.store.update_ticket(t.id, None, owner=ev.get("instance"))
             elif ev["type"] == WORKING and ev.get("source") in (a.get("instance"), None):
                 self.store.update_assignment(aid, lease_until=time.time() + LEASE_S)
             elif ev["type"] == WORKING:
@@ -348,14 +346,14 @@ class Loop:
         if tid in self.killed:
             self.killed.discard(tid)
             self.store.add_note(tid, Note(author="orchestra", kind="note", text="worker stopped by the operator; ticket reset to OPEN"))
-            self.store.transition(tid, t.version, State.OPEN, feedback="Your previous turn was stopped by the operator. Check `git status` and `git log`, then continue from where you left off and report.")
+            self.store.transition(tid, t.version, State.OPEN, feedback="Your previous turn was stopped by the operator. Look at what is in the workspace, continue from there, then report.")
             log(f"{tid}: reset to OPEN after operator stop")
             return
         if report is None and self.stop.is_set():
             # The orchestrator is shutting down (restart or redeploy): that is not the
             # worker's fault, so reset without counting a crash.
             self.store.add_note(tid, Note(author="orchestra", kind="note", text="orchestrator shut down during this turn; ticket reset to OPEN"))
-            self.store.transition(tid, t.version, State.OPEN, feedback="Your previous turn was interrupted by an orchestrator restart. Check `git status` and `git log`, continue from where you left off, then report.")
+            self.store.transition(tid, t.version, State.OPEN, feedback="Your previous turn was interrupted by a restart of the task system. Look at what is in the workspace, continue from there, then report.")
             return
         if report is None:
             # Count only the trailing run of crash notes, so an unblock or any other note
@@ -366,14 +364,14 @@ class Loop:
                     break
                 crashes += 1
             if failed and crashes <= 2:
-                # The worker process died or timed out (often an orchestrator restart). That is
-                # not a decision for a human: keep the session and branch, retry from OPEN.
+                # The worker went away or its lease ran out. That is not a decision for a human:
+                # keep the workspace, retry from OPEN.
                 self.store.add_note(tid, Note(author="orchestra", kind="crash",
-                                              text=f"worker process ended without reporting (attempt {crashes}); retrying from its session"))
-                self.store.transition(tid, t.version, State.OPEN, feedback="Your previous turn ended unexpectedly. Check `git status` and `git log`, continue from where you left off, then report.")
+                                              text=f"the worker ended without reporting (attempt {crashes}); offered again"))
+                self.store.transition(tid, t.version, State.OPEN, feedback="Your previous turn ended unexpectedly. Look at what is in the workspace, continue from there, then report.")
                 log(f"{tid}: worker died; back to OPEN for retry ({crashes})")
                 return
-            reason = ("the worker process died or timed out repeatedly" if failed else "worker stopped without calling report_ticket")
+            reason = ("the worker went away or ran out its lease repeatedly" if failed else "the worker finished without a report")
             reason += f". Last message: {text[-600:]}" if text else "."
             self.store.add_note(tid, Note(author="orchestra", kind="blocker", text=reason))
             self.store.transition(tid, t.version, State.BLOCKED, blocked_reason=reason)
@@ -458,7 +456,7 @@ class Loop:
                               reviewer_rejections=t.reviewer_rejections + (1 if by == "reviewer" else 0))
         log(f"{tid}: REJECTED (round {rounds})")
         # Escalate when the threshold is crossed, and again at every further multiple of it,
-        # not on every rejection: the Coordinator should decide once, not be told 38 times.
+        # not on every rejection: the planner should decide once, not be told 38 times.
         th = self.cfg.review_rounds_before_escalation
         if th and rounds % th == 0:
             self.events.attention("coordinator", f"{tid} has been rejected {rounds} times; decide whether to narrow, split, or cancel it", ticket=tid)

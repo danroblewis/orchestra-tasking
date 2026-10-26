@@ -1,5 +1,5 @@
 """Local JSON backend plus the runtime store. One file lock serializes every
-read-modify-write across the loop, `tasking chat`, `tasking api`, and the web server."""
+read-modify-write across the scheduler and the web server."""
 
 from __future__ import annotations
 
@@ -293,8 +293,8 @@ class LocalStore:
 
     def capacity(self) -> dict:
         """Effective worker/reviewer capacity. The ceiling is the operator's number when one
-        is set from the Dashboard, otherwise orchestra.toml; the Coordinator's runtime dial
-        sits under that ceiling. The loop reads this every tick, so a change is live."""
+        is set from the Dashboard, otherwise orchestra.toml; a planner's dial (set_capacity)
+        sits under that ceiling. The scheduler reads this every tick, so a change is live."""
         cfg = self.project.config
         op = self._r().get("operator_capacity") or {}
         max_w = int(op.get("workers", cfg.workers))

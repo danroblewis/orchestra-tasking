@@ -1,7 +1,8 @@
 """The task system in Orchestra's web app (an Orchestra plugin, ``orchestra/plugins.py``): the
-Tickets page (the ticket graph), the Tasks panel, the scheduler's machine card, and the API they
-read, at ``/api/plugins/tasks``. The operator controls (pause pickup, capacity, stop whoever works
-a ticket) are the task system's own write paths. The agents are orchestra-agents' plugin."""
+Tickets page (the ticket graph), the Tasks panel, the scheduler's machine card, the blocked-ticket
+banner, and the API they read, at ``/api/plugins/tasks``. The operator controls (pause pickup,
+capacity, stop whoever works a ticket) are the only writes here; tickets change only through the
+scheduler (tasking/requests.py)."""
 
 from __future__ import annotations
 
@@ -51,83 +52,14 @@ def router(project) -> APIRouter:
 
     @r.get("/state")
     async def state() -> dict:
+        """The Tickets page: the snapshot (tickets with their readiness, milestones, assignments,
+        capacity, the pipeline), the last gate runs and whether the scheduler runs."""
         project.reload_config()
         snap = store.snapshot()
         snap["now"] = time.time()
         snap["gate_runs"] = store.gate_runs()[-30:]
-        snap["batch_size"] = 1  # the gate takes one ticket per run until batching lands
         snap["loop"] = scheduler()
         return snap
-
-    @r.get("/landings")
-    async def landings(hours: int = 24, bucket: int = 1) -> dict:
-        """Tickets landed on the base branch per bucket (bucket = hours per bar), from gate runs."""
-        from datetime import datetime, timezone
-        hours = max(1, min(hours, 24 * 30))
-        bucket = max(1, min(bucket, 24))
-        bsec = bucket * 3600
-        now_ts = time.time()
-        n = max(1, hours // bucket)
-        start = int(now_ts // bsec) * bsec - (n - 1) * bsec
-        buckets = [{"t": start + i * bsec, "landed": 0, "runs": 0, "failed": 0} for i in range(n)]
-        for r in store.gate_runs():
-            if not r.get("finished_at"):
-                continue
-            try:
-                ts = datetime.fromisoformat(r["finished_at"]).replace(tzinfo=timezone.utc).timestamp()
-            except Exception:
-                continue
-            i = int((ts - start) // bsec)
-            if 0 <= i < n:
-                buckets[i]["runs"] += 1
-                if r.get("status") == "landed":
-                    buckets[i]["landed"] += len(r.get("merged") or [])
-                elif r.get("status") in ("rejected", "base_broken", "error", "conflict"):
-                    buckets[i]["failed"] += 1
-        total = sum(b["landed"] for b in buckets)
-        return {"hours": hours, "bucket": bucket, "buckets": buckets, "total": total, "per_hour": round(total / hours, 2)}
-
-    @r.get("/burndown")
-    async def burndown(hours: int = 24) -> dict:
-        """Remaining (not DONE/CANCELLED) and total tickets over time, from the event log."""
-        from datetime import datetime, timezone
-        hours = max(1, min(hours, 24 * 30))
-        since = time.time() - hours * 3600
-        evs, _ = events.read(0, limit=200000)
-        total = remaining = 0
-        series: list[dict] = []
-        for e in evs:
-            t = e.get("type")
-            if t not in ("ticket_created", "ticket_transition"):
-                continue
-            try:
-                ts = datetime.fromisoformat(e["ts"]).replace(tzinfo=timezone.utc).timestamp()
-            except Exception:
-                continue
-            if t == "ticket_created":
-                total += 1; remaining += 1
-            else:
-                to, frm = e.get("to"), e.get("from")
-                if to in ("DONE", "CANCELLED") and frm not in ("DONE", "CANCELLED"):
-                    remaining -= 1
-            if ts >= since:
-                if not series:  # anchor the left edge at the window start with the value then
-                    series.append({"t": since, "remaining": remaining, "total": total})
-                series.append({"t": ts, "remaining": remaining, "total": total})
-        # Carry the current value to now so the chart reaches the right edge.
-        if not series:
-            series.append({"t": since, "remaining": remaining, "total": total})
-        series.append({"t": time.time(), "remaining": remaining, "total": total})
-        return {"hours": hours, "series": series[-2000:], "remaining": remaining, "total": total}
-
-    @r.get("/staging")
-    async def staging() -> dict:
-        from .staging import Staging
-        project.reload_config()
-        st = Staging(project, store, events)
-        state = st.state()
-        build = store.runtime().get("builds", {}).get(state.get("current_build_id") or "")
-        return {**state, "build": build, "log": st.logs(), "health_path": project.config.staging_health}
 
     @r.post("/control")
     async def control(request: Request) -> dict:
@@ -177,8 +109,8 @@ def router(project) -> APIRouter:
 
     @r.get("/attention")
     async def attention() -> dict:
-        """What waits on a human: blocked tickets (a worker could not go on). Read on every page
-        (static/attention.js)."""
+        """What waits on a planner's decision: blocked tickets (a worker could not go on). Read on
+        every page (static/attention.js)."""
         snap = store.snapshot()
         blocked = [{"id": t["id"], "title": t["title"], "reason": t.get("blocked_reason") or "", "since": t.get("state_since"),
                     "milestone": t.get("milestone_id")} for t in snap["tickets"] if t["state"] == "BLOCKED"]
@@ -201,8 +133,7 @@ def router(project) -> APIRouter:
             flight.append({**{k: t.get(k) for k in ("id", "title", "state", "owner", "state_since", "worker_turns", "reviewer_rejections",
                                                        "gate_rejections", "blocked_reason", "milestone_id")},
                            "waiting": None if a else waiting.get(t["state"], ""),
-                           "assignment": ({"role": a["role"], "instance": a.get("instance"), "since": a.get("assigned_at"),
-                                           "session": a.get("session")} if a else None)})
+                           "assignment": ({"role": a["role"], "instance": a.get("instance"), "since": a.get("assigned_at")} if a else None)})
         flight.sort(key=lambda x: (x["assignment"] is None, x["state_since"] or ""))
         counts: dict[str, int] = {}
         for t in snap["tickets"]:

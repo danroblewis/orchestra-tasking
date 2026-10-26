@@ -1,21 +1,17 @@
-"""Requests: how a planner (the Supervisor, the Coordinator, a person or a script) asks the task
-system to change its tickets and milestones, over Orchestra's bus.
+"""Requests: how a planner (a person's script, a program, a machine from another package: whatever
+decides what the work is) asks the task system to change its tickets and
+milestones, over Orchestra's bus.
 
 A request is an event named for what it asks (``task.requested`` to create a ticket,
 ``task.unblock_requested``, ``milestone.close_requested`` …) with ``request`` (an id), ``args`` and
-``by`` (the role asking, whose grants are checked). The scheduler's desk (``Desk``, in the
-scheduler's process) checks and applies it with the rules it always had (``api.handle``) and
-answers ``request.done`` with the result or ``request.refused`` with why. So every change to a
-ticket is the task system's own, and Orchestra sees who asked for what
-(docs/proposals/agents-split.md).
-
-An agent's tool call sends its request this way when its environment says so
-(``TASKING_REQUESTS=bus``, which the agents' sessions get) and waits for the answer; reads, and
-what is the agents' own (their reports, the project context, escalations), are not requests."""
+``by`` (the role asking; a few operations are reserved to the planner roles named in api.py).
+Reads are one event type, ``task.query_requested``, with the operation in ``op``. The scheduler's
+desk (``Desk``, in the scheduler's process) checks and applies each with the task system's rules
+(``api.handle``) and answers ``request.done`` with the result or ``request.refused`` with why. So
+every change to a ticket is the task system's own, and Orchestra sees who asked for what."""
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 import uuid
@@ -28,7 +24,6 @@ REQUESTS = {"create_ticket": "task.requested", "update_ticket": "task.change_req
             "close_milestone": "milestone.close_requested", "set_capacity": "capacity.change_requested",
             "resume_pipeline": "pipeline.resume_requested"}
 OP_OF = {v: k for k, v in REQUESTS.items()}
-# reads: one event type, the operation named in it (they change nothing, so they are not told apart on the map)
 QUERY = "task.query_requested"
 QUERIES = ("list_tickets", "get_ticket", "project_status", "list_milestones", "get_capacity", "snapshot",
            "list_gate_runs", "get_gate_run", "get_staging_status")
@@ -36,25 +31,22 @@ DONE, REFUSED = "request.done", "request.refused"
 WAIT_S = 30.0
 
 
-def via_bus() -> bool:
-    return os.environ.get("TASKING_REQUESTS") == "bus"
-
-
 def _subject(args: dict) -> str | None:
     s = args.get("id") or args.get("milestone_id")
     return str(s) if s else None
 
 
-def ask(project, command: str, args: dict, role: str) -> dict:
-    """Send one request and wait for the task system's answer."""
-    from .events import Events
-    events = Events.for_project(project)
+def ask(events, command: str, args: dict, by: str) -> dict:
+    """Send one request as ``by`` and wait for the task system's answer. ``events`` is the
+    asker's (its source names the machine asking)."""
     follow = Follower(events)                       # from now: the answer comes after the request
     rid = uuid.uuid4().hex[:12]
     if command in QUERIES:
-        events.publish(QUERY, {"request": rid, "op": command, "args": args, "by": role}, subject=_subject(args))
+        events.publish(QUERY, {"request": rid, "op": command, "args": args, "by": by}, subject=_subject(args))
+    elif command in REQUESTS:
+        events.publish(REQUESTS[command], {"request": rid, "args": args, "by": by}, subject=_subject(args))
     else:
-        events.publish(REQUESTS[command], {"request": rid, "args": args, "by": role}, subject=_subject(args))
+        return {"ok": False, "error": f"the task system has no operation {command!r}"}
     end = time.time() + WAIT_S
     while time.time() < end:
         for ev in follow.new():
@@ -93,7 +85,7 @@ class Desk:
                 continue
             args, by = dict(ev.get("args") or {}), ev.get("by") or ""
             try:
-                result = api.handle(self.project, self.store, op, args, role=by, direct=True)
+                result = api.handle(self.project, self.store, op, args, role=by)
             except Exception as e:  # noqa: BLE001 - a refused request is an answer, not a crash
                 result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
             ok = bool(result.get("ok", True))

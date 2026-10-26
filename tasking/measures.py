@@ -7,8 +7,6 @@ measure (Orchestra's discovery decides what is a stock and what is a flow):
   them (the scheduler applies a worker's or reviewer's report; a planner's request is the
   scheduler's desk's).
 
-The agents measure their own turns (orchestra-agents).
-
 A level and the counters that move it are taken from the same change, at the same instant, so
 they balance exactly (a level sampled now and then would be off by whatever moved in between).
 Counters are cumulative across processes and restarts: their values are kept with the tickets

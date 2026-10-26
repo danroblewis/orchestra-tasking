@@ -1,7 +1,7 @@
 // The task system's machine on Orchestra's pages (a plugin script; Orchestra.machineCards in
 // Orchestra's app.js), inside Orchestra's machine-card frame: the scheduler is the queue by state,
 // with the capacity and pause controls. The tickets themselves are the Tasks panel's
-// (tasks-panel.js); the machines that work them are their own packages' (orchestra-agents' cards).
+// (tasks-panel.js); the machines that work them are not the task system's and get their own cards.
 (function () {
   if (!window.Orchestra || !Orchestra.machineCards) return;
   const API = "/api/plugins/tasks";

@@ -1,5 +1,5 @@
-"""The Coordinator is escalated to at the threshold and its multiples, not on every rejection;
-a send-back by Orchestra is not a reviewer's rejection."""
+"""The planner (the coordinator role) is told at the threshold and its multiples, not on every
+rejection; a send-back by the task system is not a reviewer's rejection."""
 
 import subprocess
 

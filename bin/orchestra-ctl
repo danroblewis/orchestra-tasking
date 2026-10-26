@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Orchestra watching this repository: its host and web UI, run from this repository's environment
-# (.venv, `uv sync`), where Orchestra is installed with the task system's plugin (its Tickets and
-# Agents pages), and the task system's loop (`tasking run`, "tasks"), which runs AI agents.
+# (.venv, `uv sync`), where Orchestra is installed with the task system's plugin (the Tickets
+# page), and the task system's scheduler (`tasking run`, "tasks").
 #   bin/orchestra-ctl start | stop | status | restart <name>
 set -euo pipefail
 cd "$(dirname "$0")/.."

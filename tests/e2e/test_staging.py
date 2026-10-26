@@ -1,4 +1,4 @@
-"""Staging supervisor against a trivial HTTP server as the 'artifact'."""
+"""Staging against a trivial HTTP server as the 'artifact'."""
 
 import subprocess
 import time

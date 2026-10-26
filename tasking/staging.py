@@ -1,5 +1,5 @@
 """Staging: one long-lived instance of the most recent build that passed the gate.
-SPEC.md section 7.5. Supervised by the loop; redeployed by the gate on every landing."""
+SPEC.md section 7.5. Kept running by the scheduler; redeployed by the gate on every landing."""
 
 from __future__ import annotations
 
@@ -279,7 +279,7 @@ class Staging:
 
     def _deploy(self, build: dict) -> bool:
         """Promote a build: stop the previous, start this one, probe health and tunnel.
-        On failure restart the previous build and wake the Supervisor."""
+        On failure restart the previous build and ask the supervisor (a planner) to look."""
         if not self.cfg.staging_configured:
             return False
         prev_id = self.state().get("current_build_id")

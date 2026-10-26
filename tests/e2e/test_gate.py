@@ -1,10 +1,10 @@
-"""The merge gate's decisions, each driven directly with a real git repository and no Pi.
+"""The merge gate's decisions, each driven directly with a real git repository.
 
 The gate is the only thing that lands code, so every outcome it can reach is exercised:
 landed, rejected (the merged result fails tests), base_broken (the base itself fails),
 conflict (the branch does not merge), a build whose artifact is missing, and the full
 build + start + acceptance stage run. The ticket state, notes, feedback, pipeline flag,
-and wake-ups each outcome must produce are asserted, not just the run status."""
+and attention each outcome must produce are asserted, not just the run status."""
 
 import subprocess
 from pathlib import Path
@@ -166,7 +166,7 @@ def test_batch_with_one_conflict_lands_the_rest(env):
 
 def test_missing_build_artifact_is_a_base_problem(env):
     """A build that produces no artifact fails on the base too, so the gate blames the
-    configuration (pipeline paused, Supervisor woken), not the ticket."""
+    configuration (pipeline paused, the supervisor role told), not the ticket."""
     project, store, events, ms, repo = env
     set_config(project, repo, f'[build]\ncommand = "true"\nartifact = "dist/*.whl"\n[[gate.unit]]\nname = "unit"\ncommand = "{UNIT}"\n')
     t = merging_ticket(store, ms, repo, "no artifact", lambda wt: (wt / "NEW.md").write_text("ok\n"))

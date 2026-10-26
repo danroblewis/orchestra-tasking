@@ -3,9 +3,7 @@
 The settings are sections of the repository's ``orchestra.toml`` that Orchestra itself ignores
 ([project], [tasks], [build], [acceptance], [gate], [staging], [[probes]]); [events] and
 [metrics] are Orchestra's, read here only to reach the same bus and metrics store. State lives
-in ``~/.orchestrator/<key>/tasks/``, beside Orchestra's own; the project key is Orchestra's.
-
-Lifted from Orchestra's config.py as it was before the task system was removed (5006caf^)."""
+in ``~/.orchestrator/<key>/tasks/``, beside Orchestra's own; the project key is Orchestra's."""
 
 from __future__ import annotations
 
@@ -73,7 +71,7 @@ class Config:
     def from_toml(cls, text: str) -> Config:
         raw = tomllib.loads(text)
         p, b, acc, g, st = (raw.get(k, {}) for k in ("project", "build", "acceptance", "gate", "staging"))
-        a = {**(raw.get("agents") or {}), **(raw.get("tasks") or {})}   # [tasks]; before the agents left, these were in [agents]
+        a = raw.get("tasks") or {}
         tun = st.get("tunnel", {}) or {}
         gt = parse_duration(g.get("timeout"), 900.0)
 
@@ -127,8 +125,8 @@ work = "tasks"           # tasks: a scratch folder per ticket | code: a git bran
 push = false
 
 [tasks]
-workers = 3              # tickets offered to workers at once (whatever fills the role takes them)
-reviewers = 3
+workers = 2              # tickets offered to workers at once (whatever fills the role takes them)
+reviewers = 1
 review_rounds_before_escalation = 3
 aging_days_per_level = 2        # a ticket gains one priority level per N days of age; 0 disables
 
@@ -153,9 +151,9 @@ command = "{unit_command}"
 # name = "acceptance"
 # command = "uv run pytest tests/acceptance -q --base-url {{url}}"
 #
-# [[probes]]                       # a condition Orchestra checks on an interval; exit 0 = holds.
+# [[probes]]                       # a condition the scheduler checks on an interval; exit 0 = holds.
 # name = "staging_fast"            # probe_failed / probe_recovered events fire on the transition,
-# command = "scripts/p95_under_1s.sh $STAGING_URL"   # so agents subscribed to them wake once.
+# command = "scripts/p95_under_1s.sh $STAGING_URL"   # so whatever listens for them wakes once.
 # every = "5m"
 # timeout = "60s"
 """

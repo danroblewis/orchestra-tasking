@@ -18,13 +18,9 @@ base_branch = "main"
 ticket_prefix = "TK"
 push = false
 
-[agents]
-harness = "claude_code"  # pi | claude_code | codex: the product that runs the agents
-model = "haiku"
-thinking = "medium"
+[tasks]
 workers = 1
 reviewers = 1
-silence_timeout = "20m"
 
 [gate]
 batch_size = 1

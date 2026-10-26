@@ -1,7 +1,5 @@
-"""The `tasking` command line: the task system's scheduler, its tickets, and its operations.
-
-Lifted from Orchestra's cli.py as it was before the task system was removed (5006caf^); the
-web UI, metrics, model and event commands stay Orchestra's (`orchestra web`, …)."""
+"""The `tasking` command line: the task system's scheduler, its tickets, and its operations. The
+web UI, metrics, model and event commands are Orchestra's (`orchestra web`, …)."""
 
 from __future__ import annotations
 
@@ -11,10 +9,10 @@ import os
 import sys
 from pathlib import Path
 
-from . import api
 from .config import ConfigError, Project, init_project, load_project
 from .events import Events
-from .store import LocalStore, StoreError
+from .requests import ask
+from .store import LocalStore
 
 
 def _project(args) -> Project:
@@ -32,8 +30,7 @@ def _store(project: Project) -> tuple[LocalStore, Events]:
 # -- commands --------------------------------------------------------------------
 
 def cmd_init(args) -> int:
-    p = init_project(Path(args.repo or os.getcwd()), provider=args.provider, model=args.model,
-                     prefix=args.prefix, unit_command=args.unit_command)
+    p = init_project(Path(args.repo or os.getcwd()), prefix=args.prefix, unit_command=args.unit_command)
     print(f"initialized {p.key}\n  repo:   {p.repo_root}\n  state:  {p.state_dir}\n  config: {p.repo_root / 'orchestra.toml'}")
     return 0
 
@@ -82,16 +79,17 @@ def cmd_milestone(args) -> int:
 
 
 def cmd_api(args) -> int:
+    """One request to the task system over the bus, as the planner ``--as`` names, answered by
+    the running scheduler's desk (tasking/requests.py)."""
     project = _project(args)
-    store, _ = _store(project)
     try:
         payload = json.loads(args.args) if args.args else {}
-        out = api.handle(project, store, args.command, payload, role=os.environ.get("ORCHESTRA_ROLE", ""))
-    except (StoreError, KeyError, ValueError) as e:
-        print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}))
+    except ValueError as e:
+        print(json.dumps({"ok": False, "error": f"--args is not JSON: {e}"}))
         return 1
+    out = ask(Events.for_project(project, source=args.by), args.command, payload, args.by)
     print(json.dumps(out, indent=None if args.compact else 1))
-    return 0
+    return 0 if out.get("ok", True) else 1
 
 
 def cmd_staging(args) -> int:
@@ -185,8 +183,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("init", help="register this repository and write orchestra.toml")
-    s.add_argument("--provider", help="Pi provider (default: Pi's own default)")
-    s.add_argument("--model", help="Pi model id (default: Pi's own default)")
     s.add_argument("--prefix", help="ticket id prefix, e.g. ORC")
     s.add_argument("--unit-command", default="uv run pytest -q")
     s.set_defaults(fn=cmd_init)
@@ -195,7 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--once", action="store_true", help="one tick, wait for its work, exit")
     s.set_defaults(fn=cmd_run)
 
-    s = sub.add_parser("status", help="scheduler, assignments, web, tunnels, merge gate, queue, staging")
+    s = sub.add_parser("status", help="scheduler, assignments, merge gate, queue, staging")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_status)
 
@@ -209,9 +205,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("id", nargs="?")
     s.set_defaults(fn=cmd_milestone)
 
-    s = sub.add_parser("api", help="the task system's operations, as JSON (what a planner's request runs)")
-    s.add_argument("command")
+    s = sub.add_parser("api", help="ask the running scheduler for one operation (create_ticket, list_tickets, …) as a planner; JSON out")
+    s.add_argument("command", help="the operation (tasking/requests.py: REQUESTS and QUERIES)")
     s.add_argument("--args", default="{}", help="JSON object of arguments")
+    s.add_argument("--as", dest="by", default="planner", help="the role asking (the event's source and its `by`); default planner")
     s.add_argument("--compact", action="store_true")
     s.set_defaults(fn=cmd_api)
 

@@ -1,11 +1,8 @@
-"""One-screen status: the scheduler, who holds work, web, tunnels, merge gate, queue, staging."""
+"""One-screen status: the scheduler, who holds work, the merge gate, the queue, staging."""
 
 from __future__ import annotations
 
-import re
 import time
-import urllib.request
-from pathlib import Path
 
 import psutil
 
@@ -17,36 +14,6 @@ from .store import LocalStore
 
 def _alive(pid) -> bool:
     return bool(pid) and psutil.pid_exists(int(pid))
-
-
-def _http_ok(url: str, timeout: float = 3) -> bool:
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return r.status < 400
-    except Exception:
-        return False
-
-
-def _dashboard_tunnel_hosts(port: int) -> list[str]:
-    """Hostnames of *running* cloudflared named tunnels whose ingress targets this port.
-    Orchestra does not manage the dashboard tunnel; this reports what is live."""
-    running = " ".join(" ".join(p.info["cmdline"] or []) for p in psutil.process_iter(["name", "cmdline"])
-                       if (p.info["name"] or "").startswith("cloudflared"))
-    hosts: list[str] = []
-    for cfg in Path("~/.cloudflared").expanduser().glob("*.y*ml"):
-        try:
-            text = cfg.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        m = re.search(r"^tunnel:\s*(\S+)", text, re.M)
-        tunnel_id = m.group(1) if m else ""
-        live = str(cfg) in running or (tunnel_id and tunnel_id in running) or (cfg.stem and f"run {cfg.stem}" in running)
-        if not live:
-            continue
-        for host, svc in re.findall(r"hostname:\s*(\S+)\s*\n\s*service:\s*(\S+)", text):
-            if svc.rstrip("/").endswith(f":{port}"):
-                hosts.append(host)
-    return sorted(set(hosts))
 
 
 def gate_stage_plan(project: Project) -> int:
@@ -70,12 +37,6 @@ def collect(project: Project, store: LocalStore) -> dict:
                 "title": by_id[a["ticket"]].title if a["ticket"] in by_id else "",
                 "elapsed": round(now - (a.get("assigned_at") or now))}
                for a in (rt.get("assignments") or {}).values()]
-
-    web = rt.get("web") or {}
-    web_alive = _alive(web.get("pid"))
-    web_url = f"http://127.0.0.1:{web.get('port', 8000)}"
-    web_ok = web_alive and _http_ok(web_url + "/api/state")
-    dash_hosts = _dashboard_tunnel_hosts(int(web.get("port", 8000)))
 
     runs = store.gate_runs()
     cur = next((r for r in runs if r.get("status") == "running"), None)
@@ -107,7 +68,6 @@ def collect(project: Project, store: LocalStore) -> dict:
         "workers": workers,
         "slots": {"workers": f"{sum(1 for w in workers if w['kind'] == 'worker')}/{store.capacity()['workers']}",
                   "reviewers": f"{sum(1 for w in workers if w['kind'] == 'reviewer')}/{store.capacity()['reviewers']}"},
-        "web": {"up": web_ok, "url": web_url if web_alive else None, "pid": web.get("pid"), "tunnel_hosts": dash_hosts},
         "pipeline": rt.get("pipeline", {}),
         "pickup_paused": bool(rt.get("pickup_paused")),
         "gate": gate,
@@ -142,9 +102,6 @@ def render(d: dict) -> str:
     L.append(f"{p['key']}  {p['repo_root']}  base={p['base_branch']}  work={p['work']}")
     lp = d["loop"]
     L.append(f"scheduler: {'RUNNING' if lp['running'] else 'DOWN'}" + (f"  pid {lp['pid']}" if lp["running"] else "   (start with `tasking run`)"))
-    w = d["web"]
-    L.append(f"web:       {'UP' if w['up'] else 'DOWN'}" + (f"  {w['url']}" if w["url"] else "   (start with `orchestra web`)") +
-             ("  tunnel: " + ", ".join("https://" + h for h in w["tunnel_hosts"]) if w["tunnel_hosts"] else ""))
     pl = d["pipeline"]
     L.append(f"pipeline:  {'PAUSED ' + str(pl.get('reason')) if pl.get('paused') else 'running'}   slots: workers {d['slots']['workers']}, reviewers {d['slots']['reviewers']}" + ("   NEW WORKERS PAUSED" if d.get("pickup_paused") else ""))
     for x in d["workers"]:
