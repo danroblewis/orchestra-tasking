@@ -40,14 +40,14 @@ def test_a_task_is_done_in_its_folder_and_reviewed_with_nothing_merged(env):
     t = store.get_ticket(t.id)
     assert t.state == State.DONE and t.branch is None
     assert (project.workspaces_dir / t.id / "RESULT.md").read_text().startswith(f"# {t.id}")
-    assert not subprocess.run(["git", "branch", "--list"], cwd=repo, capture_output=True, text=True).stdout.strip("* main\n")
+    assert not subprocess.run(["git", "branch", "--list"], cwd=repo, capture_output=True, text=True, check=False).stdout.strip("* main\n")
     assert store.gate_runs() == []
-    review = [o for o in m.offers if o["role"] == "reviewer"][0]
+    review = next(o for o in m.offers if o["role"] == "reviewer")
     assert review["review"] == {"summary": "wrote RESULT.md"} and review["branch"] is None
 
 
 def test_the_scheduler_is_a_program_and_starts_no_machine(env):
-    project, store, events, repo = env
+    project, store, events, _repo = env
     ms = store.create_milestone(name="m")
     store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
     run_loop(project, store, events)
@@ -60,7 +60,7 @@ def test_the_scheduler_is_a_program_and_starts_no_machine(env):
 def test_work_is_assigned_over_the_bus_and_the_machine_that_accepts_owns_it(env):
     """The scheduler offers the ticket to a role (task.assigned); the machine that serves it
     accepts (and so owns the ticket), and reports (task.reported); the scheduler applies it."""
-    project, store, events, repo = env
+    project, store, events, _repo = env
     ms = store.create_milestone(name="m")
     t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
     run_loop(project, store, events)
@@ -78,7 +78,7 @@ def test_work_is_assigned_over_the_bus_and_the_machine_that_accepts_owns_it(env)
 
 
 def test_an_assignment_nobody_answers_goes_back_when_its_lease_runs_out(env, monkeypatch):
-    project, store, events, repo = env
+    project, store, events, _repo = env
     from tasking import loop as loop_mod
     monkeypatch.setattr(loop_mod, "LEASE_S", 0.0)                                         # no word in time: released at once
     ms = store.create_milestone(name="m")

@@ -78,7 +78,7 @@ def test_config_durations():
 
 
 @pytest.mark.parametrize("n", range(1, 9))
-@pytest.mark.parametrize("bad", range(0, 8))
+@pytest.mark.parametrize("bad", range(8))
 def test_bisect_isolates_offender(n, bad):
     if bad >= n:
         return

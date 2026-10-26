@@ -159,7 +159,7 @@ def is_ready(t: Ticket, tickets: dict[str, Ticket], milestones: dict[str, Milest
     return all(d in tickets and tickets[d].state == State.DONE for d in t.depends_on)
 
 
-def effective_priorities(tickets: dict[str, "Ticket"], aging_days_per_level: float = 0.0,
+def effective_priorities(tickets: dict[str, Ticket], aging_days_per_level: float = 0.0,
                          at: float | None = None) -> dict[str, dict]:
     """Effective priority for pickup ordering. Lower is sooner.
 
@@ -191,7 +191,7 @@ def effective_priorities(tickets: dict[str, "Ticket"], aging_days_per_level: flo
             try:
                 age_days = (now_ts - datetime.fromisoformat(t.created_at).timestamp()) / 86400
                 levels = int(age_days // aging_days_per_level)
-            except Exception:
+            except (TypeError, ValueError):             # an unreadable created_at: no aging
                 levels = 0
         out[tid] = {"effective": max(1, eff - levels), "own": t.priority, "inherited_from": src, "age_levels": levels}
     return out

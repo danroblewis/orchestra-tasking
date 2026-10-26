@@ -123,7 +123,7 @@ class Loop:
             while not self.stop.is_set():
                 try:
                     self.tick()
-                except Exception as e:  # keep the loop alive
+                except Exception as e:  # noqa: BLE001 - one bad tick never stops the scheduler
                     log(f"tick error: {e!r}")
                 if once and not self._busy():
                     break
@@ -160,17 +160,17 @@ class Loop:
         taken = {a["ticket"] for a in out}
         # Review before pick: finished work lands before new work starts.
         for t in ordered:
-            if t.state == State.READY_FOR_REVIEW and busy["reviewer"] < cap["reviewers"] and t.id not in taken:
-                if self._assign(t, "reviewer"):
-                    busy["reviewer"] += 1
+            if t.state == State.READY_FOR_REVIEW and busy["reviewer"] < cap["reviewers"] and t.id not in taken \
+                    and self._assign(t, "reviewer"):
+                busy["reviewer"] += 1
         for t in ordered:
             if paused or busy["worker"] >= cap["workers"]:
                 break
             if t.id in taken:
                 continue
-            if t.state == State.REJECTED or (t.state == State.OPEN and is_ready(t, tickets, milestones)):
-                if self._assign(t, "worker"):
-                    busy["worker"] += 1
+            if (t.state == State.REJECTED or (t.state == State.OPEN and is_ready(t, tickets, milestones))) \
+                    and self._assign(t, "worker"):
+                busy["worker"] += 1
         if self.cfg.work == "code" and self.gate_thread is None and not self.store.pipeline().get("paused"):
             approved = [t for t in ordered if t.state == State.APPROVED]
             if approved:
@@ -183,7 +183,7 @@ class Loop:
         self.staging.ensure_running()
         try:
             self.prober.tick(config_probes(self.project))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - a broken probe never stops the scheduler
             log(f"probes: {e!r}")
 
     def _service_kills(self) -> None:

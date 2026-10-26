@@ -31,3 +31,8 @@ pythonpath = ["tests", "."]          # tests import fake_machine, and the e2e de
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# ruff's default rule set, nothing added or removed. Where a rule is wrong for one line, that
+# line says so: `# noqa: RULE - reason` (a blind `except` that keeps the scheduler alive, a
+# status check that waits for a service to come up).

@@ -6,9 +6,10 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from ..config import Project
 from ..events import Events

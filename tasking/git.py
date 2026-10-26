@@ -17,7 +17,7 @@ class Git:
     def run(self, *args: str, cwd: Path | None = None, check: bool = True,
             timeout: float = 300) -> subprocess.CompletedProcess:
         p = subprocess.run(["git", "-C", str(cwd or self.root), *args], capture_output=True,
-                           text=True, timeout=timeout)
+                           text=True, timeout=timeout, check=False)
         if check and p.returncode != 0:
             raise GitError(f"git {' '.join(args)}: {p.stderr.strip() or p.stdout.strip()}")
         return p

@@ -5,6 +5,7 @@ the base branch itself fails. Batching and bisection plug in here later."""
 
 from __future__ import annotations
 
+import contextlib
 import glob
 import os
 import shutil
@@ -12,6 +13,7 @@ import signal
 import socket
 import subprocess
 import time
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -32,7 +34,7 @@ def run_specs(specs: list[TestSpec], cwd: Path, log_dir: Path, placeholders: dic
         cmd = spec.command.format(**(placeholders or {}))
         t0 = time.time()
         try:
-            p = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, timeout=spec.timeout)
+            p = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, timeout=spec.timeout, check=False)
             rc, out = p.returncode, (p.stdout or "") + ("\n" + p.stderr if p.stderr else "")
         except subprocess.TimeoutExpired as e:
             rc, out = 124, f"timed out after {spec.timeout}s\n{(e.stdout or b'')[-4000:]!r}"
@@ -62,8 +64,9 @@ def _wait_ready(url: str, timeout: float) -> bool:
             with urllib.request.urlopen(url, timeout=3) as r:
                 if r.status < 500:
                     return True
-        except Exception:
-            pass
+        except (OSError, urllib.error.URLError):     # not listening yet, or refusing: try again
+            time.sleep(1)
+            continue
         time.sleep(1)
     return False
 
@@ -95,11 +98,9 @@ class _Target:
         try:
             os.killpg(self.proc.pid, signal.SIGTERM)
             self.proc.wait(timeout=10)
-        except Exception:
-            try:
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            with contextlib.suppress(ProcessLookupError):    # gone meanwhile: nothing to kill
                 os.killpg(self.proc.pid, signal.SIGKILL)
-            except Exception:
-                pass
         self.log.close()
 
 

@@ -85,7 +85,7 @@ def _ts(iso: str) -> float:
     from datetime import datetime
     try:
         return datetime.fromisoformat(iso).timestamp()
-    except Exception:
+    except (TypeError, ValueError):
         return time.time()
 
 

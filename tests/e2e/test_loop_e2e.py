@@ -67,7 +67,7 @@ def test_ticket_goes_open_to_done(env):
 
 
 def test_rejection_loops_back_to_worker(env):
-    project, store, events, ms, repo = env
+    project, store, events, ms, _repo = env
     t = store.create_ticket(title="Needs two tries", milestone_id=ms.id)
     m = run_loop(project, store, events, reject_first=True)
     t = store.get_ticket(t.id)
@@ -79,7 +79,7 @@ def test_rejection_loops_back_to_worker(env):
 
 
 def test_blocked_worker(env):
-    project, store, events, ms, repo = env
+    project, store, events, ms, _repo = env
     t = store.create_ticket(title="Blocked one", milestone_id=ms.id)
     run_loop(project, store, events, block=True)
     t = store.get_ticket(t.id)
@@ -125,5 +125,5 @@ def test_gate_rejection_reengages_worker_then_lands(env):
                      ("IN_REVIEW", "APPROVED"), ("APPROVED", "MERGING"), ("MERGING", "DONE")]
     assert "README.md" in git("ls-tree", "--name-only", "main", cwd=repo)
     assert "WORK.md" in git("ls-tree", "--name-only", "main", cwd=repo)
-    first_review = [o for o in m.offers if o["role"] == "reviewer"][0]["review"]
+    first_review = next(o for o in m.offers if o["role"] == "reviewer")["review"]
     assert "[failed]" in first_review["test_output"]   # the reviewer was told the tests fail on the branch

@@ -44,11 +44,11 @@ def _probe(url: str, timeout: float = 6, max_status: int = 400) -> bool:
     except urllib.error.HTTPError as e:
         if e.code != 403:
             return e.code < max_status
-    except Exception:
-        pass
+    except (OSError, urllib.error.URLError):
+        pass                                             # not answering, or TLS failed: curl decides below
     if url.startswith("https") and shutil.which("curl"):
         p = subprocess.run(["curl", "-s", "-o", "/dev/null", "-m", str(int(timeout)), "-w", "%{http_code}", url],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=False)
         code = int(p.stdout.strip()) if p.stdout.strip().isdigit() else 0
         return 100 <= code < max_status   # curl prints 000 when it could not connect at all
     return False
@@ -135,7 +135,7 @@ class Staging:
         return out
 
     def _port_listeners(self, port: int) -> list[int]:
-        p = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True)
+        p = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, check=False)
         return [int(x) for x in p.stdout.split() if x.isdigit()]
 
     def stop(self) -> None:
@@ -148,7 +148,7 @@ class Staging:
             self._log(f"stopping build {st.get('current_build_id')} (pid {pid})")
             if self.cfg.staging_stop:
                 subprocess.run(self.cfg.staging_stop.format(port=self.cfg.staging_port, pid=pid), shell=True,
-                               cwd=str(self.project.repo_root), capture_output=True, timeout=60)
+                               cwd=str(self.project.repo_root), capture_output=True, timeout=60, check=False)
             try:
                 os.killpg(pid, signal.SIGTERM)
             except OSError:
@@ -205,7 +205,7 @@ class Staging:
     # -- tunnel ----------------------------------------------------------------
 
     def _tunnel_id(self, name: str) -> str | None:
-        p = subprocess.run(["cloudflared", "tunnel", "list", "-o", "json"], capture_output=True, text=True, timeout=30)
+        p = subprocess.run(["cloudflared", "tunnel", "list", "-o", "json"], capture_output=True, text=True, timeout=30, check=False)
         try:
             for t in json.loads(p.stdout or "[]"):
                 if t.get("name") == name:
