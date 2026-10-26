@@ -50,7 +50,8 @@ Orchestra's host and web (port 8060), and two integrations, run with Orchestra's
 (`~/orchestra_2/.venv`):
 
 - **beads-sync** (`integrations/beads_sync.py`) follows Beads' event journal. Each record becomes:
-  - an event `beads.issue.<op>` on Orchestra's bus, from its actor as a machine and instance
+  - an event on Orchestra's bus named for what happened: `beads.issue.<op>` (create, close, …), or, for
+    an update that moves the status, the status it moved to (`beads.issue.in_review`); from its actor as a machine and instance
     (`worker-3` is `worker/3`; a record with no actor is Beads' own doing, `beads`), with Beads'
     time and the id `beads:<project>:<seq>`;
   - when a status changed, a count on `beads_issue_transitions_total{from, to, type}`, credited to

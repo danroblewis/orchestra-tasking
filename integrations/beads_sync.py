@@ -3,7 +3,9 @@ and every change of status as a counter in its metrics store.
 
 Each journal record (seq, ts, op, issue_id, actor, the issue as it is after the change) becomes:
 
-- an event ``beads.issue.<op>`` (create, update, close, reopen, dep_add, comment…) from the
+- an event named for what happened (``event_type``): ``beads.issue.<op>`` (create, close,
+  reopen, dep_add, comment…), except that an update that changes the status is named for the
+  status it moved to (``beads.issue.in_review``), since that is what the next machine acts on. From the
   actor, as a machine and instance (``worker-3`` is ``worker/3``), with Beads' own time, the issue
   as subject, and an id stable across re-imports (``beads:<project>:<seq>``). Its data says what
   changed: the status before and after, the issue's type, title and parent;
@@ -49,6 +51,13 @@ def actor_source(actor: str | None) -> tuple[str, str]:
     return (f"{m.group(1)}/{m.group(2)}", m.group(1)) if m else (a, a)
 
 
+def event_type(op: str, before: str | None, after: str | None) -> str:
+    """``beads.issue.<op>``; an ``update`` that moves the status, ``beads.issue.<new status>``."""
+    if op == "update" and after and before and after != before:
+        return f"beads.issue.{after}"
+    return f"beads.issue.{op}"
+
+
 def main() -> None:
     project = load_project()
     bus = Events.for_project(project, source="beads-sync")
@@ -80,7 +89,7 @@ def main() -> None:
             st["idx"] = min(999, st.get("idx", 0) + 1)
             t += st["idx"] / 1000.0
             if r["seq"] > on_bus:                               # not on the bus yet
-                bus.publish(f"beads.issue.{op}", {"seq": r["seq"], "issue_id": iid, "issue_type": kind, "title": issue.get("title"),
+                bus.publish(event_type(op, before, after), {"seq": r["seq"], "issue_id": iid, "issue_type": kind, "title": issue.get("title"),
                                                   "from": before, "to": after, "parent": issue.get("parent")},
                             source=source, subject=iid, time=r["ts"], id=f"beads:{pid}:{r['seq']}")
             if op == "create":
