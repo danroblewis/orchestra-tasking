@@ -100,10 +100,10 @@ def router(project: Project) -> APIRouter:
     @r.get("/board")
     async def board() -> dict:
         """The Tasks panel: every ticket in flight (not waiting to start, not finished; an offered
-        one counts), with the machine instance it is assigned to now (and since when it holds it,
-        or since when it was first offered), blocked ones first, then the held, then the offered,
-        then the rest by when they reached their state; and the queue by state, the capacity and
-        the pause."""
+        one counts), with the machine instance it is assigned to now (since when it holds it, or
+        since when it was first offered, and what it last said it was doing), blocked ones first,
+        then the held, then the offered, then the rest by when they reached their state; and the
+        queue by state, the capacity and the pause."""
         views = store.ticket_views()
         held = {a["ticket"]: a for a in store.assignments().values()}
         waiting = {"READY_FOR_REVIEW": "waiting for a reviewer", "REJECTED": "rejected: waiting for its worker",
@@ -116,8 +116,8 @@ def router(project: Project) -> APIRouter:
             a = held.get(t["id"])
             flight.append({**{k: t.get(k) for k in ("id", "title", "state", "worker_turns", "reviewer_rejections", "gate_rejections", "blocked_reason")},
                            "waiting": None if a else waiting.get(t["state"], ""),
-                           "assignment": ({"role": a["role"], "instance": a.get("instance"), "since": a.get("accepted_at") or a.get("offered_since")}
-                                          if a else None)})
+                           "assignment": ({"role": a["role"], "instance": a.get("instance"), "since": a.get("accepted_at") or a.get("offered_since"),
+                                           "text": a.get("text") or ""} if a else None)})
         return {"ok": True, "now": time.time(), "tickets": flight, "counts": {k: v for k, v in views["counts"].items() if v}, "capacity": store.capacity(),
                 "pickup_paused": store.pickup_paused(), "scheduler": scheduler()["alive"]}
 

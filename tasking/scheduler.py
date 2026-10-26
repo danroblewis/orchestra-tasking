@@ -347,7 +347,8 @@ class Scheduler:
                 if ev.get("source") != a.get("instance"):
                     continue
                 if ev["type"] == WORKING:
-                    self.store.update_assignment(aid, lease_until=time.time() + LEASE_S)
+                    said = {"text": ev["text"][-200:]} if isinstance(ev.get("text"), str) else {}
+                    self.store.update_assignment(aid, lease_until=time.time() + LEASE_S, **said)
                 else:
                     out.pop(aid)
                     self._settle(a, lambda a=a, ev=ev: self.reports.apply(a, ev.get("report"), ev.get("text") or "", bool(ev.get("failed")), ev.get("commit")))

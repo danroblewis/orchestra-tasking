@@ -3,7 +3,7 @@ machine. A report the task system cannot use never leaves a ticket held by nobod
 
 import pytest
 
-from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, Follower
+from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, WORKING, Follower
 from tasking.events import Events
 from tasking.model import State
 from tasking.reports import NO_VERDICT_BUDGET, unusable
@@ -105,3 +105,28 @@ def test_a_report_the_store_refuses_still_frees_the_ticket(env, monkeypatch):
 def sched_log(sched) -> list[str]:
     from tasking import scheduler
     return scheduler.LOG.read_text().splitlines()
+
+
+def test_a_heartbeat_keeps_the_lease_and_what_the_holder_said(env):
+    """``task.working`` extends the lease; its ``text``, when sent, is what the holder is doing now,
+    kept on the assignment for the Tasks panel (whoever holds the ticket, a program or not)."""
+    store, events, sched, _t = env
+    follow = Follower(events, start=0)
+    sched.tick()
+    a = offer(events, follow)
+    say = lambda kind, **d: events.publish(kind, {"assignment": a["assignment"], "ticket": a["ticket"], "role": a["role"], **d},
+                                           source="worker/1", subject=a["ticket"])
+    say(ACCEPTED, instance="worker/1")
+    sched.tick()
+    lease = store.assignments()[a["assignment"]]["lease_until"]
+    say(WORKING, text="reading the ticket")
+    sched.tick()
+    rec = store.assignments()[a["assignment"]]
+    assert rec["text"] == "reading the ticket" and rec["lease_until"] >= lease
+    say(WORKING)                                                   # a bare heartbeat keeps the last words
+    sched.tick()
+    assert store.assignments()[a["assignment"]]["text"] == "reading the ticket"
+    events.publish(WORKING, {"assignment": a["assignment"], "ticket": a["ticket"], "role": "worker", "text": "not mine"},
+                   source="worker/2", subject=a["ticket"])        # not the holder: ignored
+    sched.tick()
+    assert store.assignments()[a["assignment"]]["text"] == "reading the ticket"

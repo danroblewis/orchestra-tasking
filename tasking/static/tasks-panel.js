@@ -1,9 +1,9 @@
 // The Tasks panel on Orchestra's Dashboard (Orchestra.panels; loaded by tasks-boot.js after
 // tasks.js). One card per ticket in flight (not waiting to start, not finished), in the ticket's
 // state colour, with its id, title, worker-turns badge and state, and a lane that says which
-// machine instance holds it now and since when (the scheduler offers it: worker/1 takes it, then
-// reviewer/1, then a worker again after a rejection), that it is offered and to whom, or what it
-// waits for. Above the cards, the queue by state and the operator's capacity and pause controls.
+// machine instance holds it now, since when and what it last said it was doing (the scheduler
+// offers it: worker/1 takes it, then reviewer/1, then a worker again after a rejection), that it
+// is offered and to whom, or what it waits for. Above the cards, the queue by state and the operator's capacity and pause controls.
 // A card opens the ticket.
 (function () {
   if (!window.Orchestra || !Orchestra.panels) return;
@@ -27,7 +27,7 @@
     function render() {
       if (!D) return;
       const says = (t) => {   // one line: a blocker's first paragraph, without its markdown backticks (the drawer has it whole)
-        if (t.assignment) return t.assignment.instance ? `${t.assignment.instance} · since ${ago(t.assignment.since)}` : `offered to a ${t.assignment.role} ${ago(t.assignment.since)} ago`;
+        if (t.assignment) return t.assignment.instance ? `${t.assignment.instance} · since ${ago(t.assignment.since)}${t.assignment.text ? " · " + t.assignment.text : ""}` : `offered to a ${t.assignment.role} ${ago(t.assignment.since)} ago`;
         return t.state === "BLOCKED" ? (t.blocked_reason || t.waiting || "").split(/\n\s*\n/)[0].replace(/`/g, "") : t.waiting || ""; };
       const q = ORDER.filter((s) => D.counts[s]).map((s) => `<span style="white-space:nowrap"><span class="pill" style="--c:${color(s)}">${esc(s.replace(/_/g, " "))}</span> <b class="num">${D.counts[s]}</b></span>`).join(" ");
       const cards = D.tickets.map((t) => `<div class="work" style="--c:${color(t.state)}" onclick="TasksPanel.ticket('${esc(t.id)}')" title="Open the ticket">
