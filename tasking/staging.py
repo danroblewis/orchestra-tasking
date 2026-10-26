@@ -3,7 +3,6 @@ SPEC.md section 5. Kept running by the scheduler; redeployed by the gate on ever
 
 from __future__ import annotations
 
-import datetime as _dt
 import json
 import os
 import shutil
@@ -20,19 +19,12 @@ import psutil
 
 from .config import Project
 from .events import SUPERVISOR, Events
-from .model import now
+from .model import epoch, now
 from .procs import alive
 from .store import LocalStore
 from .store.files import locked
 
 HEALTH_STALE = 600        # seconds a running staging process may go without a healthy answer
-
-
-def _epoch(iso: str) -> float:
-    try:
-        return _dt.datetime.fromisoformat(iso).timestamp()
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _probe(url: str, timeout: float = 6, max_status: int = 400) -> bool:
@@ -309,7 +301,7 @@ class Staging:
                     # answer the build has failed in service; say so once and let the
                     # restart path take it from here
                     last = st.get("last_health_at")
-                    stale = last is None or time.time() - _epoch(last) > HEALTH_STALE
+                    stale = last is None or time.time() - (epoch(last) or 0.0) > HEALTH_STALE
                     if stale and st.get("current_build_id") and st.get("failed_build") != st.get("current_build_id"):
                         self._log(f"staging stopped answering its health check for {HEALTH_STALE // 60} minutes; recording the failure and restarting")
                         self._set(failed_build=st.get("current_build_id"))

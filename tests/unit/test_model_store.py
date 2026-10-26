@@ -27,20 +27,20 @@ def test_milestone_rules_and_ids(store):
     t = store.create_ticket(title="Add thing", milestone_id=m.id)
     assert t.id == "T-1" and t.state == State.OPEN
     with pytest.raises(StoreError):
-        store.close_milestone(m.id, None)  # unfinished ticket
+        store.close_milestone(m.id)  # unfinished ticket
     t = store.transition(t.id, t.version, State.CANCELLED)
-    store.close_milestone(m.id, None)
+    store.close_milestone(m.id)
     with pytest.raises(StoreError):
         store.create_ticket(title="y", milestone_id=m.id)
     with pytest.raises(StoreError):
-        store.update_milestone(m.id, None, status="open")
+        store.update_milestone(m.id, status="open")
 
 
 def test_version_conflict_and_blocked_reason(store):
     m = store.create_milestone(name="m")
     t = store.create_ticket(title="a", milestone_id=m.id)
     with pytest.raises(Conflict):
-        store.update_ticket(t.id, t.version + 5, title="b")
+        store.transition(t.id, t.version + 5, State.IN_PROGRESS)          # a transition from a stale read
     t = store.transition(t.id, t.version, State.IN_PROGRESS)
     with pytest.raises(StoreError):
         store.transition(t.id, t.version, State.BLOCKED)
@@ -93,8 +93,10 @@ def test_effective_priority_propagates_and_ages():
     b = Ticket(id="B", title="b", milestone_id="M1", priority=1, depends_on=["A"])
     c = Ticket(id="C", title="c", milestone_id="M1", priority=6, created_at=old)
     done = Ticket(id="D", title="d", milestone_id="M1", priority=1, state=State.DONE, depends_on=["C"])
-    eff = effective_priorities({"A": a, "B": b, "C": c, "D": done}, aging_days_per_level=2)
+    odd = Ticket(id="E", title="e", milestone_id="M1", priority=6, created_at="not a time")
+    eff = effective_priorities({"A": a, "B": b, "C": c, "D": done, "E": odd}, aging_days_per_level=2)
     assert eff["A"]["effective"] == 1 and eff["A"]["inherited_from"] == "B"   # prerequisite inherits
     assert eff["B"]["effective"] == 1 and eff["B"]["inherited_from"] is None
     assert eff["C"]["effective"] == 4 and eff["C"]["age_levels"] == 2          # 5 days / 2 = 2 levels
     assert "D" not in eff                                                      # terminal tickets are ignored
+    assert eff["E"]["age_levels"] == 0 and eff["E"]["effective"] == 6          # an unreadable created_at does not age

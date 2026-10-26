@@ -13,6 +13,14 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def epoch(iso: str | None) -> float | None:
+    """A timestamp written by ``now()`` (or any ISO 8601 one) in seconds, None when unreadable."""
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
 class State(StrEnum):
     OPEN = "OPEN"
     BLOCKED = "BLOCKED"
@@ -153,8 +161,7 @@ def is_ready(t: Ticket, tickets: dict[str, Ticket], milestones: dict[str, Milest
     return all(d in tickets and tickets[d].state == State.DONE for d in t.depends_on)
 
 
-def effective_priorities(tickets: dict[str, Ticket], aging_days_per_level: float = 0.0,
-                         at: float | None = None) -> dict[str, dict]:
+def effective_priorities(tickets: dict[str, Ticket], aging_days_per_level: float = 0.0) -> dict[str, dict]:
     """Effective priority for pickup ordering. Lower is sooner.
 
     1. A ticket inherits the best priority of anything that (transitively) depends on it,
@@ -163,7 +170,7 @@ def effective_priorities(tickets: dict[str, Ticket], aging_days_per_level: float
        (0 disables), so old work is finished or cancelled instead of forgotten.
     Returns {id: {"effective": int, "own": int, "inherited_from": id|None, "age_levels": int}}.
     """
-    now_ts = at or time.time()
+    now_ts = time.time()
     live = {tid: t for tid, t in tickets.items() if t.state not in TERMINAL}
     best: dict[str, tuple[int, str | None]] = {tid: (t.priority, None) for tid, t in live.items()}
     # Propagate along reversed dependency edges until stable (graphs are small).
@@ -179,11 +186,8 @@ def effective_priorities(tickets: dict[str, Ticket], aging_days_per_level: float
     for tid, t in live.items():
         eff, src = best[tid]
         levels = 0
-        if aging_days_per_level and aging_days_per_level > 0:
-            try:
-                age_days = (now_ts - datetime.fromisoformat(t.created_at).timestamp()) / 86400
-                levels = int(age_days // aging_days_per_level)
-            except (TypeError, ValueError):             # an unreadable created_at: no aging
-                levels = 0
+        created = epoch(t.created_at)                   # an unreadable created_at: no aging
+        if aging_days_per_level and aging_days_per_level > 0 and created is not None:
+            levels = int((now_ts - created) / 86400 // aging_days_per_level)
         out[tid] = {"effective": max(1, eff - levels), "own": t.priority, "inherited_from": src, "age_levels": levels}
     return out

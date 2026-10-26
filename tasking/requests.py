@@ -22,10 +22,10 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from datetime import datetime
 
 from . import api
 from .assignments import Follower
+from .model import epoch
 
 REQUESTS = {"create_ticket": "task.requested", "update_ticket": "task.change_requested", "add_note": "task.note_requested",
             "cancel_ticket": "task.cancel_requested", "unblock_ticket": "task.unblock_requested",
@@ -43,10 +43,8 @@ RESUME_S = 2 * WAIT_S    # a request older than this when the desk reads it is r
 
 def _age(ev: dict) -> float:
     """Seconds since the event was published (its CloudEvents time), 0 when it says none."""
-    try:
-        return max(0.0, time.time() - datetime.fromisoformat(ev["ts"]).timestamp())
-    except (KeyError, TypeError, ValueError):
-        return 0.0
+    published = epoch(ev.get("ts"))
+    return 0.0 if published is None else max(0.0, time.time() - published)
 
 
 def _subject(args: dict) -> str | None:

@@ -51,10 +51,10 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
 
     if command == "update_milestone":
         changes = {k: a[k] for k in ("name", "description", "order") if k in a and a[k] is not None}
-        return {"ok": True, "milestone": store.update_milestone(a["id"], None, **changes).to_dict()}
+        return {"ok": True, "milestone": store.update_milestone(a["id"], **changes).to_dict()}
 
     if command == "close_milestone":
-        return {"ok": True, "milestone": store.close_milestone(a["id"], None).to_dict()}
+        return {"ok": True, "milestone": store.close_milestone(a["id"]).to_dict()}
 
     if command == "list_tickets":
         state = State(a["state"]) if a.get("state") else None
@@ -79,7 +79,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
     if command == "update_ticket":
         changes = {k: a[k] for k in ("title", "description", "acceptance", "objective", "verification",
                                      "priority", "milestone_id", "depends_on") if k in a and a[k] is not None}
-        return {"ok": True, "ticket": store.update_ticket(a["id"], None, **changes).to_dict()}
+        return {"ok": True, "ticket": store.update_ticket(a["id"], **changes).to_dict()}
 
     if command == "add_note":
         store.add_note(a["id"], Note(author=author, text=a["text"]))

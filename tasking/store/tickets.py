@@ -69,14 +69,12 @@ class Tickets:
         self.events.emit("ticket.created", ticket=tid, title=t.title, by=t.created_by)
         return t
 
-    def update_ticket(self, ticket_id: str, expected_version: int | None, **changes: Any) -> Ticket:
+    def update_ticket(self, ticket_id: str, **changes: Any) -> Ticket:
         with self._locked():
             data = self._t()
             d = data["tickets"].get(ticket_id)
             if d is None:
                 raise StoreError(f"no ticket {ticket_id}")
-            if expected_version is not None and d["version"] != expected_version:
-                raise Conflict(f"{ticket_id} is at version {d['version']}, expected {expected_version}")
             if "milestone_id" in changes and changes["milestone_id"] != d["milestone_id"]:
                 ms = data["milestones"].get(changes["milestone_id"] or "")
                 if ms is None or ms["status"] != MilestoneStatus.OPEN:
@@ -171,14 +169,12 @@ class Tickets:
         self.events.emit("milestone.created", milestone=mid, name=m.name)
         return m
 
-    def update_milestone(self, milestone_id: str, expected_version: int | None, **changes: Any) -> Milestone:
+    def update_milestone(self, milestone_id: str, **changes: Any) -> Milestone:
         with self._locked():
             data = self._t()
             d = data["milestones"].get(milestone_id)
             if d is None:
                 raise StoreError(f"no milestone {milestone_id}")
-            if expected_version is not None and d["version"] != expected_version:
-                raise Conflict(f"{milestone_id} is at version {d['version']}")
             if "status" in changes:
                 raise StoreError("use close_milestone(); milestones cannot be reopened")
             for k in ("name", "description", "order"):
@@ -190,7 +186,7 @@ class Tickets:
         self.events.emit("milestone.updated", milestone=milestone_id)
         return m
 
-    def close_milestone(self, milestone_id: str, expected_version: int | None) -> Milestone:
+    def close_milestone(self, milestone_id: str) -> Milestone:
         with self._locked():
             data = self._t()
             d = data["milestones"].get(milestone_id)
@@ -198,8 +194,6 @@ class Tickets:
                 raise StoreError(f"no milestone {milestone_id}")
             if d["status"] == MilestoneStatus.CLOSED:
                 raise StoreError(f"{milestone_id} is already closed")
-            if expected_version is not None and d["version"] != expected_version:
-                raise Conflict(f"{milestone_id} is at version {d['version']}")
             open_tickets = [t["id"] for t in data["tickets"].values()
                             if t["milestone_id"] == milestone_id and t["state"] not in ("DONE", "CANCELLED")]
             if open_tickets:

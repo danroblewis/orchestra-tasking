@@ -148,9 +148,7 @@ class Project:
 
     @classmethod
     def from_orchestra(cls, o: OrchestraProject) -> Project:
-        project = cls(orchestra=o, config=Config.from_toml((o.repo_root / "orchestra.toml").read_text()))
-        project.ensure_dirs()
-        return project
+        return cls(orchestra=o, config=Config.from_toml((o.repo_root / "orchestra.toml").read_text()))
 
     @property
     def key(self) -> str:

@@ -59,4 +59,4 @@ class Events(OrchestraEvents):
         return [flat(e) for e in evs], nxt
 
 
-__all__ = ["ATTENTION", "COORDINATOR", "SCHEDULER", "SUPERVISOR", "Events", "flat"]
+__all__ = ["ATTENTION", "COORDINATOR", "SCHEDULER", "SUPERVISOR", "Events"]

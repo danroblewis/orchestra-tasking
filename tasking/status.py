@@ -5,11 +5,10 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime
 
 from .config import Project
 from .events import Events
-from .model import State
+from .model import State, epoch
 from .procs import alive
 from .staging import Staging
 from .store import LocalStore
@@ -71,7 +70,7 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
         "gate": gate,
         "last_gate": {"id": last["id"], "status": last["status"], "summary": last.get("summary", ""),
                       "finished_at": last.get("finished_at")} if last else None,
-        "next_gate": [{"id": t.id, "title": t.title, "waiting": round(now - _ts(t.state_since))} for t in approved[:1]],
+        "next_gate": [{"id": t.id, "title": t.title, "waiting": round(now - (epoch(t.state_since) or now))} for t in approved[:1]],
         "queued": [{"id": t.id, "title": t.title} for t in approved[1:]],
         "on_the_way": [{"id": t.id, "title": t.title, "state": t.state.value} for t in on_the_way],
         "counts": {k: v for k, v in counts.items() if v},
@@ -82,13 +81,6 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
 def _first_paragraph(text: str | None) -> str:
     """A blocked reason's first paragraph, without its markdown backticks (the drawer has it whole)."""
     return " ".join(re.split(r"\n\s*\n", text or "", maxsplit=1)[0].replace("`", "").split())
-
-
-def _ts(iso: str) -> float:
-    try:
-        return datetime.fromisoformat(iso).timestamp()
-    except (TypeError, ValueError):
-        return time.time()
 
 
 def _ago(sec: float | None) -> str:
