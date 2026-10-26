@@ -126,8 +126,7 @@ def plan(target: Path) -> list[str]:
 
     events = Events.for_project(load_project(target), source="planner")
     # the planner is a machine of the demo too: it says what it is before its first request
-    events.publish("orchestra.machine.started", {"mode": "scheduled", "kind": "program", "listens_for": ["request.done", "request.refused"],
-                                                 "does": "creates the demo's milestone and four tickets"})
+    events.publish("orchestra.machine.started", {"mode": "scheduled", "kind": "program", "listens_for": ["request.done", "request.refused"]})
 
     def request(command: str, args: dict) -> dict:
         out = ask(events, command, args, "planner")

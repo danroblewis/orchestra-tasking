@@ -135,8 +135,7 @@ class Scheduler:
         self.store.set_scheduler(os.getpid(), time.time())
         self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
                                                           "listens_for": sorted({*REQUESTS.values(), QUERY, ACCEPTED, WORKING, REPORTED}),
-                                                          "log": str(LOG),
-                                                          "does": "offers ready tickets to workers and reviewers and applies their reports"})
+                                                          "log": str(LOG)})
         log(f"project {self.project.key} on {self.project.repo_root}; workers={self.cfg.workers} reviewers={self.cfg.reviewers}")
         paused = self.store.pipeline()
         if paused.get("paused"):

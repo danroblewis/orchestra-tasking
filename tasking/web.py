@@ -31,7 +31,7 @@ def plugin(orchestra_project) -> Plugin:
 def declared() -> list[Declared]:
     """The machine the task system provides, for Orchestra's Machines page before it is seen. The
     operator's controls publish as ``task_web`` and appear there by observation once used."""
-    return [Declared(SCHEDULER, "program", "Offers ready tickets to workers and reviewers and applies their reports.", "continuous")]
+    return [Declared(SCHEDULER, "program", "continuous")]
 
 
 def router(project: Project) -> APIRouter:
