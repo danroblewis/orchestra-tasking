@@ -328,7 +328,6 @@ timeout = "600s"
 start = "{python} -m myapp serve --port {port}"   # {python}: a venv with {artifact} installed
 ready = "http://127.0.0.1:{port}/health"
 ready_timeout = "60s"
-stop = ""
 
 [gate]
 timeout = "900s"         # per spec

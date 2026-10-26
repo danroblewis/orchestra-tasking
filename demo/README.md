@@ -67,8 +67,8 @@ Where to look, at http://127.0.0.1:8071:
   coincide by chance), so the page shows no model; "how it was found" lists each series with
   why it was left out, and that list is the honest view of this run. Discovery looks at a
   60-minute window on a 5-second grid (`[discovery]` in orchestra.toml: a shell ticket lives
-  seconds, so at the usual 30 s its whole life would fit inside one step). A model is shown on
-  the agents' demo in orchestra-agents, which runs fifteen tickets.
+  seconds, so at the usual 30 s its whole life would fit inside one step). A longer run shows a
+  model (orchestra-agents' demo is one).
 - **Core**: the event log itself.
 
 ## To go on

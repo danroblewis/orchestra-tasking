@@ -44,7 +44,6 @@ class Config:
     acceptance_start: str | None = None
     acceptance_ready: str | None = None
     acceptance_ready_timeout: float = 60.0
-    acceptance_stop: str | None = None
     gate_timeout: float = 900.0
     unit: list[TestSpec] = field(default_factory=list)
     acceptance: list[TestSpec] = field(default_factory=list)
@@ -88,7 +87,6 @@ class Config:
             acceptance_start=acc.get("start"),
             acceptance_ready=acc.get("ready"),
             acceptance_ready_timeout=parse_duration(acc.get("ready_timeout"), 60.0),
-            acceptance_stop=acc.get("stop"),
             gate_timeout=gt,
             unit=specs(g.get("unit", [])),
             acceptance=specs(g.get("acceptance", [])),

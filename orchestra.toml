@@ -21,10 +21,3 @@ push = false
 [tasks]
 workers = 0              # nothing fills the roles here: capacity zero, so no ticket is offered (README)
 reviewers = 0
-
-[gate]
-timeout = "900s"
-
-[[gate.unit]]
-name = "unit"
-command = "uv run python -m pytest -q tests/unit"

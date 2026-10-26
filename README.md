@@ -31,9 +31,8 @@ repository need not have Orchestra or the task system installed:
     uv run --project <this repo> tasking api --as planner create_ticket --args '{"title": "…", "milestone_id": "M1", "description": "…", "acceptance": "…"}'
 
 Then run something that fills the roles: the demo's programs (`demo/machines/` as they are),
-your own, or the AI agents in orchestra-agents (Claude Code, Pi or Codex), which fill `worker`
-and `reviewer` over the same bus. Settings
-are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
+your own, or any other package's machines that speak the same contract over the bus
+(orchestra-agents is one). Settings are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
 `~/.orchestrator/<key>/tasks/`; events go on Orchestra's bus. If your tasks live seconds, set
 `[discovery] step = "5s"` (with a window of 30–60 m) in `orchestra.toml`: Orchestra's default
 grid is 30 s, and a level that changes inside one step is not a stock.
