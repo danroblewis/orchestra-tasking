@@ -8,7 +8,7 @@ import random
 import sys
 import time
 
-SPEED = float(os.environ.get("TASKING_SPEED", "12"))     # 1 estimated minute of work takes 60/SPEED seconds
+SPEED = float(os.environ.get("TASKING_SPEED", "120"))    # simulated minutes per real minute: 1 estimated minute takes 60/SPEED s
 
 
 def log(who: str, msg: str) -> None:

@@ -1,5 +1,6 @@
-"""A small client for ``bd serve`` (Beads' HTTP API, /v0/beads), and the ``bd`` command for what
-the API does not offer (lease heartbeats and reclaiming stale leases).
+"""The simulator's client for Beads: a few calls to ``bd serve`` (Beads' HTTP API, /v0/beads), and
+the ``bd`` command for what the API does not offer (lease heartbeats, reclaiming stale leases).
+Beads itself is the real ``bd`` program, run as a service (bin/beads-ctl); nothing here replaces it.
 
 Routes, as Beads 1.3.2 serves them: GET /issues (status, type, parent, assignee, limit), GET
 /ready (type), POST /issues (create), PATCH /issues/{id} (a patch, optionally conditional on

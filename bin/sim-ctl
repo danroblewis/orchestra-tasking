@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# The simulated team (sim/), using Beads through its HTTP API. Needs Beads up (bin/beads-ctl start).
+#   bin/sim-ctl start | stop | status | restart <role>
+# Team: WORKERS (6), REVIEWERS (3). Pace: TASKING_SPEED (120 simulated minutes a minute),
+# TASKING_MILESTONES_PER_MINUTE (10).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+RUN=run; mkdir -p "$RUN"
+WORKERS="${WORKERS:-6}"; REVIEWERS="${REVIEWERS:-3}"
+export TASKING_REVIEWERS="$REVIEWERS" BD_NON_INTERACTIVE=1
+TEAM="planner qa release $(for i in $(seq 1 "$WORKERS"); do printf 'worker-%s ' "$i"; done)$(for i in $(seq 1 "$REVIEWERS"); do printf 'reviewer-%s ' "$i"; done)"
+start() {
+  local name=$1; shift
+  if [ -f "$RUN/$name.pid" ] && kill -0 "$(cat "$RUN/$name.pid")" 2>/dev/null; then echo "$name: already running"; return; fi
+  nohup "$@" >> "$RUN/$name.log" 2>&1 &
+  echo $! > "$RUN/$name.pid"; echo "$name: started (pid $!)"
+}
+stop() { local n=$1; if [ -f "$RUN/$n.pid" ]; then kill "$(cat "$RUN/$n.pid")" 2>/dev/null || true; rm -f "$RUN/$n.pid"; echo "$n: stopped"; fi; }
+role() { case $1 in worker-*) start "$1" python3 -m sim.cli worker "${1#worker-}" ;; reviewer-*) start "$1" python3 -m sim.cli reviewer "${1#reviewer-}" ;; *) start "$1" python3 -m sim.cli "$1" ;; esac; }
+case "${1:-status}" in
+  start) curl -s 127.0.0.1:7811/healthz >/dev/null || { echo "Beads is not up: bin/beads-ctl start"; exit 1; }; for r in $TEAM; do role "$r"; done ;;
+  stop) for f in "$RUN"/*.pid; do [ -e "$f" ] || continue; n=$(basename "$f" .pid); case $n in planner|qa|release|worker-*|reviewer-*) stop "$n" ;; esac; done ;;
+  restart) n="${2:?which role}"; stop "$n"; role "$n" ;;
+  status) for n in $TEAM; do if [ -f "$RUN/$n.pid" ] && kill -0 "$(cat "$RUN/$n.pid")" 2>/dev/null; then echo "$n: running"; else echo "$n: stopped"; fi; done ;;
+  *) echo "usage: $0 start | stop | status | restart <role>"; exit 2 ;;
+esac

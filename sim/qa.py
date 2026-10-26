@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import random
 
-from .beads import Beads
+from .bd_client import Beads
 from .common import log, main_guard, run
 
 ESCAPED = float(os.environ.get("TASKING_ESCAPED", "0.06"))
@@ -24,7 +24,7 @@ def qa() -> None:
                 b.reopen(t["id"], "escaped defect found by QA")
                 seen.discard(t["id"])                           # it will be closed again, and looked at again
                 log("qa", f"reopened {t['id']}")
-    run("qa", step, 15.0)
+    run("qa", step, 3.0)
 
 
 def main() -> None:

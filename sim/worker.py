@@ -10,10 +10,10 @@ import os
 import random
 import time
 
-from .beads import Beads, BeadsError
+from .bd_client import Beads, BeadsError
 from .common import log, main_guard, work_seconds
 
-FOLLOW_UP, CRASH = 0.08, 0.02
+FOLLOW_UP, CRASH = 0.08, 0.01
 HEARTBEAT_S = 20.0
 
 
@@ -27,7 +27,7 @@ def worker(n: int) -> None:
             ready = sorted(b.ready("task"), key=lambda i: (i.get("priority", 2), i.get("created_at", "")))
             task = next((t for t in (b.claim(i["id"]) for i in ready[:5]) if t), None)
             if task is None:
-                time.sleep(3)
+                time.sleep(0.5)
                 continue
             secs = work_seconds(task.get("estimated_minutes") or 3, skill)
             log(me, f"works on {task['id']} ({task['title']}) for {secs:.0f}s")
@@ -36,7 +36,7 @@ def worker(n: int) -> None:
                 time.sleep(secs * 4)                            # gone: no heartbeats, the lease goes stale
                 continue
             end = time.time() + secs
-            while time.time() < end:
+            while time.time() < end:                            # heartbeats only for work longer than HEARTBEAT_S
                 time.sleep(min(HEARTBEAT_S, max(0.0, end - time.time())))
                 if time.time() < end and not b.heartbeat(task["id"]):
                     log(me, f"lost {task['id']} (its lease was reclaimed)")

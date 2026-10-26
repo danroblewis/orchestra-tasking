@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Beads, the team's tracker, run as a service: a Dolt SQL server and `bd serve` (its HTTP API on
+# 127.0.0.1:7811). This is ordinary Beads; the simulator and Orchestra are only its clients.
+#   bin/beads-ctl init     a fresh tracker (destroys every issue)
+#   bin/beads-ctl start | stop | status
+set -euo pipefail
+cd "$(dirname "$0")/.."
+RUN=run; mkdir -p "$RUN"
+export BD_NON_INTERACTIVE=1
+ADDR="${BEADS_ADDR:-127.0.0.1:7811}"
+up() { curl -s "$ADDR/healthz" >/dev/null 2>&1; }
+case "${1:-status}" in
+  init)
+    "$0" stop >/dev/null 2>&1 || true
+    rm -rf .beads
+    bd init --prefix tk --server >/dev/null 2>&1
+    rm -rf .agents .claude .codex .cursor AGENTS.md CLAUDE.md     # bd init's hooks into coding agents: not wanted here
+    bd dolt start >/dev/null
+    bd config set events-journal true >/dev/null                # every change as an ordered, readable record
+    bd config set status.custom "in_review:wip" >/dev/null      # a review step
+    bd metrics off >/dev/null                                   # no anonymous usage metrics sent to Beads' authors
+    echo "a fresh tracker (prefix tk), events journal on, in_review added" ;;
+  start)
+    bd dolt start >/dev/null 2>&1 || true
+    if up; then echo "bd serve: already running"; exit 0; fi
+    nohup bd serve --addr "$ADDR" >> "$RUN/bd-serve.log" 2>&1 &
+    echo $! > "$RUN/bd-serve.pid"
+    for _ in $(seq 60); do up && { echo "bd serve: http://$ADDR/v0/beads"; exit 0; }; sleep 0.5; done
+    echo "bd serve did not come up: see $RUN/bd-serve.log"; exit 1 ;;
+  stop)
+    [ -f "$RUN/bd-serve.pid" ] && kill "$(cat "$RUN/bd-serve.pid")" 2>/dev/null && echo "bd serve: stopped" || true
+    rm -f "$RUN/bd-serve.pid"
+    bd dolt stop >/dev/null 2>&1 && echo "dolt: stopped" || true ;;
+  status)
+    up && echo "bd serve: running at http://$ADDR/v0/beads" || echo "bd serve: stopped"
+    curl -s "$ADDR/v0/beads/stats" 2>/dev/null | python3 -c "import json,sys; s=json.load(sys.stdin)['summary']; print('issues:', ', '.join(f'{k.replace(\"_issues\",\"\")} {v}' for k,v in s.items() if k.endswith('_issues')))" 2>/dev/null || true ;;
+  *) echo "usage: $0 init | start | stop | status"; exit 2 ;;
+esac

@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import time
 
-from .beads import Beads
+from .bd_client import Beads
 from .common import log, main_guard, run
 
 RECLAIM_EVERY_S, STALE = 30.0, os.environ.get("TASKING_STALE", "60s")
@@ -26,7 +26,7 @@ def release() -> None:
             r = b.bd("reclaim", "--older-than", STALE)
             if r.stdout.strip() and "no stale" not in r.stdout.lower():
                 log("release", "reclaim: " + r.stdout.strip().splitlines()[-1][:200])
-    run("release", step, 10.0)
+    run("release", step, 2.0)
 
 
 def main() -> None:

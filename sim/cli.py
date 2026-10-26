@@ -18,7 +18,7 @@ def main() -> int:
         mod.main(int(a[1]))
         return 0
     if a == ["status"]:
-        from .beads import Beads
+        from .bd_client import Beads
         print(json.dumps(Beads("status").stats().get("summary", {}), indent=1))
         return 0
     if len(a) != 1 or a[0] not in ("planner", "qa", "release"):
