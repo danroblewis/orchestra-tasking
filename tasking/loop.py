@@ -483,6 +483,7 @@ class Loop:
                                last_output_at=None, phase="prompting", phase_since=time.time(),
                                last_token_at=None, tool_name=None)
         self.events.emit("session_started", session=sid, kind=role, ticket=ticket_id)
+        self.store.measure_turn(role, self._slots.get(sid, role), started=True)
 
     def _session_idle(self, sid: str, text: str, resident: bool = False) -> None:
         proc = self.live_procs.pop(sid, None) if not resident else self._proc_for(sid)
@@ -492,6 +493,8 @@ class Loop:
         self.store.set_session(sid, status="idle", last_text=(text or "")[-500:], settled_at=time.time(), phase="idle", tool_name=None,
                                **fields)
         self.events.emit("session_settled", session=sid)
+        s = self.store.find_session(sid) or {}
+        self.store.measure_turn(s.get("kind") or sid, self._slots.get(sid, s.get("kind") or sid), started=False)
         if not resident:
             self._release(sid)
 

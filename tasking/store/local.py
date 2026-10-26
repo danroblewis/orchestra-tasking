@@ -12,6 +12,7 @@ from typing import Any, Iterator
 
 from ..config import Project
 from ..events import Events
+from ..measures import Measures
 from ..model import (
     ACTIVE,
     Milestone,
@@ -48,6 +49,7 @@ class LocalStore:
         self.project = project
         self.prefix = project.config.ticket_prefix
         self.events = events or Events.for_project(project)
+        self.measures = Measures(project)
         project.ensure_dirs()
 
     @contextmanager
@@ -99,7 +101,9 @@ class LocalStore:
             tid = f"{self.prefix}-{data['counters']['ticket']}"
             t = Ticket(id=tid, **fields)
             data["tickets"][tid] = t.to_dict()
+            points = self.measures.ticket_points(data["tickets"], data.setdefault("metric_counts", {}), source=self.events.source, created=True)
             _write(self.project.tickets_file, data)
+        self.measures.write(points)
         self.events.emit("ticket_created", ticket=tid, title=t.title, by=t.created_by)
         return t
 
@@ -150,8 +154,11 @@ class LocalStore:
             d["state_since"] = now()
             d["updated_at"] = d["state_since"]
             d["version"] += 1
+            points = self.measures.ticket_points(data["tickets"], data.setdefault("metric_counts", {}), source=self.events.source,
+                                                 src=src.value, dst=to_state.value)
             _write(self.project.tickets_file, data)
             t = Ticket.from_dict(d)
+        self.measures.write(points)
         self.events.emit("ticket_transition", ticket=ticket_id, **{"from": src.value, "to": to_state.value})
         return t
 
@@ -254,6 +261,12 @@ class LocalStore:
             s["updated_at"] = now()
             return dict(s)
         return self._mutate_runtime(fn)
+
+    def measure_turn(self, role: str, source: str, started: bool) -> None:
+        """An agent turn started or finished: its counters and how many of its role are working."""
+        points = self._mutate_runtime(lambda d: self.measures.turn_points(
+            list(d["sessions"].values()), d.setdefault("metric_counts", {}), role=role, source=source, started=started))
+        self.measures.write(points)
 
     def sessions(self) -> list[dict]:
         return list(self._r()["sessions"].values())
