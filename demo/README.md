@@ -65,8 +65,9 @@ Where to look, at http://127.0.0.1:8071:
   version with one stock, `tasks tickets (OPEN)` (the series `tasks_tickets{state="OPEN"}`), fed
   by one flow, `tasks tickets created` (the counter `tasks_tickets_created_total`), attributed to
   `task_scheduler`. A stock that only fills starts hidden, so the page looks empty until the
-  "stocks that only fill (1)" box is ticked. Discovery looks at a 60-minute window on a 30-second
-  grid (`[discovery]` in orchestra.toml), and the demo's twenty seconds of ticket changes give it
+  "stocks that only fill (1)" box is ticked. Discovery looks at a 60-minute window on a 5-second
+  grid (`[discovery]` in orchestra.toml: a shell ticket lives seconds, so at the usual 30 s its
+  whole life would fit inside one step), and the demo's twenty seconds of ticket changes give it
   nothing more. A meaningful model is shown on the sample project, not here.
 - **Core**: the event log itself.
 

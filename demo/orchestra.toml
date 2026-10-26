@@ -10,7 +10,7 @@ url = "file"
 
 [discovery]
 window = "60m"
-step = "30s"
+step = "5s"      # a shell ticket lives seconds; at 30 s its whole life fits in one step and no state is a stock
 every = "5m"
 
 # ---- the task system (sections Orchestra itself ignores) ----
