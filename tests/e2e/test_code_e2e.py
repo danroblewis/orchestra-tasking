@@ -2,10 +2,14 @@
 worker and reviewer roles over the bus (tests/fake_machine.py). A branch per ticket, the reviewer
 gets the commit and the unit tests' output in its assignment, the gate lands it."""
 
+import threading
+import time
+
 import pytest
 from conftest import git
 from fake_machine import FakeMachine
 
+from tasking import scheduler as scheduler_mod
 from tasking.events import Events
 from tasking.model import State
 from tasking.scheduler import Scheduler
@@ -96,8 +100,7 @@ def test_gate_rejection_reengages_worker_then_lands(env):
     assert t.review_rounds == 1                       # the gate rejection counted as one round
     assert t.worker_turns == 2 and t.gate_rejections == 1 and t.reviewer_rejections == 0   # re-engaged once, by the gate
     runs = store.gate_runs()
-    assert [r["status"] for r in runs] == ["rejected", "landed"]
-    assert runs[0]["rejected"] == [t.id] and runs[1]["merged"] == [t.id]
+    assert [(r["status"], r["ticket"], r["conflict"]) for r in runs] == [("rejected", t.id, False), ("landed", t.id, False)]
     kinds = [(n["author"], n["kind"]) for n in store.notes(t.id)]
     assert kinds.count(("merge_gate", "gate")) == 2   # the rejection and the landing
     assert kinds.count(("reviewer", "review")) == 2   # reviewed before each gate run
@@ -111,3 +114,33 @@ def test_gate_rejection_reengages_worker_then_lands(env):
     assert "WORK.md" in git("ls-tree", "--name-only", "main", cwd=repo)
     first_review = next(o for o in m.offers if o["role"] == "reviewer")["review"]
     assert "[failed]" in first_review["test_output"]   # the reviewer was told the tests fail on the branch
+
+
+def test_a_shutdown_lets_the_gate_finish_its_run(env):
+    """The scheduler stopped while the gate is in its stages: the run lands before anything is
+    released, so the ticket is DONE once, not sent back and landed again by the next scheduler."""
+    project, store, events, ms, repo = env
+    toml = repo / "orchestra.toml"
+    toml.write_text(toml.read_text().replace('command = "test -f README.md', 'command = "sleep 3 && test -f README.md'))
+    project.reload_config()
+    git("add", "-A", cwd=repo)
+    git("commit", "-qm", "a slow unit stage", cwd=repo)
+    t = store.create_ticket(title="Slow to land", milestone_id=ms.id)
+    sched = Scheduler(project, store, events)
+
+    def stop_in_the_gate():
+        end = time.time() + 60
+        while time.time() < end and not any(r["status"] == "running" for r in store.gate_runs()):
+            time.sleep(0.1)
+        sched.stop.set()
+    threading.Thread(target=stop_in_the_gate, daemon=True).start()
+    with FakeMachine(events):
+        sched.run(once=True)
+    assert store.get_ticket(t.id).state == State.DONE and [r["status"] for r in store.gate_runs()] == ["landed"]
+    again = Scheduler(project, store, events)
+    again.recover()
+    again.tick()
+    assert [r["status"] for r in store.gate_runs()] == ["landed"] and store.get_ticket(t.id).state == State.DONE
+    assert len([e for e in events.read(0, limit=10000)[0] if e["type"] == "gate.landed"]) == 1
+    assert sum("landed on" in n["text"] for n in store.notes(t.id)) == 1
+    assert any("waiting for the gate run to finish" in line for line in scheduler_mod.LOG.read_text().splitlines())

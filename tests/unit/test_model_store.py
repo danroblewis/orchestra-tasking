@@ -48,19 +48,19 @@ def test_version_conflict_and_blocked_reason(store):
 
 
 def test_operator_capacity_is_the_ceiling_a_planner_dials_under(store):
-    base = store.capacity()
-    assert base["max_workers"] == base["configured_workers"] and not base["operator_set"]
-    cap = store.set_operator_capacity(base["configured_workers"] + 3, None)
-    assert cap["max_workers"] == base["configured_workers"] + 3 and cap["workers"] == cap["max_workers"]   # live, above the file's number
+    configured = store.project.config.workers
+    assert store.capacity()["max_workers"] == configured
+    cap = store.set_operator_capacity(configured + 3, None)
+    assert cap["max_workers"] == configured + 3 and cap["workers"] == cap["max_workers"]   # live, above the file's number
     store.set_capacity(1, None, note="slow today", by="coordinator")
     cap = store.capacity()
-    assert cap["workers"] == 1 and cap["max_workers"] == base["configured_workers"] + 3                     # the dial sits under the ceiling
+    assert cap["workers"] == 1 and cap["max_workers"] == configured + 3 and cap["note"] == "slow today"   # the dial sits under the ceiling
     store.set_capacity(99, None, by="coordinator")
-    assert store.capacity()["workers"] == base["configured_workers"] + 3                                    # and never above it
+    assert store.capacity()["workers"] == configured + 3                                    # and never above it
     cap = store.set_operator_capacity(0, 0)
     assert cap["workers"] == 0 and cap["reviewers"] == 0
     cap = store.set_operator_capacity(None, None)
-    assert not cap["operator_set"] and cap["max_workers"] == base["configured_workers"]                      # back to orchestra.toml
+    assert cap["max_workers"] == configured                                                 # back to orchestra.toml
 
 
 def test_the_runtime_record_has_named_methods(store):

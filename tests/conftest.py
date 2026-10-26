@@ -1,6 +1,7 @@
-"""What the tests share: a project in a fresh git repository under a temporary home, and what the
-task system asked a planner to look at."""
+"""What the tests share: a project in a fresh git repository under a temporary home, a free port,
+and what the task system asked a planner to look at."""
 
+import socket
 import subprocess
 
 import pytest
@@ -35,6 +36,12 @@ def project(tmp_path, monkeypatch):
     git("commit", "-qm", "orchestra config", cwd=repo)
     monkeypatch.setenv("ORCHESTRA_REPO", str(repo))
     return p
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def asked(events, to):

@@ -15,9 +15,9 @@ shell runner and a file checker (`demo/`); elsewhere, anything else. This file i
 - It knows **tickets, milestones, roles, capacity, leases, workspaces, the gate**. A role is a
   name with a capacity (how many tickets may be offered to it at once) and a lease.
 - It does **not** know what a machine is made of. It reads an acceptance for the instance that
-  holds the work and a report for its verdict, nothing more. No sessions, transcripts, prompts
-  or harnesses are here; the package that runs AI agents (orchestra-agents) is a machine like
-  any other and imports nothing from this one.
+  holds the work and a report for its verdict, nothing more. What a machine is made of is not
+  here; a package that runs AI agents is a machine like any other and imports nothing from this
+  one.
 - **Only the scheduler changes a ticket's state**, from a report (section 3) or a planner's
   request (section 3). A planner is whatever decides what the work is: a person's script, a
   program, an agent in another package. The planner roles the task system names in its
@@ -56,8 +56,8 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | | `READY_FOR_REVIEW` | waits for a reviewer |
 | | `REJECTED` | a reviewer or the gate sent it back; waits for a worker, who is given `feedback` |
 | | `APPROVED` | approved; in code mode waits for the gate |
-| active | `IN_PROGRESS` | offered to or held by a worker |
-| | `IN_REVIEW` | offered to or held by a reviewer |
+| active | `IN_PROGRESS` | held by a worker |
+| | `IN_REVIEW` | held by a reviewer |
 | | `MERGING` | in a gate run (code mode) |
 | terminal | `DONE` | approved and, in code mode, landed on the base branch |
 | | `CANCELLED` | a planner cancelled it |
@@ -66,14 +66,15 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 
 | From | To | Cause |
 |---|---|---|
-| `OPEN`, `REJECTED` | `IN_PROGRESS` | the scheduler offers it to a worker (`worker_turns` + 1) |
+| `OPEN`, `REJECTED` | `IN_PROGRESS` | a worker accepts the scheduler's offer (`worker_turns` + 1) |
 | `IN_PROGRESS` | `READY_FOR_REVIEW` | the worker reports it; in code mode the branch head becomes `reviewed_commit` |
 | `IN_PROGRESS` | `BLOCKED` | the worker reports it with a reason; or the worker went away three times in a row; or in code mode the branch has no commits |
-| `IN_PROGRESS` | `OPEN` | the worker went away (lease ran out, no report, or a report the task system cannot use), the operator stopped it, or the scheduler restarted or shut down: offered again; or nobody accepted the offer within the lease: offered again, counted against no one |
-| `READY_FOR_REVIEW` | `IN_REVIEW` | the scheduler offers it to a reviewer |
+| `IN_PROGRESS` | `OPEN` | the worker went away (lease ran out, no report, or a report the task system cannot use), the operator stopped it, or the scheduler restarted or shut down: offered again |
+| `READY_FOR_REVIEW` | `IN_REVIEW` | a reviewer accepts the scheduler's offer |
+| `READY_FOR_REVIEW` | `REJECTED` | the ticket's folder or worktree is missing at review time (`rejected_by = task_scheduler`; not a review round) |
 | `IN_REVIEW` | `APPROVED` | the reviewer approves |
 | `IN_REVIEW` | `REJECTED` | the reviewer rejects with feedback (`review_rounds` + 1); or three reviews in a row ended without a verdict |
-| `IN_REVIEW` | `READY_FOR_REVIEW` | the reviewer went away or was stopped, nobody accepted the offer, or the review could not be prepared: reviewed again |
+| `IN_REVIEW` | `READY_FOR_REVIEW` | the reviewer went away or was stopped: reviewed again |
 | `APPROVED` | `DONE` | tasks mode: nothing to merge |
 | `APPROVED` | `MERGING` | code mode: the gate takes it |
 | `MERGING` | `DONE` | the gate landed it |
@@ -82,7 +83,8 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | `BLOCKED` | `OPEN` | a planner unblocks it |
 | any waiting state | `CANCELLED` | a planner cancels it (an active ticket must settle first) |
 
-When `review_rounds` reaches `review_rounds_before_escalation` (and every multiple of it), the
+An offer nobody accepts is only a released assignment: no transition, nothing counted. When
+`review_rounds` reaches `review_rounds_before_escalation` (and every multiple of it), the
 coordinator role is asked to decide; nothing fails automatically. On start and on shutdown the
 scheduler tells whoever holds work to stop (`task.released`), drops every assignment and moves
 every active ticket to the waiting state before it, with a note: no zombies.
@@ -103,10 +105,10 @@ with its instance; it publishes `task.working` every `HEARTBEAT_S` (30 s) while 
 `task.reported` with its report when done; the scheduler publishes `task.released` when the
 lease (`LEASE_S`, 180 s without a word) runs out, when the operator stops the work, when another
 instance already holds it, or when it restarts or shuts down. The first instance to accept holds
-the ticket and becomes its `owner`; a heartbeat or report from any other source is ignored. An
-offer nobody accepts within the lease is released and offered again, counted against no one. The
-lease and the heartbeat are fixed, and every offer says its `lease_s`: a machine accepts only
-what it can do within them.
+the ticket, which moves to `IN_PROGRESS` or `IN_REVIEW` with that instance as its `owner`; a
+heartbeat or report from any other source is ignored. An offer nobody accepts within the lease
+is released and offered again, and changed nothing. The lease and the heartbeat are fixed, and
+every offer says its `lease_s`: a machine accepts only what it can do within them.
 
 **Requests** (`tasking/requests.py`). A planner changes tickets only by asking: `task.requested`
 (create), `task.change_requested`, `task.note_requested`, `task.cancel_requested`,
@@ -121,10 +123,13 @@ and milestones, not who asks. The scheduler's desk applies it with `tasking/api.
 `request.done` {request, result} or `request.refused` {request, error}. `tasking api` sends one
 such request from the command line; `requests.ask` does it from Python.
 
-**Attention.** `task.attention_needed` {to, reason, ticket?} from the scheduler when a planner
-should look: a ticket blocked, rejected again and again, done; a ticket or milestone created by
-someone else; the base branch broken; the pipeline paused. `to` is the planner role,
-`coordinator` or `supervisor`. Nothing listens unless a planner machine does.
+**Attention.** `task.attention_needed` {to, reason, ticket?} from the task system when a planner
+should decide something, and only then: a ticket `BLOCKED`; a ticket rejected at every multiple
+of `review_rounds_before_escalation`; a ticket landed on the base branch; the base branch broken;
+a gate error; the pipeline still paused after a restart; a staging deploy failed. `to` is the
+planner role, `coordinator` or `supervisor`. Routine creations and completions are not
+attention: `milestone.created`, `ticket.created` and `ticket.transitioned` carry them for anyone
+listening. Nothing listens unless a planner machine does.
 
 **Announcement.** Every machine publishes `orchestra.machine.started` when it starts (the
 scheduler: `package: tasks`, `mode: continuous`, what it `listens_for`, where its `log` is).
@@ -137,7 +142,10 @@ listening, in families named up to the first dot (Orchestra's event map groups t
 `kill.requested`, `pipeline.paused`/`resumed`, `probe.failed`/`recovered`,
 `gate.started`/`conflict`/`landed`/`base_broken`/`rejected`/`error`,
 `staging.deployed`/`failed`/`restarted`, `scheduler.started`/`stopped`. Orchestra never reads
-their data.
+their data. These families and the fields named here are part of what listeners may rely on,
+like the assignment table and the request names: `ticket.transitioned` {ticket, from, to, owner},
+`ticket.created` {ticket}, `gate.base_broken` {gate_run}, `probe.failed`/`probe.recovered`
+{probe}, `scheduler.started`/`stopped`; rename them deliberately and say so in the commit.
 
 ## 4. The scheduler (`tasking/scheduler.py`, `tasking run`)
 
@@ -145,11 +153,11 @@ One process per project. On start it recovers (above). Every 3 s it:
 
 1. reloads `orchestra.toml`, reaps finished threads, and for any ticket the operator asked to
    stop releases the assignment and sends the ticket back at once, counting it against no one;
-2. **follows the bus**: the first acceptance names the holder and starts the lease, a heartbeat
-   extends it, a report is applied to the ticket and then the assignment is dropped (a report
-   that cannot be applied still frees the ticket: back to waiting, with a note); then every lease
-   that ran out is released: a holder that went quiet is a crash, an offer nobody took is offered
-   again;
+2. **follows the bus**: the first acceptance names the holder, moves the ticket to the role's
+   active state and starts the lease, a heartbeat extends it, a report is applied to the ticket
+   and then the assignment is dropped (a report that cannot be applied still frees the ticket:
+   back to waiting, with a note); then every lease that ran out is released: a holder that went
+   quiet is a crash, an offer nobody took is dropped and offered again;
 3. **offers work**: reviews first (finished work lands before new work starts), then, unless
    pickup is paused, ready `OPEN` and `REJECTED` tickets in effective-priority order, up to the
    role's capacity. Capacity is the operator's ceiling from the Dashboard if set, otherwise
@@ -168,16 +176,21 @@ machine's last words.
 changes are committed, and a branch with no commits beyond the base is `BLOCKED` instead).
 `BLOCKED` records the reason and asks the coordinator. No report (the lease ran out, or the
 report was unusable) is a crash: up to two in a row go back to `OPEN` with a note and are offered
-again; the third blocks the ticket. An operator stop, a restart or a shutdown goes back to `OPEN`
-without counting; an offer nobody accepted gives its worker turn back. Notes and feedback written
-by the task system are signed `task_scheduler` and state what happened.
+again; the third blocks the ticket. `failed` true in the report means the machine went away or
+its lease ran out, retried up to twice; `failed` false with a null report means it ended on
+purpose without one, and the ticket is `BLOCKED` for a planner. An operator stop, a restart or
+a shutdown goes back to `OPEN` without counting; an offer nobody accepted changes nothing. Notes
+and feedback written by the task system are signed `task_scheduler` and state what happened.
 
 **Applying a reviewer's report.** `APPROVED` moves to `APPROVED` (and in tasks mode straight to
 `DONE`); `REJECTED` records the feedback and sends the ticket back, `rejected_by` the reviewer.
 No verdict is not a rejection: the review is redone, up to three times, before the ticket is sent
 back by the task system (`rejected_by` `task_scheduler`); the merge gate's send-backs say
 `merge_gate`. In code mode a review whose preparation fails (the unit tests cannot run, git
-fails) is not offered: the ticket goes back to `READY_FOR_REVIEW`.
+fails) is not offered: the record is dropped and the ticket, still `READY_FOR_REVIEW`, is offered
+again. A ticket whose folder or worktree is gone at review time is rejected by the task system
+without a review round, since nothing was reviewed. On shutdown the scheduler lets a gate run
+finish before it releases anything.
 
 **Requests** are served by the desk, a thread in the same process (section 3). The scheduler's
 log is `<state>/logs/scheduler.log`, which it announces so Orchestra can show it.
@@ -235,8 +248,9 @@ event types of section 3. The demo's `demo/machines/shell_worker.py` and
 4. **Accept**, only what you can do: the offer says its `lease_s`, and a machine that cannot
    keep the lease, or cannot do the role's work, leaves the offer alone (it is offered again, and
    nothing is counted). To accept, publish `task.accepted` {assignment, ticket, role, instance}
-   with `subject=ticket`. If another instance was first you get `task.released` naming your
-   instance: stop.
+   with `subject=ticket`; `instance` is your source, exactly (an acceptance whose instance is not
+   its source is refused, and the offer stays open). If another instance was first you get
+   `task.released` naming your instance: stop.
 5. **Work, and say so**: do the task in the workspace; every 30 s publish `task.working`
    {assignment} so the lease goes on (a review that takes a moment needs none). If
    `task.released` names your assignment, stop what you are doing: the ticket is no longer yours.
@@ -246,9 +260,12 @@ event types of section 3. The demo's `demo/machines/shell_worker.py` and
    note on the ticket; the feedback is what the next worker is told; the blocked reason is what
    the planner reads in the banner.
 
-What a worker cannot do, it says: the demo's worker reports `BLOCKED` when a ticket gives no
-commands, and when a rejected ticket would run the same commands again, because a program cannot
-act on a reviewer's words. A reviewer that cannot judge a criterion says so in its summary. The
+A worker that cannot act on a rejection's feedback must report `BLOCKED` instead of redoing
+identical work; otherwise a program worker and a program reviewer argue forever, with an
+attention event at every multiple of the threshold and nothing else stopping them: the scheduler
+re-offers a `REJECTED` ticket at once and has no floor of its own without a planner. The demo's
+worker does this when a rejected ticket would rerun the same commands (and when a ticket gives
+no commands at all). A reviewer that cannot judge a criterion says so in its summary. The
 scheduler never needs to know why; it moves the ticket and asks the planner.
 
 A planner is a machine too: it publishes requests (section 3) and listens for
@@ -355,19 +372,23 @@ Inside Orchestra's web UI, under the plugin name `tasks`:
   decision; a package that shows them itself calls `TaskAttention.standAside()`.
 
 `tasks-boot.js` is the one script Orchestra loads on every page: it loads `tasks.js` (the shared
-code, the controls and the look, `tasks.css`) and then the three above. The plugin declares two
-machines, `task_scheduler` and `task_web` (the operator's controls), so the Machines page knows
-their package before they are seen.
+code, the controls and the look every page needs, `tasks.css`) and then the three above. The
+Tickets page adds its own `tickets.js` (the graph) and `tickets.css`. The plugin declares one
+machine, `task_scheduler`; the operator's controls publish as `task_web` and appear on the
+Machines page once used.
 
 API at `/api/plugins/tasks`:
 
 | Route | What |
 |---|---|
-| `GET /state` | what the Tickets page draws: tickets with readiness and effective priority, milestones, counts by state, whether the scheduler runs (the whole snapshot is the `snapshot` query on the bus) |
-| `GET /board` | the Tasks panel: tickets in flight with their assignment (instance, since when), counts by state, capacity, pause, scheduler |
+| `GET /state` | what the Tickets page draws: tickets with readiness and priority, milestones, counts by state, whether the scheduler runs (the whole snapshot is the `snapshot` query on the bus) |
+| `GET /board` | the Tasks panel: tickets in flight (held or offered) with their assignment (instance, since when), counts by state, capacity, pause, scheduler |
 | `GET /attention` | the blocked tickets |
-| `GET /tickets/{id}` | one ticket with its notes and worktree |
-| `POST /control` | the operator's controls: `{action: pause\|resume}`, `{action: capacity, workers, reviewers}` (omit both to return to the file), `{action: kill, ticket}` (release whoever holds it; the ticket goes back) |
+| `GET /tickets/{id}` | one ticket with its notes |
+| `POST /control` | the operator's controls: `{action: pause\|resume}`, `{action: capacity, workers, reviewers}` (omit both to return to the file), `{action: kill, ticket}` (release whoever holds it, and the ticket goes back; or withdraw an offer nobody took) |
+
+Every request re-reads the task system's sections of `orchestra.toml`, so the capacity ceiling
+shown is the file's current one.
 
 These controls are the only writes a person has; tickets change only through the scheduler
 (Orchestra's rule: humans act through machines, here a planner's request).

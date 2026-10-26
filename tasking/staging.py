@@ -4,25 +4,26 @@ SPEC.md section 5. Kept running by the scheduler; redeployed by the gate on ever
 from __future__ import annotations
 
 import datetime as _dt
-import fcntl
 import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
 from pathlib import Path
 
 import psutil
 
 from .config import Project
-from .events import Events
+from .events import SUPERVISOR, Events
 from .model import now
 from .procs import alive
 from .store import LocalStore
+from .store.files import locked
 
 HEALTH_STALE = 600        # seconds a running staging process may go without a healthy answer
 
@@ -60,7 +61,6 @@ def build_python(project: Project, artifact: str | None) -> str:
     created next to the artifact (artifacts/<build>/venv) with the artifact installed,
     so long-lived processes never depend on a uv temp environment that may vanish.
     For anything else, the current interpreter."""
-    import sys
     if not artifact or not artifact.endswith((".whl", ".tar.gz")) or not shutil.which("uv"):
         return sys.executable
     venv = Path(artifact).parent / "venv"
@@ -117,14 +117,10 @@ class Staging:
                 continue
         return out
 
-    def _port_listeners(self, port: int) -> list[int]:
-        p = subprocess.run(["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, check=False)
-        return [int(x) for x in p.stdout.split() if x.isdigit()]
-
     def stop(self) -> None:
-        """Stop the staging process group completely, then anything still holding the
-        staging port. A process started inside the group that survives SIGTERM, or an
-        instance whose record was lost, must not linger and mask the next deploy."""
+        """Stop the staging process group completely: a process started inside the group that
+        survives SIGTERM must not linger and mask the next deploy. Only the group this task
+        system started is touched; whatever else holds the port is not its to kill."""
         st = self.state()
         pid = st.get("pid")
         if pid:
@@ -145,16 +141,25 @@ class Staging:
                     os.kill(p, signal.SIGKILL)
                 except OSError:
                     pass
-        for p in self._port_listeners(self.cfg.staging_port):
-            self._log(f"killing stray listener on port {self.cfg.staging_port} (pid {p})")
-            try:
-                os.kill(p, signal.SIGKILL)
-            except OSError:
-                pass
         self._set(pid=None, status="stopped")
+
+    def _port_free(self, port: int) -> bool:
+        """Nothing listens on the port (connections in TIME_WAIT from the last build do not count,
+        as a server binds past them)."""
+        with socket.socket() as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+        return True
 
     def _start(self, build: dict) -> bool:
         port = self.cfg.staging_port
+        if not self._port_free(port):
+            self._log(f"port {port} in use by another process; build {build['id']} not started")
+            self._set(status="failed", pid=None, reason=f"port {port} in use by another process")
+            return False
         try:
             python = build_python(self.project, build.get("artifact_path"))
         except subprocess.CalledProcessError as e:
@@ -240,25 +245,19 @@ class Staging:
         self._log(f"tunnel probe {public} failed; see {self.project.staging_dir / 'tunnel.log'}")
         return False
 
-    @contextmanager
-    def _exclusive(self):
+    @property
+    def _lock(self) -> Path:
         """One deploy/restart at a time per project, across processes (the gate in the
         scheduler and a manual `tasking staging deploy` must not interleave)."""
-        self.project.staging_dir.mkdir(parents=True, exist_ok=True)
-        with (self.project.staging_dir / ".deploy.lock").open("a+") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+        return self.project.staging_dir / ".deploy.lock"
 
     def deploy(self, build: dict) -> bool:
-        with self._exclusive():
+        with locked(self._lock):
             return self._deploy(build)
 
     def _deploy(self, build: dict) -> bool:
         """Promote a build: stop the previous, start this one, probe health and tunnel.
-        On failure restart the previous build and ask the supervisor (a planner) to look."""
+        On failure restart the previous build and tell the supervisor role."""
         if not self.cfg.staging_configured:
             return False
         prev_id = self.state().get("current_build_id")
@@ -270,7 +269,7 @@ class Staging:
                              local_url=self.local_url(), public_url=self.public_url())
             return True
         self.events.emit("staging.failed", build=build["id"])
-        self.events.attention("supervisor", f"staging deploy of build {build['id']} failed (see staging log); rolled back")
+        self.events.attention(SUPERVISOR, f"staging deploy of build {build['id']} failed (see staging log); rolled back")
         prev = self.store.builds().get(prev_id or "")
         if prev:
             self.stop()
@@ -285,25 +284,19 @@ class Staging:
             return
         st = self.state()
         if st.get("status") in ("running", "starting") and not st["alive"]:
-            self.project.staging_dir.mkdir(parents=True, exist_ok=True)
-            with (self.project.staging_dir / ".deploy.lock").open("a+") as fh:
-                try:
-                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except OSError:
+            with locked(self._lock, wait=False) as got:
+                if not got:
                     return  # a deploy/restart owns staging right now
-                try:
-                    st = self.state()
-                    if st["alive"]:
-                        return
-                    build = self.store.builds().get(st.get("current_build_id") or "")
-                    if build:
-                        self._log("staging process died; restarting")
-                        self.stop()
-                        self._start(build)
-                        self.ensure_tunnel()
-                        self.events.emit("staging.restarted", build=build["id"])
-                finally:
-                    fcntl.flock(fh, fcntl.LOCK_UN)
+                st = self.state()
+                if st["alive"]:
+                    return
+                build = self.store.builds().get(st.get("current_build_id") or "")
+                if build:
+                    self._log("staging process died; restarting")
+                    self.stop()
+                    self._start(build)
+                    self.ensure_tunnel()
+                    self.events.emit("staging.restarted", build=build["id"])
         elif st.get("status") == "running" and st["alive"]:
             # probe health every 15s, not every tick, so the staging log is not
             # dominated by the task system's own health requests
@@ -327,7 +320,7 @@ class Staging:
 
     def restart(self) -> str:
         """Returns 'ok', 'no_build', 'start_failed', or 'tunnel_failed'."""
-        with self._exclusive():
+        with locked(self._lock):
             return self._restart()
 
     def _restart(self) -> str:

@@ -12,10 +12,8 @@ ORCHESTRA_EVENTS_URL), so there is one place that decides where the events go.""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from orchestra.bus import EventBus
 from orchestra.events import Events as OrchestraEvents
 
 if TYPE_CHECKING:
@@ -23,20 +21,18 @@ if TYPE_CHECKING:
 
 SCHEDULER = "task_scheduler"
 ATTENTION = "task.attention_needed"
+COORDINATOR, SUPERVISOR = "coordinator", "supervisor"     # the planner roles attention is addressed to: names, not programs here
 
 
 def flat(ev: dict) -> dict:
     """An event as this package reads it: its data's fields, with ``type``, ``ts``, ``source``."""
     data = ev.get("data")
     out = dict(data) if isinstance(data, dict) else {"data": data}
-    out.update(type=ev.get("type"), ts=ev.get("time"), source=ev.get("source"), id=ev.get("id"))
+    out.update(type=ev.get("type"), ts=ev.get("time"), source=ev.get("source"))
     return out
 
 
 class Events(OrchestraEvents):
-    def __init__(self, path: Path | None = None, *, bus: EventBus | None = None, source: str):
-        super().__init__(path, bus=bus, source=source)
-
     @classmethod
     def for_project(cls, project: Project, source: str) -> Events:
         return cls(bus=OrchestraEvents.for_project(project.orchestra, source=source).bus, source=source)
@@ -46,9 +42,11 @@ class Events(OrchestraEvents):
         return flat(self.publish(type, data or None, **({"subject": str(subject)} if subject else {})))
 
     def attention(self, to: str, reason: str, ticket: str | None = None) -> dict:
-        """The task system needs a planner's attention (a ticket blocked, rejected again and
-        again, done; the pipeline broken): an event for whatever machine fills the planner role
-        ``to`` (coordinator, supervisor) to listen for, not a write into its queue."""
+        """The task system needs a planner's decision: a ticket blocked, rejected at every
+        multiple of the threshold, code landed, the base branch broken, a gate error, the
+        pipeline still paused after a restart, a staging deploy failed. An event for whatever
+        machine fills the planner role ``to`` (coordinator, supervisor) to listen for, not a write
+        into its queue; routine creations and completions are in ``ticket.*`` and ``milestone.*``."""
         return self.emit(ATTENTION, to=to, reason=reason, **({"ticket": ticket} if ticket else {}))
 
     def read(self, since: int = 0, limit: int = 500) -> tuple[list[dict], int]:
@@ -56,4 +54,4 @@ class Events(OrchestraEvents):
         return [flat(e) for e in evs], nxt
 
 
-__all__ = ["SCHEDULER", "Events", "flat"]
+__all__ = ["ATTENTION", "COORDINATOR", "SCHEDULER", "SUPERVISOR", "Events", "flat"]

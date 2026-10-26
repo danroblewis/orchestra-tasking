@@ -13,12 +13,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from orchestra.config import ConfigError, find_repo_root, home, parse_duration, project_key
+from orchestra.config import ConfigError, parse_duration
 from orchestra.config import Project as OrchestraProject
 from orchestra.config import load_project as load_orchestra_project
 
-__all__ = ["Config", "ConfigError", "Project", "TestSpec", "find_repo_root", "home", "init_project",
-           "load_project", "parse_duration", "project_key"]
+__all__ = ["Config", "ConfigError", "Project", "TestSpec", "init_project", "load_project", "parse_duration"]
 
 
 @dataclass

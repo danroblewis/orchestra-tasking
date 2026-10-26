@@ -11,7 +11,7 @@ from typing import Any
 from .config import Project
 from .events import Events
 from .model import ACTIVE, TERMINAL, Note, State
-from .requests import REQUESTS
+from .staging import Staging
 from .store import LocalStore, StoreError
 
 
@@ -23,8 +23,6 @@ def _ticket_view(store: LocalStore, ticket_id: str) -> dict:
 
 def handle(project: Project, store: LocalStore, events: Events, command: str, args: dict[str, Any], role: str = "") -> dict:
     a = args or {}
-    if command in REQUESTS and not role:
-        raise StoreError("a request names who asks (by)")
     author = role
 
     if command == "project_status":
@@ -48,7 +46,6 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
 
     if command == "create_milestone":
         m = store.create_milestone(name=a["name"], description=a.get("description", ""))
-        events.attention("coordinator", f"milestone {m.id} created by {author}")
         return {"ok": True, "milestone": m.to_dict()}
 
     if command == "update_milestone":
@@ -76,8 +73,6 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
             milestone_id=a["milestone_id"], priority=int(a.get("priority") or 5),
             depends_on=list(a.get("depends_on") or []), created_by=author,
         )
-        if author != "coordinator":               # the attention protocol: the coordinator role hears of others' tickets
-            events.attention("coordinator", f"ticket {t.id} created by {author}: {t.title}", ticket=t.id)
         return {"ok": True, "ticket": t.to_dict()}
 
     if command == "update_ticket":
@@ -104,7 +99,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
         if t.state != State.BLOCKED:
             raise StoreError(f"{t.id} is {t.state}, not BLOCKED")
         store.add_note(t.id, Note(author=author, text=f"unblocked: {a.get('note', '')}"))
-        t = store.transition(t.id, t.version, State.OPEN, blocked_reason=None,
+        t = store.transition(t.id, t.version, State.OPEN, blocked_reason=None, rejected_by=None,   # the planner's word replaces the rejection's
                              feedback=f"the blocker was resolved by {author}: {a.get('note', '')}")
         return {"ok": True, "ticket": t.to_dict()}
 
@@ -117,7 +112,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
                 "message": f"effective workers={cap['workers']} (max {cap['max_workers']}), reviewers={cap['reviewers']} (max {cap['max_reviewers']})"}
 
     if command == "list_gate_runs":
-        return {"ok": True, "runs": [{k: r.get(k) for k in ("id", "status", "batch", "started_at", "finished_at", "summary")}
+        return {"ok": True, "runs": [{k: r.get(k) for k in ("id", "status", "ticket", "started_at", "finished_at", "summary")}
                                      for r in store.gate_runs()[-20:]]}
 
     if command == "get_gate_run":
@@ -127,7 +122,6 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
         raise StoreError(f"no gate run {a['id']}")
 
     if command == "get_staging_status":
-        from .staging import Staging
         st = Staging(project, store, events)
         return {"ok": True, "staging": st.state(), "log_tail": st.logs(3000)}
 

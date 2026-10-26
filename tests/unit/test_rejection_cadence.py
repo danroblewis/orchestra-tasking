@@ -39,7 +39,7 @@ def test_escalation_fires_at_the_threshold_and_its_multiples(project):
             for _ in range(NO_VERDICT_BUDGET + 1):                                    # the budget's reviews end without a
                 turn(None)                                                            # verdict, then the task system sends it back
         t = store.get_ticket(t.id)
-        assert t.state == State.IN_PROGRESS                                           # rejected, and offered to a worker again
+        assert t.state == State.REJECTED and [x["role"] for x in store.assignments().values()] == ["worker"]   # offered to a worker again
         assert t.rejected_by == ("reviewer" if i % 2 else "task_scheduler")           # the ticket says who sent it back
         if len(asked(events, "coordinator")) > len(fired):
             fired.append(i)

@@ -3,12 +3,17 @@ protocol on the bus (tasking/assignments.py): it accepts what is offered to its 
 work, and reports. What the scheduler does with the answers is under test, not who gives them.
 
 - worker: in a task's folder it writes RESULT.md; in a code worktree it adds a line to WORK.md
-  and commits. ``block`` reports BLOCKED instead; ``break_first`` also deletes README.md on the
-  first attempt (the unit command checks for it) and restores it on the next.
-- reviewer: APPROVED, or REJECTED the first time when ``reject_first``.
-- ``instance`` names it (``worker/<instance>``). With ``heartbeat`` set it works slowly: after
-  accepting it publishes task.working every that many seconds and reports only once ``finish``
-  is set; a task.released naming its assignment (and it, or nobody in particular) stops it."""
+  and commits. ``block`` reports BLOCKED instead; ``block_on_rejection`` reports BLOCKED when
+  the offer says the ticket was rejected (what a worker that cannot act on feedback does);
+  ``break_first`` also deletes README.md on the first attempt (the unit command checks for it)
+  and restores it on the next.
+- reviewer: APPROVED, or REJECTED the first time when ``reject_first``, or every time when
+  ``always_reject``.
+- ``instance`` names it (``worker/<instance>``); ``claims`` is what it says its instance is in
+  task.accepted when that should differ from its source. With ``heartbeat`` set it works
+  slowly: after accepting it publishes task.working every that many seconds and reports only
+  once ``finish`` is set; a task.released naming its assignment (and it, or nobody in
+  particular) stops it."""
 
 from __future__ import annotations
 
@@ -20,10 +25,11 @@ from tasking.assignments import ACCEPTED, ASSIGNED, RELEASED, REPORTED, WORKING,
 
 
 class FakeMachine:
-    def __init__(self, events, roles=("worker", "reviewer"), *, instance="1", block=False, break_first=False,
-                 reject_first=False, heartbeat: float | None = None):
-        self.events, self.roles, self.instance = events, tuple(roles), instance
-        self.block, self.break_first, self.reject_first, self.heartbeat = block, break_first, reject_first, heartbeat
+    def __init__(self, events, roles=("worker", "reviewer"), *, instance="1", claims: str | None = None, block=False,
+                 block_on_rejection=False, break_first=False, reject_first=False, always_reject=False, heartbeat: float | None = None):
+        self.events, self.roles, self.instance, self.claims = events, tuple(roles), instance, claims
+        self.block, self.block_on_rejection, self.break_first = block, block_on_rejection, break_first
+        self.reject_first, self.always_reject, self.heartbeat = reject_first, always_reject, heartbeat
         self.offers: list[dict] = []
         self.finish = threading.Event()
         self._broke: set[str] = set()
@@ -58,7 +64,7 @@ class FakeMachine:
         role, tid, aid = a["role"], a["ticket"], a["assignment"]
         inst = self._me(role)
         say = lambda kind, **d: self.events.publish(kind, {"assignment": aid, "ticket": tid, "role": role, **d}, source=inst, subject=tid)
-        say(ACCEPTED, instance=inst)
+        say(ACCEPTED, instance=self.claims or inst)
         if self.heartbeat:
             while not self.finish.wait(self.heartbeat):
                 if aid in self._released or self._stop.is_set():
@@ -73,6 +79,8 @@ class FakeMachine:
         tid = a["ticket"]
         if self.block:
             return {"state": "BLOCKED", "summary": "cannot", "blocked_reason": "need a decision"}, None
+        if self.block_on_rejection and (a.get("brief") or {}).get("rejected_by"):
+            return {"state": "BLOCKED", "summary": "cannot act on the feedback", "blocked_reason": "this worker cannot act on review feedback"}, None
         if a.get("branch") is None:                                    # a task
             (cwd / "RESULT.md").write_text(f"# {tid}\n\nthe result\n")
             return {"state": "READY_FOR_REVIEW", "summary": "wrote RESULT.md"}, None
@@ -89,7 +97,7 @@ class FakeMachine:
 
     def _review(self, a: dict, cwd: Path):
         commit = (a.get("review") or {}).get("commit")
-        if self.reject_first and a["ticket"] not in self._rejected:
+        if self.always_reject or (self.reject_first and a["ticket"] not in self._rejected):
             self._rejected.add(a["ticket"])
             return {"verdict": "REJECTED", "summary": "needs work", "feedback": "1. add more"}, commit
         return {"verdict": "APPROVED", "summary": "looks good"}, commit

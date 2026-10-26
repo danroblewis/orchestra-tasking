@@ -205,8 +205,8 @@ class Tickets:
         return m
 
     def ticket_views(self) -> dict:
-        """What the pages draw: every ticket with its readiness (why it waits, effective priority),
-        the milestones in order, and the counts by state."""
+        """What the pages draw: every ticket with its readiness (why it waits, its priority with
+        what changed it), the milestones in order, and the counts by state."""
         data = self._t()
         tickets = [Ticket.from_dict(d) for d in data["tickets"].values()]
         counts = {s.value: 0 for s in State}
@@ -214,14 +214,13 @@ class Tickets:
             counts[x.state.value] += 1
         by_id = {x.id: x for x in tickets}
         milestones = {k: Milestone.from_dict(v) for k, v in data["milestones"].items()}
-        running_workers = sum(1 for a in self.assignments().values() if a.get("role") == "worker")
+        offered = {a["ticket"] for a in self.assignments().values() if a.get("role") == "worker"}   # held or offered to a worker
         cap = self.capacity()
         eff = effective_priorities(by_id, self.project.config.aging_days_per_level)
 
         def view(x: Ticket) -> dict:
             d = x.to_dict()
             d["priority_info"] = eff.get(x.id)
-            d["effective_priority"] = eff.get(x.id, {}).get("effective", x.priority)
             if x.state == State.OPEN:
                 waiting = [dep for dep in x.depends_on if dep not in by_id or by_id[dep].state != State.DONE]
                 ms = milestones.get(x.milestone_id)
@@ -229,8 +228,10 @@ class Tickets:
                 d["ready"] = not waiting and ms is not None and ms.status == MilestoneStatus.OPEN
                 d["why_waiting"] = (f"waiting on {', '.join(waiting)}" if waiting
                                     else "milestone is closed" if ms is None or ms.status != MilestoneStatus.OPEN
+                                    else "offered to a worker" if x.id in offered
                                     else "ready; worker capacity is 0" if cap["workers"] == 0
-                                    else f"ready; waiting for a worker slot ({running_workers}/{cap['workers']} in use)")
+                                    else f"ready; waiting for a worker slot ({len(offered)}/{cap['workers']} in use)" if len(offered) >= cap["workers"]
+                                    else "ready")
             return d
         return {"tickets": [view(x) for x in sorted(tickets, key=lambda x: (eff.get(x.id, {}).get("effective", x.priority), x.created_at))],
                 "milestones": sorted(data["milestones"].values(), key=lambda m: m["order"]),

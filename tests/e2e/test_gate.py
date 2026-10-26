@@ -60,8 +60,8 @@ def event_types(events):
 def test_landed(env):
     project, store, events, ms, repo = env
     t = merging_ticket(store, ms, repo, "good", lambda wt: (wt / "NEW.md").write_text("ok\n"))
-    run = run_gate(project, store, events, [t.id])
-    assert run["status"] == "landed" and run["merged"] == [t.id]
+    run = run_gate(project, store, events, t.id)
+    assert run["status"] == "landed" and run["ticket"] == t.id and run["conflict"] is False
     assert store.get_ticket(t.id).state == State.DONE
     assert "NEW.md" in git("ls-tree", "--name-only", "main", cwd=repo)
     assert git("log", "-1", "--format=%s", "main", cwd=repo).startswith(f"Merge {t.id}")
@@ -75,8 +75,8 @@ def test_failing_tests_reject_the_ticket(env):
     project, store, events, ms, repo = env
     before = git("rev-parse", "main", cwd=repo)
     t = merging_ticket(store, ms, repo, "breaks tests", lambda wt: (wt / "BROKEN").write_text("x"))
-    run = run_gate(project, store, events, [t.id])
-    assert run["status"] == "rejected" and run["rejected"] == [t.id] and run["merged"] == []
+    run = run_gate(project, store, events, t.id)
+    assert run["status"] == "rejected" and run["ticket"] == t.id and run["conflict"] is False
     t = store.get_ticket(t.id)
     assert t.state == State.REJECTED and t.rejected_by == "merge_gate" and t.review_rounds == 1
     assert t.gate_rejections == 1 and t.reviewer_rejections == 0
@@ -97,7 +97,7 @@ def test_broken_base_pauses_pipeline_and_keeps_ticket_approved(env):
     git("add", "-A", cwd=repo)
     git("commit", "-qm", "break main", cwd=repo)
     t = merging_ticket(store, ms, repo, "innocent", lambda wt: (wt / "NEW.md").write_text("ok\n"))
-    run = run_gate(project, store, events, [t.id])
+    run = run_gate(project, store, events, t.id)
     assert run["status"] == "base_broken"
     t = store.get_ticket(t.id)
     assert t.state == State.APPROVED and t.review_rounds == 0 and t.rejected_by is None
@@ -114,30 +114,17 @@ def test_conflict_goes_back_to_worker_without_a_review_round(env):
     project, store, events, ms, repo = env
     original = git("rev-parse", "main", cwd=repo).strip()
     a = merging_ticket(store, ms, repo, "A", lambda wt: (wt / "README.md").write_text("# gate\nline from A\n"))
-    assert run_gate(project, store, events, [a.id])["status"] == "landed"
+    assert run_gate(project, store, events, a.id)["status"] == "landed"
     b = merging_ticket(store, ms, repo, "B", lambda wt: (wt / "README.md").write_text("# gate\nline from B\n"), base=original)
-    run = run_gate(project, store, events, [b.id])
-    assert run["status"] == "conflict" and run["conflicts"] == [b.id] and run["merged"] == []
+    run = run_gate(project, store, events, b.id)
+    assert run["status"] == "conflict" and run["ticket"] == b.id and run["conflict"] is True
     b = store.get_ticket(b.id)
     assert b.state == State.REJECTED and b.rejected_by == "merge_gate"
     assert b.review_rounds == 0                       # routine, not a review failure
     assert b.gate_rejections == 1                     # but still a re-engagement the human can see
-    assert "merge `main`" in b.feedback and "routine" in b.feedback
+    assert "conflicts with `main`" in b.feedback
     assert git("show", "main:README.md", cwd=repo) == "# gate\nline from A\n"
     assert "gate.conflict" in event_types(events)
-
-
-def test_batch_with_one_conflict_lands_the_rest(env):
-    project, store, events, ms, repo = env
-    original = git("rev-parse", "main", cwd=repo).strip()
-    a = merging_ticket(store, ms, repo, "A", lambda wt: (wt / "README.md").write_text("# gate\nA\n"))
-    assert run_gate(project, store, events, [a.id])["status"] == "landed"
-    b = merging_ticket(store, ms, repo, "B", lambda wt: (wt / "README.md").write_text("# gate\nB\n"), base=original)
-    c = merging_ticket(store, ms, repo, "C", lambda wt: (wt / "C.md").write_text("c\n"))
-    run = run_gate(project, store, events, [b.id, c.id])
-    assert run["status"] == "landed" and run["merged"] == [c.id] and run["rejected"] == [b.id]
-    assert store.get_ticket(b.id).state == State.REJECTED
-    assert store.get_ticket(c.id).state == State.DONE
 
 
 def test_missing_build_artifact_is_a_base_problem(env):
@@ -146,7 +133,7 @@ def test_missing_build_artifact_is_a_base_problem(env):
     project, store, events, ms, repo = env
     set_config(project, repo, f'[build]\ncommand = "true"\nartifact = "dist/*.whl"\n[[gate.unit]]\nname = "unit"\ncommand = "{UNIT}"\n')
     t = merging_ticket(store, ms, repo, "no artifact", lambda wt: (wt / "NEW.md").write_text("ok\n"))
-    run = run_gate(project, store, events, [t.id])
+    run = run_gate(project, store, events, t.id)
     assert run["status"] == "base_broken"
     assert run["stages"][-1] == {"stage": "build", "name": "artifact", "status": "failed", "tail": "no artifact matched dist/*.whl"}
     assert "unit" not in [s["name"] for s in run["stages"]]  # later stages did not run
@@ -163,7 +150,7 @@ def test_build_start_and_acceptance_stages(env):
         f'[[gate.unit]]\nname = "unit"\ncommand = "{UNIT}"\n'
         '[[gate.acceptance]]\nname = "acc"\ncommand = "curl -sf {url}/app.txt | grep -q hi"\n'))
     t = merging_ticket(store, ms, repo, "full", lambda wt: (wt / "NEW.md").write_text("ok\n"))
-    run = run_gate(project, store, events, [t.id])
+    run = run_gate(project, store, events, t.id)
     assert run["status"] == "landed", run
     assert [(s["stage"], s["status"]) for s in run["stages"]] == [("build", "passed"), ("unit", "passed"), ("acceptance", "passed")]
     assert Path(run["artifact"]).read_text() == "hi\n"
@@ -181,7 +168,7 @@ def test_acceptance_failure_rejects_and_stops_target(env):
         f'[[gate.unit]]\nname = "unit"\ncommand = "{UNIT}"\n'
         '[[gate.acceptance]]\nname = "acc"\ncommand = "curl -sf {url}/missing.txt"\n'))
     t = merging_ticket(store, ms, repo, "acc fails", lambda wt: (wt / "NEW.md").write_text("ok\n"))
-    run = run_gate(project, store, events, [t.id])
+    run = run_gate(project, store, events, t.id)
     assert run["status"] == "base_broken"   # the acceptance test fails on the base too: not this ticket's fault
     assert store.get_ticket(t.id).state == State.APPROVED and store.pipeline()["paused"]
     import psutil

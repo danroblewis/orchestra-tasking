@@ -85,8 +85,7 @@ class Runtime:
         max_r = int(op.get("reviewers", cfg.reviewers))
         return {"workers": max(0, min(int(dial.get("workers", max_w)), max_w)),
                 "reviewers": max(0, min(int(dial.get("reviewers", max_r)), max_r)),
-                "max_workers": max_w, "max_reviewers": max_r, "configured_workers": cfg.workers, "configured_reviewers": cfg.reviewers,
-                "operator_set": bool(op), "dial_set": bool(dial), "note": dial.get("note")}
+                "max_workers": max_w, "max_reviewers": max_r, "note": dial.get("note")}
 
     def set_operator_capacity(self, workers: int | None, reviewers: int | None, by: str = "operator") -> dict:
         """The human's ceiling, from the Dashboard. None for both clears it back to orchestra.toml."""

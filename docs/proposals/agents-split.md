@@ -20,7 +20,7 @@ the agents package works for a task system that is not ours.
 
 | | orchestra-tasking | orchestra-agents |
 |---|---|---|
-| owns | tickets and milestones, states and dependency graph, readiness, priority (aging, inheritance); roles as names with a capacity and a lease; assignment and ownership; the merge gate, worktrees and staging for code; probes; the Tickets page, the Tasks panel, the scheduler's card, the blocked-ticket banner; the ticket metrics | the roles as job descriptions (Supervisor, Coordinator, worker, reviewer, custom), prompts, teams and the organisation; the harnesses (Pi, Claude Code, Codex); sessions and transcripts; the host that runs them; the runner that answers assignments for the roles it serves; the agents' tools; the Agents page, the agents' machine cards, the Supervisor chat; its own metrics |
+| owns | tickets and milestones, states and dependency graph, readiness, priority (aging, inheritance); roles as names with a capacity and a lease; assignment and ownership; the merge gate, worktrees and staging for code; probes; the Tickets page, the Tasks panel, the scheduler's card, the blocked-ticket banner; the ticket metrics | the AI agents: their roles, prompts, harnesses, sessions and the host that runs them |
 | state | `~/.orchestrator/<key>/tasks/` | `~/.orchestrator/<key>/agents/` |
 | config | `[project]`, `[tasks]`, `[build]`, `[acceptance]`, `[gate]`, `[staging]`, `[[probes]]` | `[agents]` (and `[project]` base_branch, ticket_prefix, work, read for its prompts) |
 
@@ -72,4 +72,5 @@ Orchestra's rule 9 does not allow today; human roles wait on that decision.
    Orchestra (`f523797`).
 
 Later, and not decided: Orchestra's lease-aware subscriptions taking over the leases;
-`orchestra run` starting the plugins' processes; batching and bisection in the gate.
+`orchestra run` starting the plugins' processes. The gate lands one ticket per run; batching was
+taken out rather than kept unused.

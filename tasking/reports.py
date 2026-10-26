@@ -1,7 +1,7 @@
 """How a ticket moves from what came back for an assignment, or did not: a worker's report, a
-reviewer's verdict, a report the task system cannot use, a machine that went quiet, an offer
-nobody took, the operator's stop. The scheduler (tasking/scheduler.py) decides when; this decides
-what the ticket becomes. SPEC.md section 4."""
+reviewer's verdict, a report the task system cannot use, a machine that went quiet, the
+operator's stop. The scheduler (tasking/scheduler.py) decides when; this decides what the ticket
+becomes. SPEC.md section 4."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .config import Project
-from .events import SCHEDULER, Events
+from .events import COORDINATOR, SCHEDULER, Events
 from .git import Git
 from .model import RECOVERY, Note, State, Ticket
 from .store import LocalStore
@@ -59,18 +59,9 @@ class Reports:
         else:
             self._review(a["ticket"], report, text, failed, commit)
 
-    def unanswered(self, a: dict) -> None:
-        """An offer no machine accepted: the ticket goes back to waiting to be offered again, and
-        nothing is counted against anyone (the worker turn the offer took is given back)."""
-        t = self.store.get_ticket(a["ticket"])
-        if t.state not in RECOVERY:
-            return
-        turns = {"worker_turns": t.worker_turns - 1} if a["role"] == "worker" else {}
-        self.store.transition(t.id, t.version, RECOVERY[t.state], **turns)
-        self.log(f"{t.id}: the offer to a {a['role']} was not taken; back to {RECOVERY[t.state]}")
-
     def stopped(self, a: dict) -> None:
-        """The operator stopped the machine: the ticket goes back to waiting without counting."""
+        """The operator stopped the machine holding the ticket: it goes back to waiting without
+        counting."""
         role = a["role"]
         self.back_to_waiting(a["ticket"], f"the {role} was stopped by the operator",
                              "the previous worker's turn was stopped by the operator; the workspace is as it left it" if role == "worker" else None)
@@ -118,7 +109,7 @@ class Reports:
         self.store.add_note(tid, Note(author="worker", text=report.get("summary", "")))
         if report["state"] == "BLOCKED":
             self.store.transition(tid, t.version, State.BLOCKED, blocked_reason=report["blocked_reason"])
-            self.events.attention("coordinator", f"{tid} BLOCKED by worker: {report['blocked_reason'][:200]}", ticket=tid)
+            self.events.attention(COORDINATOR, f"{tid} BLOCKED by worker: {report['blocked_reason'][:200]}", ticket=tid)
             self.log(f"{tid}: BLOCKED by worker")
             return
         if branch is None:                                   # a task: its result is the report and the folder
@@ -139,7 +130,7 @@ class Reports:
     def _block(self, t: Ticket, reason: str) -> None:
         self.store.add_note(t.id, Note(author=SCHEDULER, kind="blocker", text=reason))
         self.store.transition(t.id, t.version, State.BLOCKED, blocked_reason=reason)
-        self.events.attention("coordinator", f"{t.id} BLOCKED: {reason[:200]}", ticket=t.id)
+        self.events.attention(COORDINATOR, f"{t.id} BLOCKED: {reason[:200]}", ticket=t.id)
         self.log(f"{t.id}: BLOCKED ({reason[:80]})")
 
     def _review(self, tid: str, report: dict | None, text: str, failed: bool, commit: str | None) -> None:
@@ -168,20 +159,20 @@ class Reports:
             if self.cfg.work != "code":                       # nothing to merge: approved is done
                 self.store.transition(tid, t.version, State.DONE)
                 self.log(f"{tid}: DONE")
-                self.events.attention("coordinator", f"{tid} is DONE", ticket=tid)
         else:
             self.reject(tid, "reviewer", report.get("feedback") or report.get("summary", ""))
 
-    def reject(self, tid: str, by: str, feedback: str) -> None:
+    def reject(self, tid: str, by: str, feedback: str, counted: bool = True) -> None:
         """Sent back to its worker by ``by``: the reviewer, or the task system (``task_scheduler``)
-        when reviews keep ending without a verdict or the work cannot be reviewed."""
+        when reviews keep ending without a verdict or the work cannot be reviewed. A send-back
+        where nothing was reviewed (``counted`` False) is not a review round."""
         t = self.store.get_ticket(tid)
-        rounds = t.review_rounds + 1
+        rounds = t.review_rounds + (1 if counted else 0)
         self.store.transition(tid, t.version, State.REJECTED, rejected_by=by, feedback=feedback, review_rounds=rounds,
                               reviewer_rejections=t.reviewer_rejections + (1 if by == "reviewer" else 0))
         self.log(f"{tid}: REJECTED by {by} (round {rounds})")
         # the planner is told when the threshold is crossed, and at every further multiple of it,
         # not on every rejection: it should decide once, not be told 38 times
         th = self.cfg.review_rounds_before_escalation
-        if th and rounds % th == 0:
-            self.events.attention("coordinator", f"{tid} has been rejected {rounds} times; decide whether to narrow, split, or cancel it", ticket=tid)
+        if counted and th and rounds % th == 0:
+            self.events.attention(COORDINATOR, f"{tid} has been rejected {rounds} times", ticket=tid)

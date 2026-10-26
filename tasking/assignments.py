@@ -8,17 +8,17 @@ subject; ``assignment`` is the id that ties an offer to its answers.
 | Event | From | Data (the scheduler reads what is marked ✓; the rest is for listeners) |
 |---|---|---|
 | ``task.assigned`` | task_scheduler | assignment, role, ticket, kind (work or review), workspace (a folder; in code mode a git worktree), branch (null in tasks mode), lease_s (the lease: a heartbeat must come at least this often), brief (the ticket's fields: id, title, objective, description, acceptance, verification, feedback, rejected_by, review_rounds, priority, milestone_id, depends_on, branch, reviewed_commit, worker_turns); a code worker's unit_command; a reviewer's review {summary (the worker's), commit, test_output} (in code mode the scheduler runs the unit tests before offering the review) |
-| ``task.accepted`` | the machine instance (worker/1) | assignment ✓, instance ✓, ticket, role. The first to accept holds it; a later one is told ``task.released`` naming its instance |
+| ``task.accepted`` | the machine instance (worker/1) | assignment ✓, instance ✓: the machine's CloudEvents source (worker/1); the scheduler takes the holder from the event's source and refuses an acceptance whose instance says otherwise; ticket, role. The first to accept holds it, and the ticket moves to IN_PROGRESS or IN_REVIEW with it as owner; a later one is told ``task.released`` naming its instance |
 | ``task.working`` | the instance | assignment ✓, ticket, role: a heartbeat; the lease goes on. Only from the instance that holds it |
-| ``task.reported`` | the instance | assignment ✓, report ✓ (a worker's: state READY_FOR_REVIEW or BLOCKED, summary, blocked_reason; a reviewer's: verdict APPROVED or REJECTED, summary, feedback; null when it ended without one), failed ✓ (default false: it went away or ran out of time), text ✓ (default "": its last words, kept when it is blocked), commit ✓ (default null; a reviewer's, in code mode), ticket, role. Only from the instance that holds it; a report the scheduler cannot use counts as none |
-| ``task.released`` | task_scheduler | assignment, ticket, role, reason (nobody filled the role within the lease; no word from the holder for the lease; the operator stopped it; another instance was first; the task system restarted or shut down); instance, only when the release is addressed to one instance because another was first. The machine stops what it was doing |
+| ``task.reported`` | the instance | assignment ✓, report ✓ (a worker's: state READY_FOR_REVIEW or BLOCKED, summary, blocked_reason; a reviewer's: verdict APPROVED or REJECTED, summary, feedback; null when it ended without one), failed ✓ (true: it went away or its lease ran out, retried up to twice; false with a null report: it ended on purpose without one, and the ticket is BLOCKED for a planner), text ✓ (default "": its last words, kept when it is blocked), commit ✓ (default null; a reviewer's, in code mode), ticket, role. Only from the instance that holds it; a report the scheduler cannot use counts as none. A worker that cannot act on a rejection's feedback reports BLOCKED instead of redoing the same work: nothing else stops a program worker and a program reviewer arguing forever |
+| ``task.released`` | task_scheduler | assignment, ticket, role, reason (nobody filled the role within the lease; no word from the holder for the lease; the operator stopped it; another instance was first; the instance was not the event's source; the ticket moved on meanwhile; the task system restarted or shut down); instance, only when the release is addressed to one instance. The machine stops what it was doing |
 
 ``LEASE_S`` and ``HEARTBEAT_S`` are fixed: every offer says ``lease_s``, and a machine that cannot
 keep the lease must not accept.
 
 The scheduler applies every ticket transition itself, from these, and owns the leases: an
 assignment with no word from its machine for ``LEASE_S`` is released and its ticket goes back to
-waiting (no zombies); an offer nobody accepted is offered again and counted against no one."""
+waiting (no zombies); an offer nobody accepted is dropped and made again, and changed nothing."""
 
 from __future__ import annotations
 

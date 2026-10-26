@@ -4,6 +4,7 @@ mode the merge gate and the pipeline; staging when it is configured."""
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 from .config import Project
 from .events import Events
@@ -41,7 +42,7 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
         done = len(cur.get("stages", []))
         failed = any(s.get("status") == "failed" for s in cur.get("stages", []))
         started = cur.get("started_at")
-        gate = {"id": cur["id"], "tickets": [{"id": t, "title": by_id[t].title if t in by_id else ""} for t in cur["batch"]],
+        gate = {"id": cur["id"], "tickets": [{"id": t, "title": by_id[t].title if t in by_id else ""} for t in [cur["ticket"]]],
                 "stages_done": done, "stages_total": total, "percent": int(100 * min(done, total) / total),
                 "failed_stage": failed, "current_stage": (cur["stages"][-1]["stage"] + ":" + cur["stages"][-1]["name"]) if cur.get("stages") else "assembling",
                 "started_at": started}
@@ -79,7 +80,6 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
 
 
 def _ts(iso: str) -> float:
-    from datetime import datetime
     try:
         return datetime.fromisoformat(iso).timestamp()
     except (TypeError, ValueError):
@@ -128,7 +128,7 @@ def render(d: dict) -> str:
         for t in d["queued"]:
             L.append(f"  queued:   {t['id']} {t['title'][:50]}")
     for t in d["on_the_way"]:
-        L.append(f"  upcoming: {t['id']} {t['state']:17} {t['title'][:40]}")
+        L.append(f"  in flight: {t['id']} {t['state']:17} {t['title'][:40]}")
     L.append("tickets:   " + ("  ".join(f"{k}={v}" for k, v in d["counts"].items()) or "none"))
     s = d["staging"]
     if s["configured"]:

@@ -11,17 +11,20 @@ broken without updating the spec and saying so in the commit.
 2. **No zombies.** A ticket is `IN_PROGRESS`, `IN_REVIEW` or `MERGING` only while an assignment
    with a live lease holds it. A lease that runs out, a report the task system cannot apply, the
    operator's stop: each releases the assignment and sends the ticket back to waiting in the same
-   code path; on start and on shutdown, every holder is told to stop and every active ticket
-   goes back.
+   code path; on start, every holder is told to stop and every active ticket goes back; on
+   shutdown, the gate finishes its run first, then the same.
 3. **The task system starts no machine and knows none.** It offers work to a role and reads an
-   acceptance's `instance` and a report's `report`; nothing else about the machine. No session,
-   transcript, prompt, harness or model is named anywhere in this repository. A machine from
-   another package is known only by what it publishes; this package imports nothing from it.
+   acceptance's source and a report's `report`; nothing else about the machine. In `tasking/`,
+   `tests/`, `demo/` and SPEC.md's description of the system, no session, transcript, prompt,
+   harness or model is named; the design note in `docs/proposals` records what left and why. A
+   machine from another package is known only by what it publishes; this package imports nothing
+   from it.
 4. **Every crossing is on the bus.** Offers, acceptances, heartbeats, reports, releases,
    requests, answers and attention are CloudEvents through `tasking.events.Events` (over
    `orchestra.events` and `orchestra.bus`), with the ticket as subject and the machine as source.
-   The contract is the table in `tasking/assignments.py` and the names in `tasking/requests.py`;
-   another package implements the same names, so change them deliberately and say so.
+   The contract is the table in `tasking/assignments.py`, the names in `tasking/requests.py` and
+   the observation families in SPEC section 3; another package implements the same names, so
+   change them deliberately and say so.
 5. **Merging is programmatic.** No machine merges, pushes, touches the base branch or starts
    staging. Only the gate lands code; only a landing deploys staging.
 6. **State lives in `~/.orchestrator/<key>/tasks/`**, except the events (Orchestra's bus) and the

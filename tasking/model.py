@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -31,7 +32,7 @@ TERMINAL = {State.DONE, State.CANCELLED}
 TRANSITIONS: dict[State, set[State]] = {
     State.OPEN: {State.IN_PROGRESS, State.CANCELLED},
     State.IN_PROGRESS: {State.READY_FOR_REVIEW, State.BLOCKED, State.OPEN, State.CANCELLED},
-    State.READY_FOR_REVIEW: {State.IN_REVIEW, State.CANCELLED},
+    State.READY_FOR_REVIEW: {State.IN_REVIEW, State.REJECTED, State.CANCELLED},   # REJECTED: its folder or worktree is missing at review time
     State.IN_REVIEW: {State.APPROVED, State.REJECTED, State.READY_FOR_REVIEW, State.CANCELLED},
     State.REJECTED: {State.IN_PROGRESS, State.CANCELLED},
     State.APPROVED: {State.MERGING, State.DONE, State.CANCELLED},     # DONE directly when nothing is merged (work = "tasks")
@@ -105,7 +106,7 @@ class Ticket:
     description: str = ""
     acceptance: str = ""
     objective: str = ""      # why: which project objective this serves
-    verification: str = ""   # how the merge gate's acceptance tests prove it
+    verification: str = ""   # how the work is verified (in code mode, the gate's acceptance tests)
     state: State = State.OPEN
     priority: int = 5
     depends_on: list[str] = field(default_factory=list)
@@ -116,7 +117,7 @@ class Ticket:
     feedback: str | None = None
     rejected_by: str | None = None
     review_rounds: int = 0        # drives the repeated-rejection escalation
-    worker_turns: int = 0         # times a worker was opened for this ticket (re-engagements = turns - 1)
+    worker_turns: int = 0         # times a worker took this ticket
     reviewer_rejections: int = 0  # how many of those turns followed a reviewer rejection
     gate_rejections: int = 0      # how many followed a merge-gate send-back (test failure or conflict)
     created_by: str = ""         # the role that asked for it
@@ -162,9 +163,7 @@ def effective_priorities(tickets: dict[str, Ticket], aging_days_per_level: float
        (0 disables), so old work is finished or cancelled instead of forgotten.
     Returns {id: {"effective": int, "own": int, "inherited_from": id|None, "age_levels": int}}.
     """
-    import time as _time
-    from datetime import datetime
-    now_ts = at or _time.time()
+    now_ts = at or time.time()
     live = {tid: t for tid, t in tickets.items() if t.state not in TERMINAL}
     best: dict[str, tuple[int, str | None]] = {tid: (t.priority, None) for tid, t in live.items()}
     # Propagate along reversed dependency edges until stable (graphs are small).

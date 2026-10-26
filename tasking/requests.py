@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 
+from . import api
 from .assignments import Follower
 
 REQUESTS = {"create_ticket": "task.requested", "update_ticket": "task.change_requested", "add_note": "task.note_requested",
@@ -46,7 +47,7 @@ def ask(events, command: str, args: dict, by: str) -> dict:
     elif command in REQUESTS:
         events.publish(REQUESTS[command], {"request": rid, "args": args, "by": by}, subject=_subject(args))
     else:
-        return {"ok": False, "error": f"the task system has no operation {command!r}"}
+        return {"ok": False, "error": f"the task system has no operation {command!r}; changes: {', '.join(REQUESTS)}; queries: {', '.join(QUERIES)}"}
     end = time.time() + WAIT_S
     while time.time() < end:
         for ev in follow.new():
@@ -78,16 +79,18 @@ class Desk:
                 self.log(f"requests: {e!r}")
 
     def serve(self) -> None:
-        from . import api
         for ev in self.follow.new():
             op = OP_OF.get(ev.get("type") or "") or (ev.get("op") if ev.get("type") == QUERY and ev.get("op") in QUERIES else None)
             if not op:
                 continue
             args, by = dict(ev.get("args") or {}), ev.get("by") or ""
-            try:
-                result = api.handle(self.project, self.store, self.events, op, args, role=by)
-            except Exception as e:  # noqa: BLE001 - a refused request is an answer, not a crash
-                result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            if op in REQUESTS and not by:
+                result = {"ok": False, "error": "a request names who asks (by)"}
+            else:
+                try:
+                    result = api.handle(self.project, self.store, self.events, op, args, role=by)
+                except Exception as e:  # noqa: BLE001 - a refused request is an answer, not a crash
+                    result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
             ok = bool(result.get("ok", True))
             self.events.publish(DONE if ok else REFUSED, {"request": ev.get("request"), "op": op, "by": by,
                                                           **({"result": result} if ok else {"error": result.get("error")})},
