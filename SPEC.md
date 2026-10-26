@@ -171,7 +171,8 @@ runs it. On start it recovers (above). Every 3 s it:
 4. in code mode, starts a gate run for the oldest `APPROVED` ticket if none runs and the
    pipeline is not paused, and drops the worktrees of cancelled tickets;
 5. keeps staging running (section 5) and runs the due **probes** (`tasking/probes.py`:
-   `[[probes]]` commands on an interval; `probe.failed`/`probe.recovered` fire on the transition).
+   `[[probes]]` commands on an interval; `probe.failed`/`probe.recovered` fire on the transition);
+6. once per discovery step, writes the ticket levels again as they stand (section 8).
 
 What a report makes of a ticket is `tasking/reports.py`. A report is usable only if a worker's
 says `state` `READY_FOR_REVIEW`, or `BLOCKED` with a `blocked_reason`, and a reviewer's says
@@ -371,7 +372,9 @@ Only `tasking/store/` reads or writes these JSON files (`store/tickets.py` the f
 `store/runtime.py` the second, behind one `LocalStore`). Metrics go to Orchestra's metrics store
 (`tasking/measures.py`): `tasks_tickets{state}`, `tasks_tickets_created_total{machine}`,
 `tasks_ticket_transitions_total{from,to,machine}`, a level and the counters that move it from
-the same change, so they balance.
+the same change, so they balance. Between changes the scheduler writes the levels again every
+discovery step (Orchestra's `[discovery] step`, 30 s by default), the counters untouched, so a
+quiet system is seen measuring its stocks rather than taken for one whose writer is gone.
 
 ## 9. The plugin: pages and API (`tasking/web.py`, `tasking/static/`)
 

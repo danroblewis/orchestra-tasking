@@ -30,3 +30,31 @@ def test_ticket_levels_and_flows_balance(store):
     again = LocalStore(store.project, Events.for_project(store.project, source="worker/1"))
     again.create_ticket(title="c", milestone_id=ms.id)
     assert m.latest("tasks_tickets_created_total", {"project": key, "machine": "worker"})[1] == 3
+
+
+def test_the_scheduler_reasserts_the_levels_every_discovery_step_without_a_change(project):
+    """Between changes the levels are written again, once per discovery step, so a quiet system is
+    seen measuring its stocks; no counter moves for it."""
+    from tasking.scheduler import Scheduler
+
+    events = Events.for_project(project, source="task_scheduler")
+    store = LocalStore(project, events)
+    ms = store.create_milestone(name="m")
+    store.create_ticket(title="a", milestone_id=ms.id)
+    m = metrics_for(project.orchestra)
+    labels = {"project": project.key, "state": "OPEN", "machine": "task_scheduler"}
+    created = lambda: len(m.raw("tasks_tickets_created_total", {"project": project.key, "machine": "task_scheduler"}))
+    assert len(m.raw("tasks_tickets", labels)) == 1 and created() == 1            # the one change wrote both
+    sched = Scheduler(project, store, events)
+    sched.recover()
+    store.set_operator_capacity(0, 0)                                               # nothing offered: no change
+    sched.tick()
+    levels = m.raw("tasks_tickets", labels)
+    assert len(levels) == 2 and levels[-1][1] == 1.0 and created() == 1           # the level again, no counter
+    assert all(len(m.raw("tasks_tickets", {**labels, "state": s.value})) == 2 for s in State)   # every state's level
+    sched.tick()
+    assert len(m.raw("tasks_tickets", labels)) == 2                                # within the step: not again
+    sched.levels_at -= project.orchestra.config.discovery_step                      # a step later
+    sched.tick()
+    assert len(m.raw("tasks_tickets", labels)) == 3 and created() == 1
+    assert m.raw("tasks_ticket_transitions_total", {"project": project.key}) == []  # no transition was ever counted

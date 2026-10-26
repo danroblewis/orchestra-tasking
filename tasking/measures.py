@@ -1,7 +1,8 @@
 """The task system's measurements, written to Orchestra's metrics store, named for what they
 measure (Orchestra's discovery decides what is a stock and what is a flow):
 
-- ``tasks_tickets{state}``: tickets in each state, every state written at every change;
+- ``tasks_tickets{state}``: tickets in each state, every state written at every change, and
+  written again, unchanged, every discovery step while the scheduler runs (``level_points``);
 - ``tasks_tickets_created_total{machine}``: tickets created, by the machine that created them;
 - ``tasks_ticket_transitions_total{from, to, machine}``: state changes, by the machine that made
   them (the scheduler applies a worker's or reviewer's report; a planner's request is the
@@ -9,9 +10,11 @@ measure (Orchestra's discovery decides what is a stock and what is a flow):
 
 A level and the counters that move it are taken from the same change, at the same instant, so
 they balance exactly (a level sampled now and then would be off by whatever moved in between).
-Counters are cumulative across processes and restarts: their values are kept with the tickets
-(or the runtime record) under the store's lock. A metrics store that cannot be reached loses the
-points, never a ticket change."""
+Between changes the levels are re-asserted without the counters, so a reader can tell a quiet
+system from one whose writer is gone: a level that is not written for a while looks like a
+machine that stopped. Counters are cumulative across processes and restarts: their values are
+kept with the tickets (or the runtime record) under the store's lock. A metrics store that
+cannot be reached loses the points, never a ticket change."""
 
 from __future__ import annotations
 
@@ -74,8 +77,13 @@ class Measures:
         if src and dst:
             labels = {"from": src, "to": dst, "machine": machine}
             out.append(Point("tasks_ticket_transitions_total", float(self.count(counts, "transition", labels)), t, self._labels(**labels)))
+        return out + self.level_points(tickets, t)
+
+    def level_points(self, tickets: dict, t: float | None = None) -> list[Point]:
+        """The levels as the tickets stand (``tickets``: id -> record): every state's count, no
+        counter touched."""
+        t = time.time() if t is None else t
         by_state = {s.value: 0 for s in State}
         for d in tickets.values():
             by_state[d["state"]] = by_state.get(d["state"], 0) + 1
-        out += [Point("tasks_tickets", float(n), t, self._labels(state=s, machine="task_scheduler")) for s, n in by_state.items()]
-        return out
+        return [Point("tasks_tickets", float(n), t, self._labels(state=s, machine="task_scheduler")) for s, n in by_state.items()]

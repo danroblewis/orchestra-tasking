@@ -73,6 +73,7 @@ class Scheduler:
         self.reports = Reports(project, store, events, self.git, log)
         self.follow = Follower(events)               # what the assignees say back (tasking/assignments.py)
         self.unanswered: dict[tuple[str, str], float] = {}   # (ticket, role) -> when an offer nobody has answered yet was first made
+        self.levels_at = 0.0                        # when the levels were last re-asserted (every discovery step)
 
     def recover(self) -> None:
         """What the previous scheduler left: whoever still holds work is told to stop and every
@@ -214,6 +215,11 @@ class Scheduler:
             self.prober.tick(config_probes(self.project))
         except Exception as e:  # noqa: BLE001 - a broken probe never stops the scheduler
             log(f"probes: {e!r}")
+        # the levels are written at every change; between changes they are written again every
+        # discovery step (Orchestra's [discovery] step), so a quiet system still measures its stocks
+        if time.time() - self.levels_at >= self.project.orchestra.config.discovery_step:
+            self.store.reassert_levels()
+            self.levels_at = time.time()
 
     def _service_kills(self) -> None:
         """The operator stops whoever works a ticket: its assignment is released (the machine

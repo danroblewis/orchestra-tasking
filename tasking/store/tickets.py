@@ -125,6 +125,12 @@ class Tickets:
         self.events.emit("ticket.transitioned", ticket=ticket_id, owner=t.owner, **{"from": src.value, "to": to_state.value})
         return t
 
+    def reassert_levels(self) -> None:
+        """The levels written again as they stand, without a change and without touching the
+        counters: the scheduler does this every discovery step, so a quiet system is still seen
+        measuring its stocks (tasking/measures.py)."""
+        self.measures.write(self.measures.level_points(self._t()["tickets"]))
+
     def add_note(self, ticket_id: str, note: Note) -> None:
         with self._locked():
             data = self._t()
