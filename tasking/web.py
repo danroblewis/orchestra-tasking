@@ -344,6 +344,87 @@ def router(project) -> APIRouter:
         store._mutate_runtime(lambda d: d.__setitem__("supervisor_seen_at", now_t))
         return {"ok": True, "seen_at": now_t}
 
+    @r.get("/eventmap")
+    async def eventmap() -> dict:
+        """Who wakes whom through which events (the Agents page's map): the intended bindings
+        (each agent's wake_on and emits, team emits, probes, the built-in loop's own conditions)
+        and what was observed on the bus over the last 24 hours, by the machine that sent it."""
+        import datetime as _dt
+
+        from .agents.roles import SYSTEM_BINDINGS
+        from .org import all_agents, all_teams
+        from .roles import EVENT_TYPES
+        agents_, teams = all_agents(project), all_teams(project)
+        nodes: dict[str, dict] = {}
+        edges: list[dict] = []
+
+        def node(nid, kind, label=None, **extra):
+            nodes.setdefault(nid, {"id": nid, "kind": kind, "label": label or nid, **extra})
+
+        def split(w):
+            t, _, f = w.partition(":")
+            return t, f or None
+        for sid, sb in SYSTEM_BINDINGS.items():
+            if sid == "merge_gate" and project.config.work != "code":
+                continue                                          # tasks: nothing is merged
+            node("sys:" + sid, "system", sid.replace("_", " "), description=sb["description"])
+            for e in sb["emits"]:
+                t, f = split(e)
+                node("ev:" + t, "event", t)
+                edges.append({"from": "sys:" + sid, "to": "ev:" + t, "kind": "emits", "filter": f})
+            for w in sb["wake_on"]:
+                t, f = split(w)
+                node("ev:" + t, "event", t)
+                edges.append({"from": "ev:" + t, "to": "sys:" + sid, "kind": "wakes", "filter": f})
+        for t in teams.values():
+            for e in t.emits:
+                node("ev:" + e, "event", e, custom=True, team=t.name)
+            for pr in t.probes or []:
+                node("probe:" + pr["name"], "probe", pr["name"], team=t.name)
+                for e in ("probe_failed", "probe_recovered"):
+                    node("ev:" + e, "event", e)
+                    edges.append({"from": "probe:" + pr["name"], "to": "ev:" + e, "kind": "emits", "filter": pr["name"]})
+        for ag in agents_.values():
+            node("agent:" + ag.name, "agent", ag.name, team=ag.team, builtin=ag.builtin, kind_of=ag.kind)
+            for w in ag.wake_on:
+                t, f = split(w)
+                node("ev:" + t, "event", t)
+                edges.append({"from": "ev:" + t, "to": "agent:" + ag.name, "kind": "wakes", "filter": f, "loop": ag.builtin})
+            for e in ag.emits:
+                t, f = split(e)
+                node("ev:" + t, "event", t)
+                edges.append({"from": "agent:" + ag.name, "to": "ev:" + t, "kind": "emits", "filter": f})
+            if ag.team and ag.team in teams:
+                for e in teams[ag.team].emits:
+                    edges.append({"from": "agent:" + ag.name, "to": "ev:" + e, "kind": "may_emit", "filter": None})
+        since = (_dt.datetime.now(_dt.UTC) - _dt.timedelta(days=1)).isoformat(timespec="seconds")
+        counts: dict[str, int] = {}
+        by: dict[str, dict[str, int]] = {}
+        end = events.end()
+        for e in events.read(max(0, end - 200000), limit=200000)[0]:
+            if (e.get("ts") or "") < since:
+                continue
+            counts[e["type"]] = counts.get(e["type"], 0) + 1
+            variant = e.get("to") or e.get("probe")
+            if variant:
+                counts[f"{e['type']}:{variant}"] = counts.get(f"{e['type']}:{variant}", 0) + 1
+            who = (e.get("source") or "").partition("/")[0]           # the machine that sent it (worker/1 is worker)
+            if who:
+                by.setdefault(who, {})
+                by[who][e["type"]] = by[who].get(e["type"], 0) + 1
+        for who, ts_ in by.items():
+            if who in agents_:
+                for t, n in ts_.items():
+                    node("ev:" + t, "event", t)
+                    hits = [x for x in edges if x["from"] == "agent:" + who and x["to"] == "ev:" + t]
+                    if hits:
+                        for x in hits:
+                            x["seen"] = n                      # a declared edge that actually fired
+                    else:
+                        edges.append({"from": "agent:" + who, "to": "ev:" + t, "kind": "observed", "filter": None, "seen": n})
+        return {"ok": True, "nodes": list(nodes.values()), "edges": edges, "counts": counts, "by": by,
+                "known_types": list(EVENT_TYPES)}
+
     @r.get("/board")
     async def board() -> dict:
         """The Tasks panel: every ticket in flight (not waiting to start, not finished), with the

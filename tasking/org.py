@@ -375,8 +375,8 @@ def built_in_agents() -> dict[str, AgentDef]:
 BUILTIN_TEAMS: dict[str, TeamDef] = {
     "engineering": TeamDef(name="engineering", lead="coordinator", members=["worker", "reviewer"], builtin=True,
                            created_by="orchestra",
-                           description="Turns tickets into landed code: the Coordinator keeps the plan executable, "
-                                       "workers implement, reviewers review, the merge gate lands."),
+                           description="Turns tickets into finished work: the Coordinator keeps the plan executable, "
+                                       "workers do the tickets, reviewers review them."),
 }
 
 
