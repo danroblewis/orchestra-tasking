@@ -35,6 +35,7 @@ class Config:
     push: bool = False
     workers: int = 1             # tickets offered to workers at once
     reviewers: int = 1
+    tick: float = 3.0            # how often the scheduler looks at the queue and the bus, in seconds
     review_rounds_before_escalation: int = 3
     aging_days_per_level: float = 2.0
     build_command: str | None = None
@@ -78,6 +79,7 @@ class Config:
             push=bool(p.get("push", False)),
             workers=int(a.get("workers", 1)),
             reviewers=int(a.get("reviewers", 1)),
+            tick=parse_duration(a.get("tick"), 3.0),
             review_rounds_before_escalation=int(a.get("review_rounds_before_escalation", 3)),
             aging_days_per_level=float(a.get("aging_days_per_level", 2.0)),
             build_command=b.get("command"),
@@ -110,6 +112,7 @@ push = false
 [tasks]
 workers = 2              # tickets offered to workers at once (whatever fills the role takes them)
 reviewers = 1
+# tick = "3s"            # how often the scheduler looks at the queue and the bus
 review_rounds_before_escalation = 3
 aging_days_per_level = 2        # a ticket gains one priority level per N days of age; 0 disables
 

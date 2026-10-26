@@ -153,7 +153,7 @@ class Scheduler:
                     log(f"tick error: {e!r}")
                 if once and not self._busy():
                     break
-                time.sleep(0.5 if once else 3)
+                time.sleep(0.5 if once else self.cfg.tick)
         finally:
             self.desk.stop.set()
             self._finish_threads()

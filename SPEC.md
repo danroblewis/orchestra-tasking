@@ -153,7 +153,7 @@ like the assignment table and the request names: `ticket.transitioned` {ticket, 
 ## 4. The scheduler (`tasking/scheduler.py`, `tasking run`)
 
 One process per project: a second `tasking run` for the same project exits, naming the pid that
-runs it. On start it recovers (above). Every 3 s it:
+runs it. On start it recovers (above). Every tick (`[tasks] tick`, 3 s by default) it:
 
 1. reloads `orchestra.toml`, reaps finished threads, and for any ticket the operator asked to
    stop releases the assignment and sends the ticket back at once, counting it against no one;

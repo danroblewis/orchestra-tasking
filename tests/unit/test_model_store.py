@@ -80,6 +80,7 @@ def test_the_runtime_record_has_named_methods(store):
 def test_config_durations():
     cfg = Config.from_toml('[tasks]\nworkers = 2\n[build]\ntimeout = "2m"\n[[gate.unit]]\nname="u"\ncommand="true"\n')
     assert cfg.build_timeout == 120 and cfg.workers == 2 and cfg.unit[0].command == "true"
+    assert cfg.tick == 3.0 and Config.from_toml('[tasks]\ntick = "500ms"\n').tick == 0.5
 
 
 def test_effective_priority_propagates_and_ages():
