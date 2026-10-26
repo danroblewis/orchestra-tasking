@@ -9,7 +9,8 @@ that wants it: ``cd "$ORCHESTRA_REPO" && …``), writes what they printed to RES
 still working while they run, and reports READY_FOR_REVIEW. It reports BLOCKED when the ticket
 gives no commands, or was rejected and running the same commands again could only give the same
 result: a program cannot act on a reviewer's words, so it hands the decision back, with the
-reviewer's words in the reason. A ``task.released`` for its assignment stops the commands.
+reviewer's words in the reason. A ``task.released`` for its assignment stops the command running,
+the ones after it, the heartbeat and the report: nothing more is written or said for it.
 
     python machines/shell_worker.py [instance]      # the machine ``worker``, instance 1 by default
 """
@@ -29,7 +30,6 @@ from orchestra.events import Events
 
 ROLE = "worker"
 ASSIGNED, ACCEPTED, WORKING, REPORTED, RELEASED = "task.assigned", "task.accepted", "task.working", "task.reported", "task.released"
-HEARTBEAT_S = 30.0        # the task system's lease is 180 s; a heartbeat keeps it
 COMMAND_TIMEOUT_S = 300
 BLOCK = re.compile(r"```(?:sh|bash|shell)\s*\n(.*?)```", re.DOTALL)
 
@@ -79,7 +79,7 @@ class Job:
         threading.Thread(target=self.heartbeat, daemon=True).start()
         try:
             report = self.work()
-            if not self.released.is_set():
+            if report is not None and not self.released.is_set():
                 self.say(REPORTED, report=report, failed=False, text="")
                 print(f"{self.me}: {self.offer['ticket']} {report['state']}", flush=True)
         finally:
@@ -87,10 +87,14 @@ class Job:
             self.jobs.pop(self.offer["assignment"], None)
 
     def heartbeat(self) -> None:
-        while not self.done.wait(HEARTBEAT_S):
+        """Six heartbeats a lease (the offer's ``lease_s``), so one lost on the way loses nothing."""
+        while not self.done.wait(self.offer["lease_s"] / 6):
+            if self.released.is_set():
+                return
             self.say(WORKING)
 
-    def work(self) -> dict:
+    def work(self) -> dict | None:
+        """The report, or None when the assignment was released meanwhile."""
         brief, tid = self.offer.get("brief") or {}, self.offer["ticket"]
         commands = [c.strip() for c in BLOCK.findall(brief.get("description") or "") if c.strip()]
         ran_before = self.folder / ".commands"
@@ -108,8 +112,12 @@ class Job:
         lines = [f"# {tid}: {brief.get('title', '')}", "", f"Ran in {self.folder} (ORCHESTRA_REPO={self.env['ORCHESTRA_REPO']}).", ""]
         codes, last = [], ""
         for c in commands:
+            if self.released.is_set():
+                return None
             self.proc = subprocess.Popen(["bash", "-c", c], cwd=self.folder, env=self.env,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if self.released.is_set():                  # released while it started: stop() saw no process
+                self.proc.kill()
             try:
                 last, _ = self.proc.communicate(timeout=COMMAND_TIMEOUT_S)
             except subprocess.TimeoutExpired:
@@ -117,6 +125,8 @@ class Job:
                 last = (self.proc.communicate()[0] or "") + f"\n(stopped after {COMMAND_TIMEOUT_S} s)"
             codes.append(self.proc.returncode)
             lines += ["```sh", c, "```", f"exit code {self.proc.returncode}", "", "```", (last or "").rstrip()[-8000:], "```", ""]
+        if self.released.is_set():
+            return None
         (self.folder / "RESULT.md").write_text("\n".join(lines), encoding="utf-8")
         ran_before.write_text("\n".join(commands), encoding="utf-8")
         return {"state": "READY_FOR_REVIEW",

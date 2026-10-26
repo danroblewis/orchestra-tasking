@@ -1,6 +1,8 @@
 """The demo's worker (demo/machines/shell_worker.py): it runs a ticket's commands in the ticket's
 own folder with ORCHESTRA_REPO naming the repository, says where it ran, and on a rejection it
-cannot act on reports BLOCKED with the reviewer's words in the reason."""
+cannot act on reports BLOCKED with the reviewer's words in the reason; a release stops it."""
+
+import time
 
 from demo.machines.shell_worker import Job
 
@@ -15,12 +17,17 @@ class Recorder:
         self.said.append((kind, data))
 
 
-def run_job(tmp_path, brief: dict, repo: str) -> tuple[dict, Recorder]:
+def start_job(tmp_path, brief: dict, repo: str, lease_s: float = 180.0) -> tuple[Job, Recorder]:
     workspace = tmp_path / "workspaces" / "T-1"
     workspace.mkdir(parents=True, exist_ok=True)
     events, jobs = Recorder(), {}
-    offer = {"assignment": "T-1.worker.1", "ticket": "T-1", "role": "worker", "workspace": str(workspace), "brief": brief}
-    job = Job(events, "worker/1", offer, jobs, {"PATH": "/usr/bin:/bin", "ORCHESTRA_REPO": repo})
+    offer = {"assignment": "T-1.worker.1", "ticket": "T-1", "role": "worker", "workspace": str(workspace),
+             "lease_s": lease_s, "brief": brief}
+    return Job(events, "worker/1", offer, jobs, {"PATH": "/usr/bin:/bin", "ORCHESTRA_REPO": repo}), events
+
+
+def run_job(tmp_path, brief: dict, repo: str) -> tuple[dict, Recorder]:
+    job, events = start_job(tmp_path, brief, repo)
     assert job.done.wait(30)
     return next(d["report"] for k, d in events.said if k == "task.reported"), events
 
@@ -52,3 +59,18 @@ def test_a_rejection_the_same_commands_cannot_answer_is_blocked_with_the_reviewe
     changed, _ = run_job(tmp_path, {**brief, "description": "```sh\ndate > today.txt\ndate > yesterday.txt\n```",
                                     "rejected_by": "reviewer", "feedback": feedback}, str(tmp_path))
     assert changed["state"] == "READY_FOR_REVIEW"                         # a planner changed the commands: it works again
+
+
+def test_a_release_stops_the_commands_the_heartbeat_and_the_report(tmp_path):
+    brief = {"title": "Slow", "description": "```sh\nsleep 30\n```\n\n```sh\ntouch second\n```"}
+    job, events = start_job(tmp_path, brief, str(tmp_path), lease_s=0.6)    # a heartbeat every 0.1 s
+    deadline = time.time() + 10
+    while not any(k == "task.working" for k, _ in events.said) and time.time() < deadline:
+        time.sleep(0.05)
+    job.stop()                                                            # what task.released does
+    assert job.done.wait(10)                                              # the sleep was killed, not waited out
+    said = len(events.said)
+    time.sleep(0.4)
+    folder = tmp_path / "workspaces" / "T-1"
+    assert len(events.said) == said and "task.reported" not in [k for k, _ in events.said]
+    assert not (folder / "second").exists() and not (folder / "RESULT.md").exists() and not (folder / ".commands").exists()

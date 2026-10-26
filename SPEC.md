@@ -280,9 +280,11 @@ event types of section 3. The demo's `demo/machines/shell_worker.py` and
    `subject=ticket`: the holder is the event's source; `instance`, if sent, must equal it (an
    acceptance whose instance is not its source is refused, and the offer stays open). If
    another instance was first you get `task.released` naming your instance: stop.
-5. **Work, and say so**: do the task in the workspace; every 30 s publish `task.working`
-   {assignment} so the lease goes on (a review that takes a moment needs none). If
-   `task.released` names your assignment, stop what you are doing: the ticket is no longer yours.
+5. **Work, and say so**: do the task in the workspace; publish `task.working` {assignment}
+   well within the offer's `lease_s` (`HEARTBEAT_S`, 30 s; the demo's worker says it every sixth
+   of the lease) so the lease goes on (a review that takes a moment needs none). If
+   `task.released` names your assignment, stop what you are doing, the heartbeat and the report
+   with it: the ticket is no longer yours.
 6. **Report**: publish `task.reported` {assignment, ticket, role, report, failed: false, text:
    ""}. A worker's report is `{state: READY_FOR_REVIEW | BLOCKED, summary, blocked_reason}`;
    a reviewer's is `{verdict: APPROVED | REJECTED, summary, feedback}`. The summary becomes a
