@@ -234,7 +234,7 @@ done or cancelled. A code worker's offer names the project's first `[[gate.unit]
 a review is offered, the scheduler runs the unit specs on the branch and puts the output and the
 commit in the offer (`review.test_output`, `review.commit`), so the reviewer sees the facts.
 
-**The merge gate** (`tasking/gate/`) lands approved code, one ticket per run: a gate
+**The merge gate** (`tasking/gate.py`) lands approved code, one ticket per run: a gate
 worktree on a temporary branch from the base head, `git merge --no-ff` of the reviewed commit (a
 conflict sends the ticket back to its worker without counting as a review round), then the
 stages from `orchestra.toml`: `[build]` (the artifact is copied to `<state>/artifacts/<run>/`),

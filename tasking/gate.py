@@ -18,12 +18,12 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from ..config import Project, TestSpec
-from ..events import SUPERVISOR, Events
-from ..git import Git, GitError
-from ..model import Note, State, now
-from ..staging import Staging, build_python
-from ..store import LocalStore
+from .config import Project, TestSpec
+from .events import SUPERVISOR, Events
+from .git import Git, GitError
+from .model import Note, State, now
+from .staging import Staging, build_python
+from .store import LocalStore
 
 
 def run_specs(specs: list[TestSpec], cwd: Path, log_dir: Path, placeholders: dict[str, str] | None = None,

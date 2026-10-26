@@ -26,8 +26,7 @@ from .assignments import (
 )
 from .config import Project
 from .events import SCHEDULER, SUPERVISOR, Events
-from .gate import run_gate
-from .gate.runner import run_specs
+from .gate import run_gate, run_specs
 from .git import Git, GitError
 from .measures import machine_of
 from .model import ACTIVE, State, Ticket, TransitionError, effective_priorities, is_ready, now

@@ -112,9 +112,9 @@ def test_broken_base_pauses_pipeline_and_keeps_ticket_approved(env):
 
 def test_an_unexpected_error_pauses_the_pipeline_and_keeps_the_ticket_approved(env, monkeypatch):
     """Whatever fails inside a run, the ticket never stays MERGING with no holder."""
-    from tasking.gate import runner
+    from tasking import gate
     project, store, events, ms, repo = env
-    monkeypatch.setattr(runner, "run_specs", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(gate, "run_specs", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     t = merging_ticket(store, ms, repo, "unlucky", lambda wt: (wt / "NEW.md").write_text("ok\n"))
     run = run_gate(project, store, events, t.id)
     assert run["status"] == "error" and "boom" in run["summary"] and run["finished_at"]

@@ -109,7 +109,7 @@ def cmd_api(args) -> int:
 
 
 def cmd_staging(args) -> int:
-    from .gate.runner import build
+    from .gate import build
     from .git import Git
     from .model import now
     from .staging import Staging
