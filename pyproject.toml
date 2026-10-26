@@ -7,7 +7,7 @@ name = "orchestra-tasking"
 version = "0.1.0"
 description = "A task system for AI agents and programs, observed by Orchestra: tickets, the loop that assigns them, the agent harnesses, the merge gate."
 requires-python = ">=3.12"
-dependencies = ["orchestra[bus-redis]"]
+dependencies = ["orchestra[bus-redis,sd]"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6"]
