@@ -132,7 +132,8 @@ class LocalStore:
             d["updated_at"] = now()
             _write(self.project.tickets_file, data)
             t = Ticket.from_dict(d)
-        self.events.emit("ticket_updated", ticket=ticket_id, fields=sorted(changes))
+        self.events.emit("ticket_updated", ticket=ticket_id, fields=sorted(changes),
+                         **({"owner": changes["owner"]} if "owner" in changes else {}))
         return t
 
     def transition(self, ticket_id: str, expected_version: int | None, to_state: State, **fields: Any) -> Ticket:
@@ -338,6 +339,25 @@ class LocalStore:
 
     def pop_report(self, ticket_id: str) -> dict | None:
         return self._mutate_runtime(lambda d: d["reports"].pop(ticket_id, None))
+
+    # -- assignments: work the scheduler has offered a role (tasking/assignments.py) ---------
+
+    def put_assignment(self, rec: dict) -> None:
+        self._mutate_runtime(lambda d: d.setdefault("assignments", {}).__setitem__(rec["id"], rec))
+
+    def assignments(self) -> dict[str, dict]:
+        return dict(self._r().get("assignments") or {})
+
+    def update_assignment(self, aid: str, **fields: Any) -> dict | None:
+        def fn(d):
+            rec = (d.get("assignments") or {}).get(aid)
+            if rec is not None:
+                rec.update(fields)
+            return rec
+        return self._mutate_runtime(fn)
+
+    def drop_assignment(self, aid: str) -> dict | None:
+        return self._mutate_runtime(lambda d: (d.get("assignments") or {}).pop(aid, None))
 
     def capacity(self) -> dict:
         """Effective worker/reviewer capacity. The ceiling is the operator's number when one

@@ -69,12 +69,40 @@ def test_every_agent_is_its_own_machine(env):
     assert reports and reports[0]["source"] in ("worker/1", "task_scheduler")
 
 
-def test_the_scheduler_assigns_ownership_and_clears_it(env):
+def test_work_is_assigned_over_the_bus_and_the_machine_that_accepts_owns_it(env):
+    """The scheduler offers the ticket to a role (task.assigned); the machine that serves it
+    accepts (and so owns the ticket), and reports (task.reported); the scheduler applies it.
+    docs/proposals/agents-split.md."""
     project, store, events, repo = env
     ms = store.create_milestone(name="m")
     t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
     Loop(project, store, events).run(once=True)
-    owners = [(e["data"]["to"], e["data"].get("owner")) for e in events.bus.read(0, limit=10000)[0]
-              if e["type"] == "ticket_transition" and e.get("subject") == t.id]
-    assert ("IN_PROGRESS", "worker/1") in owners and ("IN_REVIEW", "reviewer/1") in owners
-    assert ("READY_FOR_REVIEW", None) in owners and store.get_ticket(t.id).owner is None   # DONE: nobody owns it
+    evs = [e for e in events.bus.read(0, limit=10000)[0] if e.get("subject") == t.id]
+    proto = [(e["type"], e["source"], (e["data"] or {}).get("role")) for e in evs if e["type"].startswith("task.")]
+    assert [p for p in proto if p[0] != "task.working"] == [
+        ("task.assigned", "task_scheduler", "worker"), ("task.accepted", "worker/1", "worker"), ("task.reported", "worker/1", "worker"),
+        ("task.assigned", "task_scheduler", "reviewer"), ("task.accepted", "reviewer/1", "reviewer"), ("task.reported", "reviewer/1", "reviewer")]
+    owners = [(e["data"] or {}).get("owner") for e in evs if e["type"] == "ticket_updated" and "owner" in (e["data"] or {})]
+    assert owners == ["worker/1", "reviewer/1"]
+    transitions = [(e["data"]["to"], e["source"]) for e in evs if e["type"] == "ticket_transition"]
+    assert all(src == "task_scheduler" for _, src in transitions)                        # only the scheduler moves tickets
+    assert store.get_ticket(t.id).state.value == "DONE" and store.get_ticket(t.id).owner is None
+    assert store.assignments() == {}
+
+
+def test_an_assignment_nobody_answers_goes_back_when_its_lease_runs_out(env, monkeypatch):
+    project, store, events, repo = env
+    from tasking import loop as loop_mod
+    monkeypatch.setattr(loop_mod, "LEASE_S", 0.0)                                         # no word in time: released at once
+    ms = store.create_milestone(name="m")
+    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    lp = Loop(project, store, events)
+    lp.runner.ROLES = ()                                                                  # nothing serves the roles
+    lp.recover()
+    lp.tick()                                                                             # assigned
+    first = set(store.assignments())
+    lp.tick()                                                                             # the lease ran out: released, and offered again
+    released = [e for e in events.bus.read(0, limit=1000)[0] if e["type"] == "task.released"]
+    assert released and released[0]["data"]["assignment"] in first and "no word" in released[0]["data"]["reason"]
+    assert not first & set(store.assignments())                                           # the old offer is gone, a new one stands
+    assert any(n["kind"] == "crash" for n in store.notes(t.id))                           # counted as a crash: no zombie

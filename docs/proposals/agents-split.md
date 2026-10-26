@@ -1,6 +1,6 @@
 # Proposal: the task system and the agents, apart
 
-Status: proposal, 2026-10-25. Nothing here is built.
+Status: step 1 built (2026-10-25: `tasking/assignments.py`, `tasking/runner.py`); the rest is a proposal.
 
 ## 1. Why
 
@@ -84,9 +84,13 @@ through the Supervisor, which Orchestra's rule 9 does not allow today. Either th
 
 ## 5. Steps
 
-1. **The protocol inside orchestra-tasking.** The scheduler assigns by publishing `task.assigned`
-   and applies `task.reported`; an adapter in the same process runs the agents on assignments,
-   as today. The tests run the whole flow through the bus. Nothing moves yet.
+1. **The protocol inside orchestra-tasking.** *(Done.)* The scheduler assigns by publishing
+   `task.assigned` and applies `task.reported`, owns the leases (`task.working` extends one, and
+   one that runs out is released, `task.released`, and its ticket goes back as a crash); the
+   machine that accepts owns the ticket. An adapter in the same process (`tasking/runner.py`)
+   runs the agents on assignments. Tests run the whole flow through the bus, and a lease that
+   runs out. The planners' requests (`task.requested`, …) are not on the bus yet: the agents'
+   tools still write the ticket store.
 2. **A non-AI worker** (a script that answers `task.assigned` for a role) and the demo project
    using it, to prove the task system no longer needs agents.
 3. **orchestra-agents**, a new repository and plugin: the harnesses, sessions, prompts, roles,

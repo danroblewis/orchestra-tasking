@@ -11,10 +11,11 @@ import psutil
 
 from . import agents
 from .agents.roles import ROLES, resident_roles
+from .assignments import ACCEPTED, ASSIGNED, LEASE_S, RELEASED, REPORTED, WORKING, Follower, brief, new_id
 from .config import Project
 from .control import ControlServer
 from .events import Events
-from .gate import run_gate, run_specs
+from .gate import run_gate
 from .git import Git, GitError
 from .harness import AgentSession, SessionSpec, get_harness
 from .model import ACTIVE, RECOVERY, Note, State, Ticket, effective_priorities, is_ready
@@ -79,10 +80,15 @@ class Loop:
         self._partial: dict[str, dict] = {}         # session id -> the assistant text streamed so far this message
         self._events_tail = self.events.read(0, limit=1)[1]   # only events after startup can wake agents
         self._slots: dict[str, str] = {}             # session id -> the machine instance it runs as ("worker/1")
+        self.follow = Follower(events)               # what the assignees say back (tasking/assignments.py)
+        from .runner import AgentRunner
+        self.runner = AgentRunner(self)              # the AI agents that answer assignments (in this process for now)
 
     # -- lifecycle -------------------------------------------------------------
 
     def recover(self) -> None:
+        for aid in self.store.assignments():
+            self.store.drop_assignment(aid)
         for t in self.store.list_tickets():
             if t.state in ACTIVE:
                 self.store.transition(t.id, t.version, RECOVERY[t.state])
@@ -185,8 +191,8 @@ class Loop:
                                  reason="orchestra shut down (restart or stop) during this turn")
 
     def _busy(self) -> bool:
-        return any(t.is_alive() for t in [*self.workers.values(), *self.reviewers.values(),
-                                           *self.agent_threads.values(), self.gate_thread] if t)
+        return bool(self.store.assignments()) or self.runner.busy() or \
+            any(t.is_alive() for t in [*self.agent_threads.values(), self.gate_thread] if t)
 
     # -- tick ------------------------------------------------------------------
 
@@ -201,18 +207,27 @@ class Loop:
         ordered = sorted(tickets.values(), key=lambda t: (eff.get(t.id, {}).get("effective", t.priority), t.created_at, t.id))
 
         self._service_kills()
+        self._follow()
+        tickets = self.store.tickets_by_id()
+        ordered = sorted(tickets.values(), key=lambda t: (eff.get(t.id, {}).get("effective", t.priority), t.created_at, t.id))
         paused = self.store.pickup_paused()
+        out = self.store.assignments().values()
+        busy = {r: sum(1 for a in out if a["role"] == r) for r in ("worker", "reviewer")}
+        taken = {a["ticket"] for a in out}
         # Review before pick: finished work lands before new work starts.
         for t in ordered:
-            if t.state == State.READY_FOR_REVIEW and len(self.reviewers) < cap["reviewers"] and t.id not in self.reviewers:
-                self._spawn(self.reviewers, t.id, self._review, t)
+            if t.state == State.READY_FOR_REVIEW and busy["reviewer"] < cap["reviewers"] and t.id not in taken:
+                if self._assign(t, "reviewer"):
+                    busy["reviewer"] += 1
         for t in ordered:
-            if paused or len(self.workers) >= cap["workers"]:
+            if paused or busy["worker"] >= cap["workers"]:
                 break
-            if t.id in self.workers:
+            if t.id in taken:
                 continue
             if t.state == State.REJECTED or (t.state == State.OPEN and is_ready(t, tickets, milestones)):
-                self._spawn(self.workers, t.id, self._work, t)
+                if self._assign(t, "worker"):
+                    busy["worker"] += 1
+        self.runner.tick()                            # the agents answer what was just assigned
         if self.cfg.work == "code" and self.gate_thread is None and not self.store.pipeline().get("paused"):
             approved = [t for t in ordered if t.state == State.APPROVED]
             if approved:
@@ -396,20 +411,16 @@ class Loop:
                 self.store.add_wakeup(name, f"scheduled daily session ({agent.at})")
 
     def _service_kills(self) -> None:
-        """Stop the worker or reviewer process for each ticket the operator asked to kill.
-        The thread that owns it sees the process exit and resets the ticket (see
-        _apply_worker_report / _review), without counting it as a crash."""
+        """The operator stops whoever works a ticket: its assignment is released (the machine
+        stops), and when its report comes back the ticket is reset without counting a crash."""
         for tid in self.store.take_kill_requests():
-            for sid in (f"worker-{tid}", f"reviewer-{tid}"):
-                proc = self.live_procs.get(sid)
-                if proc and proc.alive():
+            for aid, a in self.store.assignments().items():
+                if a["ticket"] == tid:
                     self.killed.add(tid)
-                    log(f"{tid}: {sid} stopped by operator")
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
-                    self.events.emit("agent_killed", ticket=tid, session=sid)
+                    log(f"{tid}: {a['role']} stopped by the operator")
+                    self.events.publish(RELEASED, {"assignment": aid, "ticket": tid, "role": a["role"], "reason": "the operator stopped it"},
+                                        subject=tid)
+                    self.events.emit("agent_killed", ticket=tid, session=f"{a['role']}-{tid}")
 
     def _reap(self) -> None:
         for d in (self.workers, self.reviewers, self.agent_threads):
@@ -597,39 +608,78 @@ class Loop:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _work(self, t: Ticket) -> None:
-        sid = f"worker-{t.id}"
+    # -- assignment (tasking/assignments.py) -----------------------------------
+
+    def _assign(self, t: Ticket, role: str) -> bool:
+        """Offer a ticket to a role: get its place ready (a folder, or a branch in code mode),
+        move it to IN_PROGRESS or IN_REVIEW, record the assignment with its lease, and say so on
+        the bus. Whatever serves the role takes it; nobody owns the ticket until one accepts."""
         tasks = self.cfg.work != "code"
+        sid = f"{role}-{t.id}"
         try:
-            owner = self._instance(sid, "worker", t.id)                # the scheduler assigns it: this worker owns it
-            if tasks:
-                path, branch = self._workspace(t), None
-                t = self.store.transition(t.id, t.version, State.IN_PROGRESS, worker_session=sid, worker_turns=t.worker_turns + 1, owner=owner)
+            if role == "worker":
+                path, branch = (self._workspace(t), None) if tasks else self._worktree(t)
+                t = self.store.transition(t.id, t.version, State.IN_PROGRESS, worker_session=sid, worker_turns=t.worker_turns + 1,
+                                          **({} if tasks else {"branch": branch}))
             else:
-                path, branch = self._worktree(t)
-                t = self.store.transition(t.id, t.version, State.IN_PROGRESS, branch=branch, worker_session=sid,
-                                          worker_turns=t.worker_turns + 1, owner=owner)
+                if tasks:
+                    path, branch = self.project.workspaces_dir / t.id, None
+                else:
+                    wt = self.store.worktree(t.id)
+                    path, branch = (Path(wt["path"]), wt.get("branch")) if wt else (None, None)
+                t = self.store.transition(t.id, t.version, State.IN_REVIEW, reviewer_session=sid)
+                if path is None or not path.is_dir():
+                    self._reject(t.id, "orchestra", "the ticket's " + ("folder" if tasks else "worktree") + " is missing at review time; "
+                                 "please do the work again", reviewer_text="")
+                    return False
         except (Conflict, StoreError, GitError) as e:
-            self._release(sid)
-            log(f"{t.id}: cannot start worker: {e}")
-            return
-        log(f"{t.id}: worker starting in {path}" if tasks else f"{t.id}: worker starting on {branch}")
-        proc = self._session(sid, "worker", path, t.id)
-        text = ""
-        try:
-            self._session_running(sid, "worker", proc, t.id)
-            if self._trim_if_large(proc, sid, "worker") == "rotated":
-                proc = self._session(sid, "worker", path, t.id)
-                self._session_running(sid, "worker", proc, t.id)
-            unit_cmd = self.cfg.unit[0].command if self.cfg.unit else None
-            report, text, failed = self._prompt_with_retry(
-                proc, t.id, agents.worker_task_tasks(t) if tasks else agents.worker_task(self.project, t, unit_cmd),
-                "You stopped without reporting. Call `report_ticket` now: READY_FOR_REVIEW if your result is "
-                "written" + ("" if tasks else ", committed and tested") + ", otherwise BLOCKED with the reason.")
-        finally:
-            proc.close()
-            self._session_idle(sid, text)
-        self._apply_worker_report(t.id, report, text, failed, path, branch)
+            log(f"{t.id}: cannot assign a {role}: {e}")
+            return False
+        aid = new_id(t.id, role)
+        self.store.put_assignment({"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch,
+                                   "assigned_at": time.time(), "lease_until": time.time() + LEASE_S, "instance": None})
+        self.events.publish(ASSIGNED, {"assignment": aid, "role": role, "ticket": t.id, "kind": "work" if role == "worker" else "review",
+                                       "workspace": str(path), "branch": branch, "lease_s": LEASE_S, "brief": brief(t)}, subject=t.id)
+        log(f"{t.id}: assigned to a {role} ({aid})")
+        return True
+
+    def _follow(self) -> None:
+        """What the assignees said since the last tick, applied: an acceptance names the owner, a
+        heartbeat extends the lease, a report is applied to the ticket. Then any lease that ran out
+        is released and its ticket goes back, as a crash."""
+        out = self.store.assignments()
+        for ev in self.follow.new():
+            aid = ev.get("assignment")
+            if ev.get("type") not in (ACCEPTED, WORKING, REPORTED) or aid not in out:
+                continue
+            a = out[aid]
+            if ev["type"] == ACCEPTED:
+                a = self.store.update_assignment(aid, instance=ev.get("instance"), lease_until=time.time() + LEASE_S) or a
+                t = self.store.get_ticket(a["ticket"])
+                if t.state in ACTIVE:
+                    self.store.update_ticket(t.id, None, owner=ev.get("instance"))
+            elif ev["type"] == WORKING:
+                self.store.update_assignment(aid, lease_until=time.time() + LEASE_S)
+            else:
+                self.store.drop_assignment(aid)
+                out.pop(aid, None)
+                self._apply(a, ev.get("report"), ev.get("text") or "", bool(ev.get("failed")), ev.get("commit"))
+        now_t = time.time()
+        for aid, a in self.store.assignments().items():
+            if a["lease_until"] < now_t:
+                self.store.drop_assignment(aid)
+                self.events.publish(RELEASED, {"assignment": aid, "ticket": a["ticket"], "role": a["role"],
+                                               "reason": f"no word from {a.get('instance') or 'any ' + a['role']} for {int(LEASE_S)} s"},
+                                    subject=a["ticket"])
+                log(f"{a['ticket']}: {a['role']} assignment {aid} released: the lease ran out")
+                self._apply(a, None, "", True, None)
+
+    def _apply(self, a: dict, report: dict | None, text: str, failed: bool, commit: str | None) -> None:
+        path = Path(a["workspace"]) if a.get("workspace") else None
+        if a["role"] == "worker":
+            self._apply_worker_report(a["ticket"], report, text, failed, path, a.get("branch"))
+        else:
+            self._apply_review(a["ticket"], report, text, failed, commit)
 
     def _apply_worker_report(self, tid: str, report: dict | None, text: str, failed: bool,
                              path: Path, branch: str) -> None:
@@ -697,113 +747,36 @@ class Loop:
 
     # -- reviewer --------------------------------------------------------------
 
-    def _review(self, t: Ticket) -> None:
-        if self.cfg.work != "code":
-            return self._review_task(t)
-        sid = f"reviewer-{t.id}"
-        wt = self.store.worktree(t.id)
-        if not wt:
-            self.store.transition(t.id, t.version, State.IN_REVIEW)
-            self._reject(t.id, "orchestra", "worktree missing at review time; please re-run", reviewer_text="")
-            return
-        path = Path(wt["path"])
-        try:
-            t = self.store.transition(t.id, t.version, State.IN_REVIEW, reviewer_session=sid, owner=self._instance(sid, "reviewer", t.id))
-        except (Conflict, StoreError) as e:
-            self._release(sid)
-            log(f"{t.id}: cannot start review: {e}")
-            return
-        log(f"{t.id}: review starting")
-        base = self.cfg.base_branch
-        test_output = None
-        if self.cfg.unit:
-            ok, res = run_specs(self.cfg.unit, path, self.project.logs_dir / "review" / t.id, stage="unit")
-            test_output = "\n".join(f"$ {r['command']}\n{r['tail']}\n[{r['status']}]" for r in res)
-        commit = t.reviewed_commit or self.git.rev_parse("HEAD", cwd=path)
-        diff = self.git.diff(base, commit, cwd=path)
-        files = self.git.changed_files(base, commit, cwd=path)
-        glog = self.git.log(base, commit, cwd=path)
-        proc = self._session(sid, "reviewer", path, t.id)
-        text = ""
-        try:
-            self._session_running(sid, "reviewer", proc, t.id)
-            if self._trim_if_large(proc, sid, "reviewer") == "rotated":
-                proc = self._session(sid, "reviewer", path, t.id)
-                self._session_running(sid, "reviewer", proc, t.id)
-            report, text, failed = self._prompt_with_retry(
-                proc, t.id, agents.reviewer_task(self.project, t, commit, diff, files, glog, test_output),
-                "You stopped without a verdict. Call `report_review` now with APPROVED or REJECTED.")
-        finally:
-            proc.close()
-            self._session_idle(sid, text)
-        t = self.store.get_ticket(t.id)
+    def _apply_review(self, tid: str, report: dict | None, text: str, failed: bool, commit: str | None) -> None:
+        """A reviewer's report, applied: its verdict, or (none came) the review is redone, up to
+        three times in a row before the ticket goes back to its worker."""
+        t = self.store.get_ticket(tid)
         if t.state != State.IN_REVIEW:
             return
-        if t.id in self.killed:
-            self.killed.discard(t.id)
-            self.store.add_note(t.id, Note(author="orchestra", kind="note", text="reviewer stopped by the operator; review will be redone"))
-            self.store.transition(t.id, t.version, State.READY_FOR_REVIEW)
+        if tid in self.killed:
+            self.killed.discard(tid)
+            self.store.add_note(tid, Note(author="orchestra", kind="note", text="reviewer stopped by the operator; review will be redone"))
+            self.store.transition(tid, t.version, State.READY_FOR_REVIEW)
             return
         if report is None:
             # A reviewer that produced no verdict is not a rejection: the worker has nothing to
             # fix. The review is redone, up to three times in a row, before the ticket is sent
-            # back; and that send-back is Orchestra's, never counted as a reviewer's verdict.
+            # back; and that send-back is the scheduler's, never counted as a reviewer's verdict.
             tries = 1
-            for n in reversed(self.store.notes(t.id)):
+            for n in reversed(self.store.notes(tid)):
                 if n.get("kind") != "crash" or not n.get("text", "").startswith("reviewer"):
                     break
                 tries += 1
             if tries <= 3:
-                self.store.add_note(t.id, Note(author="orchestra", kind="crash",
+                self.store.add_note(tid, Note(author="orchestra", kind="crash",
                                               text=f"reviewer produced no verdict{' (timed out)' if failed else ''} (attempt {tries}); review will be redone"))
-                self.store.transition(t.id, t.version, State.READY_FOR_REVIEW)
-                log(f"{t.id}: reviewer produced no verdict; review will be redone ({tries})")
+                self.store.transition(tid, t.version, State.READY_FOR_REVIEW)
+                log(f"{tid}: reviewer produced no verdict; review will be redone ({tries})")
                 return
-            self._reject(t.id, "orchestra", "three reviewers in a row produced no verdict" + (" (timed out)" if failed else "") +
-                         ". Make the diff small and focused so a review can finish, and report again.", text)
+            self._reject(tid, "orchestra", "three reviewers in a row produced no verdict" + (" (timed out)" if failed else "") +
+                         ". Make the work small and focused so a review can finish, and report again.", text)
             return
         self._verdict(t, report, text, commit)
-
-    def _review_task(self, t: Ticket) -> None:
-        """Review a finished task (work = "tasks"): the reviewer reads the worker's result in the
-        ticket's folder. Approved is DONE: there is nothing to merge."""
-        sid = f"reviewer-{t.id}"
-        path = self.project.workspaces_dir / t.id
-        try:
-            t = self.store.transition(t.id, t.version, State.IN_REVIEW, reviewer_session=sid, owner=self._instance(sid, "reviewer", t.id))
-        except (Conflict, StoreError) as e:
-            self._release(sid)
-            log(f"{t.id}: cannot start review: {e}")
-            return
-        if not path.is_dir():
-            self._reject(t.id, "orchestra", "the task's folder is missing at review time; please do the task again", reviewer_text="")
-            return
-        log(f"{t.id}: review starting")
-        files = sorted(str(p.relative_to(path)) for p in path.rglob("*") if p.is_file())[:200]
-        result = (path / "RESULT.md").read_text(encoding="utf-8", errors="replace") if (path / "RESULT.md").exists() else ""
-        summary = next((n.get("text", "") for n in reversed(self.store.notes(t.id)) if n.get("author") == "worker"), "")
-        proc = self._session(sid, "reviewer", path, t.id)
-        text = ""
-        try:
-            self._session_running(sid, "reviewer", proc, t.id)
-            report, text, failed = self._prompt_with_retry(
-                proc, t.id, agents.reviewer_task_tasks(t, summary, files, result),
-                "You stopped without a verdict. Call `report_review` now with APPROVED or REJECTED.")
-        finally:
-            proc.close()
-            self._session_idle(sid, text)
-        t = self.store.get_ticket(t.id)
-        if t.state != State.IN_REVIEW:
-            return
-        if t.id in self.killed:
-            self.killed.discard(t.id)
-            self.store.transition(t.id, t.version, State.READY_FOR_REVIEW)
-            return
-        if report is None:
-            self.store.add_note(t.id, Note(author="orchestra", kind="crash", text="reviewer produced no verdict; review will be redone"))
-            self.store.transition(t.id, t.version, State.READY_FOR_REVIEW)
-            return
-        self._verdict(t, report, text, None)
 
     def _verdict(self, t: Ticket, report: dict, text: str, commit: str | None) -> None:
         self.store.add_note(t.id, Note(author="reviewer", kind="review",
