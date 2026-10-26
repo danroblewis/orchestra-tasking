@@ -47,7 +47,8 @@ class Tickets:
     def tickets_by_id(self) -> dict[str, Ticket]:
         return {k: Ticket.from_dict(v) for k, v in self._t()["tickets"].items()}
 
-    def create_ticket(self, **fields: Any) -> Ticket:
+    def create_ticket(self, by: str | None = None, **fields: Any) -> Ticket:
+        """``by``: the machine whose request this is (measures.py); the writer's own when None."""
         with self._locked():
             data = self._t()
             ms = data["milestones"].get(fields.get("milestone_id") or "")
@@ -62,7 +63,7 @@ class Tickets:
             tid = f"{self.prefix}-{data['counters']['ticket']}"
             t = Ticket(id=tid, **fields)
             data["tickets"][tid] = t.to_dict()
-            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.events.source, created=True)
+            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.events.source, by=by, created=True)
             write(self.project.tickets_file, data)
         self.measures.write(points)
         self.events.emit("ticket.created", ticket=tid, title=t.title, by=t.created_by)
@@ -96,7 +97,9 @@ class Tickets:
         self.events.emit("ticket.updated", ticket=ticket_id, fields=sorted(changes))
         return t
 
-    def transition(self, ticket_id: str, expected_version: int | None, to_state: State, **fields: Any) -> Ticket:
+    def transition(self, ticket_id: str, expected_version: int | None, to_state: State, by: str | None = None, **fields: Any) -> Ticket:
+        """``by``: the machine whose report or request moves the ticket (measures.py); the
+        writer's own when None."""
         with self._locked():
             data = self._t()
             d = data["tickets"].get(ticket_id)
@@ -117,7 +120,7 @@ class Tickets:
             d["state_since"] = now()
             d["updated_at"] = d["state_since"]
             d["version"] += 1
-            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.events.source,
+            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.events.source, by=by,
                                                  src=src.value, dst=to_state.value)
             write(self.project.tickets_file, data)
             t = Ticket.from_dict(d)

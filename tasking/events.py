@@ -8,7 +8,12 @@ flat shape back: the data's fields beside ``type``, ``ts`` and ``source``.
 Every publisher names itself as its source: the scheduler is ``task_scheduler``, the web plugin
 ``task_web``, the command line ``task_cli``, and a planner asking through ``tasking api`` whatever
 it says it is. The bus itself is opened as Orchestra opens it (``[events] url`` or
-ORCHESTRA_EVENTS_URL), so there is one place that decides where the events go."""
+ORCHESTRA_EVENTS_URL), so there is one place that decides where the events go.
+
+The names: ``task.*`` is the protocol between the task system and the machines that fill roles
+(assignment, requests, attention); ``ticket.*`` and ``milestone.*`` are the facts the task
+system records about its own objects. So a request to create a ticket is ``task.requested`` and
+the fact is ``ticket.created``."""
 
 from __future__ import annotations
 

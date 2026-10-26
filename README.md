@@ -12,7 +12,7 @@ page of Python using only Orchestra's library (`demo/machines/`). `SPEC.md` is t
 
 ## Try it
 
-    uv sync --extra dev
+    uv sync --extra dev                # needs Orchestra checked out beside this repository, at ../orchestra_2 ([tool.uv.sources])
     uv run demo/run.py                 # a fresh demo project at ~/orchestra-tasking-demo, http://127.0.0.1:8071
 
 Four tickets are created and worked by the two programs; in about twenty seconds two are done
@@ -32,7 +32,9 @@ repository need not have Orchestra or the task system installed:
 
 Then run something that fills the roles (`demo/machines/` as they are, or your own). Settings
 are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
-`~/.orchestrator/<key>/tasks/`; events go on Orchestra's bus.
+`~/.orchestrator/<key>/tasks/`; events go on Orchestra's bus. If your tasks live seconds, set
+`[discovery] step = "5s"` (with a window of 30–60 m) in `orchestra.toml`: Orchestra's default
+grid is 30 s, and a level that changes inside one step is not a stock.
 
 ## Writing tickets for the demo's worker
 
@@ -49,7 +51,11 @@ and kept for later turns and for the reviewer. Nothing of the repository is ther
   fails, and is rejected every time. RESULT.md's second line says where the commands ran;
 - writes the acceptance so a program can check it: a file in backticks exists in the
   workspace, a `"text"` appears in RESULT.md; the reviewer leaves anything else to a person
-  and says so.
+  and says so;
+- runs for at least ten seconds (two of the demo's 5 s discovery steps): real work where there
+  is any, otherwise a `sleep` that stands for it, as the demos' first tickets do. A ticket done
+  inside one step is stamped IN_PROGRESS and READY_FOR_REVIEW in the same pass and IN_PROGRESS
+  never shows as a stock.
 
 A rejected ticket comes back to the worker with the reviewer's feedback. The worker cannot
 change commands on feedback, so unless a planner changed the description or the acceptance

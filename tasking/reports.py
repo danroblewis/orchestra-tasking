@@ -108,12 +108,12 @@ class Reports:
             return
         self.store.add_note(tid, Note(author="worker", text=report.get("summary", "")))
         if report["state"] == "BLOCKED":
-            self.store.transition(tid, t.version, State.BLOCKED, blocked_reason=report["blocked_reason"])
+            self.store.transition(tid, t.version, State.BLOCKED, by="worker", blocked_reason=report["blocked_reason"])
             self.events.attention(COORDINATOR, f"{tid} BLOCKED by worker: {report['blocked_reason'][:200]}", ticket=tid)
             self.log(f"{tid}: BLOCKED by worker")
             return
         if branch is None:                                   # a task: its result is the report and the folder
-            self.store.transition(tid, t.version, State.READY_FOR_REVIEW, feedback=None)
+            self.store.transition(tid, t.version, State.READY_FOR_REVIEW, by="worker", feedback=None)
             self.log(f"{tid}: READY_FOR_REVIEW")
             return
         # code: make sure there is something to review
@@ -124,7 +124,7 @@ class Reports:
         if head == self.git.rev_parse(self.cfg.base_branch) or self.git.is_ancestor(head, self.cfg.base_branch):
             self._block(t, "the worker reported READY_FOR_REVIEW but the branch has no commits beyond the base branch")
             return
-        self.store.transition(tid, t.version, State.READY_FOR_REVIEW, reviewed_commit=head, feedback=None)
+        self.store.transition(tid, t.version, State.READY_FOR_REVIEW, by="worker", reviewed_commit=head, feedback=None)
         self.log(f"{tid}: READY_FOR_REVIEW at {head[:10]}")
 
     def _block(self, t: Ticket, reason: str) -> None:
@@ -157,10 +157,10 @@ class Reports:
         self.store.add_note(tid, Note(author="reviewer", kind="review",
                                       text=f"{report['verdict']}: {report.get('summary', '')}\n{report.get('feedback') or ''}"))
         if report["verdict"] == "APPROVED":
-            t = self.store.transition(tid, t.version, State.APPROVED, feedback=None, rejected_by=None)   # the gate lands reviewed_commit as recorded from the worker's report
+            t = self.store.transition(tid, t.version, State.APPROVED, by="reviewer", feedback=None, rejected_by=None)   # the gate lands reviewed_commit as recorded from the worker's report
             self.log(f"{tid}: APPROVED")
             if self.cfg.work != "code":                       # nothing to merge: approved is done
-                self.store.transition(tid, t.version, State.DONE)
+                self.store.transition(tid, t.version, State.DONE, by="reviewer")
                 self.log(f"{tid}: DONE")
         else:
             self.reject(tid, "reviewer", report.get("feedback") or report.get("summary", ""))
@@ -171,7 +171,7 @@ class Reports:
         where nothing was reviewed (``counted`` False) is not a review round."""
         t = self.store.get_ticket(tid)
         rounds = t.review_rounds + (1 if counted else 0)
-        self.store.transition(tid, t.version, State.REJECTED, rejected_by=by, feedback=feedback, review_rounds=rounds,
+        self.store.transition(tid, t.version, State.REJECTED, by=by, rejected_by=by, feedback=feedback, review_rounds=rounds,
                               reviewer_rejections=t.reviewer_rejections + (1 if by == "reviewer" else 0))
         self.log(f"{tid}: REJECTED by {by} (round {rounds})")
         # the planner is told when the threshold is crossed, and at every further multiple of it,

@@ -28,9 +28,9 @@ how to write a machine that takes work from the task system.
 ## What you will see
 
 `run.py` creates one milestone and four tickets as a planner would (requests over the bus). The
-whole run takes about twenty seconds; DEMO-1 sleeps for four of them, so the Tasks panel shows
-`worker/1 · since Ns` on its card before the end state (the reviewer's turn is over within one
-poll, too short to see). Were a role unfilled, its offers would be re-offered every lease
+whole run takes about half a minute; DEMO-1 sleeps for ten seconds (a `sleep` standing for work,
+the rule in the repository's README), so the Tasks panel shows `worker/1 · since Ns` on its card
+before the end state (the reviewer's turn is over within one poll, too short to see). Were a role unfilled, its offers would be re-offered every lease
 (`task.assigned`/`task.released` pairs on the bus) and the card would say "offered to a worker
 Nm ago", growing from the first offer.
 
@@ -56,8 +56,9 @@ Where to look, at http://127.0.0.1:8071:
   its description, acceptance, notes (the worker's summary, the reviewer's verdict) and the
   blocker or feedback.
 - **Machines**: `task_scheduler` (package tasks, with the task queue card), `worker` and
-  `reviewer` as observed from the bus, `planner` (run.py's one-shot requests; it announces
-  nothing) and `orchestra-host`; what each publishes and listens for, and the event map between
+  `reviewer` as observed from the bus (each announces where its log is, so its dialog shows
+  it), `planner` (run.py's one-shot requests, a scheduled program) and `orchestra-host`; what
+  each publishes and listens for, and the event map between
   them: `task.assigned` from the scheduler, `task.accepted`/`task.reported` from the machines,
   `task.requested` from the planner, `request.done` back. `task_web` appears once an operator
   control has been pressed.
@@ -75,11 +76,15 @@ Where to look, at http://127.0.0.1:8071:
 
 The two blocked tickets wait for a planner: the attention events name a planner role
 (`coordinator`), and nothing in the demo fills it, so the two requests below are what a planner
-would send. DEMO-4 is unblocked by dropping the criterion nothing can meet and saying so, from
-the demo target (or anywhere, with `ORCHESTRA_REPO` set to it):
+would send. DEMO-4 is unblocked by dropping the criterion nothing can meet and saying so. The
+target is a copy of this folder with no environment of its own, so the commands run from the
+orchestra-tasking checkout's environment, pointed at the target:
 
-    uv run tasking api --as planner update_ticket --args '{"id": "DEMO-4", "acceptance": "- `today.txt` exists"}'
-    uv run tasking api --as planner unblock_ticket --args '{"id": "DEMO-4", "note": "dropped the impossible criterion"}'
+    cd ~/orchestra-tasking-demo && uv run --project ~/orchestra-tasking tasking api --as planner update_ticket --args '{"id": "DEMO-4", "acceptance": "- `today.txt` exists"}'
+    cd ~/orchestra-tasking-demo && uv run --project ~/orchestra-tasking tasking api --as planner unblock_ticket --args '{"id": "DEMO-4", "note": "dropped the impossible criterion"}'
+
+(or, from the orchestra-tasking checkout, `ORCHESTRA_REPO=~/orchestra-tasking-demo uv run
+tasking api …`).
 
 The ticket goes back to OPEN with the planner's note as its feedback, the scheduler offers it to
 the worker again, the worker runs the same commands (the ticket changed, so it does not block),

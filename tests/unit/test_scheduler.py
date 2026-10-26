@@ -27,7 +27,7 @@ def test_a_second_scheduler_on_a_project_a_live_one_holds_does_not_start(project
         Scheduler(project, store, events).run(once=True)
     assert store.scheduler()["pid"] == os.getppid()                  # the record is the other scheduler's still
     assert store.assignments() == {} and store.get_ticket(t.id).state == State.OPEN   # nothing offered, nothing released
-    assert on_bus(events, "task.released") == [] and on_bus(events, "scheduler.started") == []
+    assert on_bus(events, "task.released") == [] and on_bus(events, "orchestra.machine.started") == []
 
 
 def test_an_error_on_one_event_does_not_lose_the_rest_of_the_batch(project, monkeypatch):

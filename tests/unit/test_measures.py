@@ -23,13 +23,18 @@ def test_ticket_levels_and_flows_balance(store):
     store.transition(a.id, a.version, State.READY_FOR_REVIEW)
     level = lambda s: m.latest("tasks_tickets", {"project": key, "state": s, "machine": "task_scheduler"})[1]
     assert (level("OPEN"), level("IN_PROGRESS"), level("READY_FOR_REVIEW"), level("DONE")) == (1, 0, 1, 0)
-    assert m.latest("tasks_tickets_created_total", {"project": key, "machine": "worker"})[1] == 2       # worker/2 is the machine worker
-    moved = lambda f, t: m.latest("tasks_ticket_transitions_total", {"project": key, "from": f, "to": t, "machine": "worker"})[1]
+    # the writer is the store's machine (worker/2 is the machine worker); the actor defaults to it
+    assert m.latest("tasks_tickets_created_total", {"project": key, "machine": "worker", "by": "worker"})[1] == 2
+    moved = lambda f, t, by="worker": m.latest("tasks_ticket_transitions_total", {"project": key, "from": f, "to": t, "machine": "worker", "by": by})[1]
     assert moved("OPEN", "IN_PROGRESS") == 1 and moved("IN_PROGRESS", "READY_FOR_REVIEW") == 1
+    # the actor named by the caller: whose report or request the writer applied
+    store.transition(a.id, a.version + 1, State.IN_REVIEW, by="reviewer")
+    assert moved("READY_FOR_REVIEW", "IN_REVIEW", "reviewer") == 1
+    assert m.latest("tasks_ticket_transitions_total", {"project": key, "from": "READY_FOR_REVIEW", "to": "IN_REVIEW", "machine": "worker", "by": "worker"}) is None
     # the counters live with the tickets, so another process (or a restart) carries on from them
     again = LocalStore(store.project, Events.for_project(store.project, source="worker/1"))
     again.create_ticket(title="c", milestone_id=ms.id)
-    assert m.latest("tasks_tickets_created_total", {"project": key, "machine": "worker"})[1] == 3
+    assert m.latest("tasks_tickets_created_total", {"project": key, "machine": "worker", "by": "worker"})[1] == 3
 
 
 def test_the_scheduler_reasserts_the_levels_every_discovery_step_without_a_change(project):

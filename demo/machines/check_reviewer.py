@@ -17,6 +17,7 @@ check it. A review takes a moment, well within the lease, so it sends no heartbe
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import time
@@ -34,7 +35,8 @@ def main(instance: str) -> None:
     me = f"{ROLE}/{instance}"
     events = Events.for_project(load_project(), source=me)
     events.publish("orchestra.machine.started", {"mode": "continuous", "kind": "program", "listens_for": [ASSIGNED],
-                                                 "does": "approves a task when RESULT.md and the acceptance text's files and lines are there"})
+                                                 "does": "approves a task when RESULT.md and the acceptance text's files and lines are there",
+                                                 **({"log": os.environ["ORCHESTRA_LOG"]} if os.environ.get("ORCHESTRA_LOG") else {})})
     print(f"{me}: waiting for {ROLE} assignments", flush=True)
     offset = events.end()
     while True:

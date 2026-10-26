@@ -135,8 +135,15 @@ paused after a restart; a staging deploy failed. `to` is the planner role, `coor
 anyone listening. Nothing listens unless a planner machine does.
 
 **Announcement.** Every machine publishes `orchestra.machine.started` when it starts (the
-scheduler: `package: tasks`, `mode: continuous`, what it `listens_for`, where its `log` is).
-Orchestra's Machines page reads only those fields; the rest is passed to the package's card.
+scheduler: `package: tasks`, `mode: continuous`, `kind: program`, what it `listens_for`, where
+its `log` is). Orchestra's Machines page reads only those fields; the rest is passed to the
+package's card. That announcement is the fact that the scheduler started; there is no
+`scheduler.started` beside it.
+
+**The names.** `task.*` is the protocol between the task system and the machines that fill roles
+(assignment, requests, attention); `ticket.*` and `milestone.*` are the facts the task system
+records about its own objects. So a request to create a ticket is `task.requested` and the fact
+is `ticket.created`; `ticket.requested` is a candidate name at the next contract change.
 
 **Observations.** The task system also publishes what happened, for Orchestra and anyone
 listening, in families named up to the first dot (Orchestra's event map groups them so):
@@ -144,11 +151,12 @@ listening, in families named up to the first dot (Orchestra's event map groups t
 `milestone.created`/`updated`/`closed`, `capacity.changed`, `pickup.paused`/`resumed`,
 `kill.requested`, `pipeline.paused`/`resumed`, `probe.failed`/`recovered`,
 `gate.started`/`conflict`/`landed`/`base_broken`/`rejected`/`error`,
-`staging.deployed`/`failed`/`restarted`, `scheduler.started`/`stopped`. Orchestra never reads
+`staging.deployed`/`failed`/`restarted`, `scheduler.stopped` (Orchestra has no
+`machine.stopped`; that the scheduler stopped is a fact nothing else says). Orchestra never reads
 their data. These families and the fields named here are part of what listeners may rely on,
 like the assignment table and the request names: `ticket.transitioned` {ticket, from, to, owner},
 `ticket.created` {ticket}, `gate.base_broken` {gate_run}, `probe.failed`/`probe.recovered`
-{probe}, `scheduler.started`/`stopped`; rename them deliberately and say so in the commit.
+{probe}, `scheduler.stopped`; rename them deliberately and say so in the commit.
 
 ## 4. The scheduler (`tasking/scheduler.py`, `tasking run`)
 
@@ -373,9 +381,11 @@ in one place. Capacity and the config are re-read every tick, so a change is liv
 
 Only `tasking/store/` reads or writes these JSON files (`store/tickets.py` the first,
 `store/runtime.py` the second, behind one `LocalStore`). Metrics go to Orchestra's metrics store
-(`tasking/measures.py`): `tasks_tickets{state}`, `tasks_tickets_created_total{machine}`,
-`tasks_ticket_transitions_total{from,to,machine}`, a level and the counters that move it from
-the same change, so they balance. Between changes the scheduler writes the levels again every
+(`tasking/measures.py`): `tasks_tickets{state}`, `tasks_tickets_created_total{machine,by}`,
+`tasks_ticket_transitions_total{from,to,machine,by}`, a level and the counters that move it from
+the same change, so they balance; on the counters `machine` is the writer (`task_scheduler`)
+and `by` the actor whose report or request it applied (`worker`, `reviewer`, a planner's
+machine, or `task_scheduler` for its own moves). Between changes the scheduler writes the levels again every
 discovery step (Orchestra's `[discovery] step`, 30 s by default), the counters untouched, so a
 quiet system is seen measuring its stocks rather than taken for one whose writer is gone.
 

@@ -29,6 +29,7 @@ from .events import SCHEDULER, SUPERVISOR, Events
 from .gate import run_gate
 from .gate.runner import run_specs
 from .git import Git, GitError
+from .measures import machine_of
 from .model import ACTIVE, State, Ticket, TransitionError, effective_priorities, is_ready, now
 from .probes import Prober, config_probes
 from .procs import alive
@@ -132,7 +133,6 @@ class Scheduler:
         self.desk.start()
         # the record says the scheduler is up: by then the desk listens, so a request sent now is heard
         self.store.set_scheduler(os.getpid(), time.time())
-        self.events.emit("scheduler.started")
         self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
                                                           "listens_for": sorted({*REQUESTS.values(), QUERY, ACCEPTED, WORKING, REPORTED}),
                                                           "log": str(LOG),
@@ -400,7 +400,8 @@ class Scheduler:
         fields = ({"worker_turns": t.worker_turns + 1, **({"branch": a["branch"]} if a.get("branch") else {})}
                   if a["role"] == "worker" else {})
         try:
-            self.store.transition(t.id, t.version, State.IN_PROGRESS if a["role"] == "worker" else State.IN_REVIEW, owner=holder, **fields)
+            self.store.transition(t.id, t.version, State.IN_PROGRESS if a["role"] == "worker" else State.IN_REVIEW, by=machine_of(holder),
+                                  owner=holder, **fields)
         except (Conflict, StoreError, TransitionError) as e:
             self._release(a, f"the ticket cannot be {'worked' if a['role'] == 'worker' else 'reviewed'} now: {e}", instance=holder)
             self.store.drop_assignment(a["id"])

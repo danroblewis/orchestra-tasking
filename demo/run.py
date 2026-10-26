@@ -29,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 PYTHON = sys.executable
 PLAN = {"milestone": {"name": "Demo", "description": "Four tasks done by programs: two succeed, two need a decision."},
         "tickets": [
-            {"title": "Say hello", "description": "Write a greeting into a file and show it.\n\n```sh\nsleep 4\necho 'hello from the task system' > hello.txt\ncat hello.txt\n```",
+            {"title": "Say hello", "description": "Write a greeting into a file and show it.\n\n```sh\nsleep 10\necho 'hello from the task system' > hello.txt\ncat hello.txt\n```",
              "acceptance": "- `hello.txt` exists\n- RESULT.md shows \"hello from the task system\""},
             {"title": "Count the lines in the project's README", "depends_on": [0],
              "description": "The commands run in the ticket's own empty folder; a task about the repository goes there first.\n\n"
@@ -61,7 +61,8 @@ def make_project(target: Path) -> Path:
 
 
 def start(target: Path, port: int, env: dict[str, str] | None = None) -> dict[str, subprocess.Popen]:
-    """Orchestra's host and web UI, the scheduler and the two machines, each with its log in run/."""
+    """Orchestra's host and web UI, the scheduler and the two machines, each with its log in run/
+    (the machines are told where theirs is, ORCHESTRA_LOG, so they can announce it)."""
     env = {**os.environ, **(env or {}), "ORCHESTRA_REPO": str(target), "PYTHONUNBUFFERED": "1"}
     (target / "run").mkdir(exist_ok=True)
     commands = {"host": [PYTHON, "-m", "orchestra", "run"], "web": [PYTHON, "-m", "orchestra", "web", "--port", str(port)],
@@ -70,8 +71,9 @@ def start(target: Path, port: int, env: dict[str, str] | None = None) -> dict[st
                 "reviewer": [PYTHON, str(target / "machines" / "check_reviewer.py")]}
     procs = {}
     for name, cmd in commands.items():
-        with (target / "run" / f"{name}.log").open("ab") as log:
-            procs[name] = subprocess.Popen(cmd, cwd=target, env=env, stdout=log, stderr=subprocess.STDOUT)
+        log_path = target / "run" / f"{name}.log"
+        with log_path.open("ab") as log:
+            procs[name] = subprocess.Popen(cmd, cwd=target, env={**env, "ORCHESTRA_LOG": str(log_path)}, stdout=log, stderr=subprocess.STDOUT)
     return procs
 
 
@@ -123,6 +125,9 @@ def plan(target: Path) -> list[str]:
     from tasking.requests import ask
 
     events = Events.for_project(load_project(target), source="planner")
+    # the planner is a machine of the demo too: it says what it is before its first request
+    events.publish("orchestra.machine.started", {"mode": "scheduled", "kind": "program", "listens_for": ["request.done", "request.refused"],
+                                                 "does": "creates the demo's milestone and four tickets"})
 
     def request(command: str, args: dict) -> dict:
         out = ask(events, command, args, "planner")

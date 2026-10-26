@@ -39,8 +39,11 @@ def main(instance: str) -> None:
     project = load_project()
     events = Events.for_project(project, source=me)
     env = {**os.environ, "ORCHESTRA_REPO": str(project.repo_root)}   # what every command runs with
+    # ORCHESTRA_LOG: where whoever started this program sends its output (demo/run.py: run/worker.log
+    # in the project), so Orchestra's machine dialog can show it
     events.publish("orchestra.machine.started", {"mode": "continuous", "kind": "program", "listens_for": [ASSIGNED, RELEASED],
-                                                 "does": "runs the `sh` code blocks of a ticket's description in its workspace"})
+                                                 "does": "runs the `sh` code blocks of a ticket's description in its workspace",
+                                                 **({"log": os.environ["ORCHESTRA_LOG"]} if os.environ.get("ORCHESTRA_LOG") else {})})
     print(f"{me}: waiting for {ROLE} assignments", flush=True)
     offset, jobs = events.end(), {}                      # assignment id -> the Job doing it
     while True:

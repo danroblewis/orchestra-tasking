@@ -156,7 +156,8 @@ def test_the_tickets_page_draws_the_tickets_in_a_browser(demo):
 
 
 def test_orchestra_observes_the_scheduler_and_the_machines(demo):
-    url, _target = demo
+    url, target = demo
+    plan(target)                                                   # the planner is a machine of the demo too
     seen = {}
 
     def observed() -> bool:
@@ -164,12 +165,14 @@ def test_orchestra_observes_the_scheduler_and_the_machines(demo):
         if not d.get("ok"):
             return False
         seen.update({m["id"]: m for m in d["machines"]})
-        return {"task_scheduler", "worker", "reviewer"} <= set(seen) and not any(seen[m].get("unseen") for m in ("worker", "reviewer"))
+        return {"task_scheduler", "worker", "reviewer", "planner"} <= set(seen) and not any(seen[m].get("unseen") for m in ("worker", "reviewer"))
     wait_until("the machines", observed, timeout_s=60)
     assert seen["task_scheduler"]["package"] == "tasks" and seen["task_scheduler"]["mode"] == "continuous"
+    assert seen["planner"]["mode"] == "scheduled" and seen["planner"]["kind"] == "program"
     assert "task.accepted" in seen["task_scheduler"]["subscribes"] and "task.requested" in seen["task_scheduler"]["subscribes"]
     for m in ("worker", "reviewer"):
-        assert seen[m]["mode"] == "continuous" and seen[m]["about"]["kind"] == "program" and seen[m]["package"] is None
+        assert seen[m]["mode"] == "continuous" and seen[m]["kind"] == "program" and seen[m]["package"] is None
+        assert seen[m]["logs"] == ["1"], "the demo's programs say where their log is"
         assert [i["id"] for i in seen[m]["instances"]] == ["1"]
         assert "task.assigned" in seen[m]["subscribes"]
     assert get(url + "/api/plugins")["pages"] == [{"plugin": "tasks", "path": "/tickets", "title": "Tickets"}]

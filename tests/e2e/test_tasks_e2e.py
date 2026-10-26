@@ -307,7 +307,7 @@ def test_a_stopped_scheduler_leaves_nothing_held(env):
     assert store.assignments() == {}
     assert store.get_ticket(t.id).state == State.OPEN
     assert on_bus(events, RELEASED)[-1]["data"]["reason"] == "the task system shut down"
-    assert [e["type"] for e in events.bus.read(0, limit=10000)[0] if e["type"].startswith("scheduler.")] == ["scheduler.started", "scheduler.stopped"]
+    assert [e["type"] for e in events.bus.read(0, limit=10000)[0] if e["type"].startswith("scheduler.")] == ["scheduler.stopped"]
 
 
 def test_a_worker_that_cannot_act_on_feedback_blocks_instead_of_arguing(env):

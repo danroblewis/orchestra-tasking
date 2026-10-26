@@ -3,10 +3,17 @@ measure (Orchestra's discovery decides what is a stock and what is a flow):
 
 - ``tasks_tickets{state}``: tickets in each state, every state written at every change, and
   written again, unchanged, every discovery step while the scheduler runs (``level_points``);
-- ``tasks_tickets_created_total{machine}``: tickets created, by the machine that created them;
-- ``tasks_ticket_transitions_total{from, to, machine}``: state changes, by the machine that made
-  them (the scheduler applies a worker's or reviewer's report; a planner's request is the
-  scheduler's desk's).
+- ``tasks_tickets_created_total{machine, by}``: tickets created;
+- ``tasks_ticket_transitions_total{from, to, machine, by}``: state changes.
+
+On the counters ``machine`` is the writer, the machine whose record this is (the scheduler's,
+``task_scheduler``: Orchestra's discovery balances a level with its own machine's counters
+first), and ``by`` is the actor, the machine whose report or request the writer applied: the
+``worker`` that reported READY_FOR_REVIEW, the ``reviewer`` whose verdict approved it, the
+planner machine that asked for the ticket or cancelled it, or ``task_scheduler`` itself for its
+own moves (a lease run out, a rejection for no verdict). Discovery puts a label's differing
+values into a flow's name, so a flow reads "ticket transitions (IN_PROGRESS, READY_FOR_REVIEW,
+worker)" and the machine that did the work is on the flow.
 
 A level and the counters that move it are taken from the same change, at the same instant, so
 they balance exactly (a level sampled now and then would be off by whatever moved in between).
@@ -64,18 +71,20 @@ class Measures:
         counts[key] = counts.get(key, 0) + 1
         return counts[key]
 
-    def ticket_points(self, tickets: dict, counts: dict, *, source: str | None, created: bool = False,
+    def ticket_points(self, tickets: dict, counts: dict, *, source: str | None, by: str | None = None, created: bool = False,
                       src: str | None = None, dst: str | None = None) -> list[Point]:
         """The points for one ticket change, from the ticket data as it now stands (``tickets``:
-        id -> record). ``counts`` is updated in place and must be saved with the tickets."""
+        id -> record); ``source`` is the writer's, ``by`` the actor's machine (the writer's own
+        when None). ``counts`` is updated in place and must be saved with the tickets."""
         t = time.time()
         machine = machine_of(source)
+        by = by or machine
         out = []
         if created:
-            labels = {"machine": machine}
+            labels = {"machine": machine, "by": by}
             out.append(Point("tasks_tickets_created_total", float(self.count(counts, "created", labels)), t, self._labels(**labels)))
         if src and dst:
-            labels = {"from": src, "to": dst, "machine": machine}
+            labels = {"from": src, "to": dst, "machine": machine, "by": by}
             out.append(Point("tasks_ticket_transitions_total", float(self.count(counts, "transition", labels)), t, self._labels(**labels)))
         return out + self.level_points(tickets, t)
 
