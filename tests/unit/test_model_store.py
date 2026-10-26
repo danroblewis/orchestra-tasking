@@ -1,20 +1,14 @@
-import subprocess
-
 import pytest
 
-from tasking.config import Config, init_project
-from tasking.gate.bisect import bisect_branches
+from tasking.config import Config
+from tasking.events import Events
 from tasking.model import State, TransitionError, check_transition
 from tasking.store import Conflict, LocalStore, StoreError
 
 
 @pytest.fixture
-def project(tmp_path, monkeypatch):
-    monkeypatch.setenv("ORCHESTRATOR_HOME", str(tmp_path / "home"))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    return init_project(repo, prefix="T")
+def store(project):
+    return LocalStore(project, Events(project.events_file, source="task_scheduler"))
 
 
 def test_transitions():
@@ -25,8 +19,7 @@ def test_transitions():
         check_transition(State.DONE, State.OPEN)
 
 
-def test_milestone_rules_and_ids(project):
-    store = LocalStore(project)
+def test_milestone_rules_and_ids(store):
     with pytest.raises(StoreError):
         store.create_ticket(title="x", milestone_id="M9")
     m = store.create_milestone(name="first")
@@ -43,8 +36,7 @@ def test_milestone_rules_and_ids(project):
         store.update_milestone(m.id, None, status="open")
 
 
-def test_version_conflict_and_blocked_reason(project):
-    store = LocalStore(project)
+def test_version_conflict_and_blocked_reason(store):
     m = store.create_milestone(name="m")
     t = store.create_ticket(title="a", milestone_id=m.id)
     with pytest.raises(Conflict):
@@ -55,8 +47,7 @@ def test_version_conflict_and_blocked_reason(project):
     store.transition(t.id, t.version, State.BLOCKED, blocked_reason="need creds")
 
 
-def test_operator_capacity_is_the_ceiling_a_planner_dials_under(project):
-    store = LocalStore(project)
+def test_operator_capacity_is_the_ceiling_a_planner_dials_under(store):
     base = store.capacity()
     assert base["max_workers"] == base["configured_workers"] and not base["operator_set"]
     cap = store.set_operator_capacity(base["configured_workers"] + 3, None)
@@ -72,21 +63,23 @@ def test_operator_capacity_is_the_ceiling_a_planner_dials_under(project):
     assert not cap["operator_set"] and cap["max_workers"] == base["configured_workers"]                      # back to orchestra.toml
 
 
+def test_the_runtime_record_has_named_methods(store):
+    assert store.scheduler() is None
+    store.set_scheduler(4242, 1.0)
+    assert store.scheduler() == {"pid": 4242, "started_at": 1.0}
+    store.clear_scheduler(1)                                     # not ours: kept
+    assert store.scheduler()["pid"] == 4242
+    store.clear_scheduler(4242)
+    assert store.scheduler() is None
+    store.record_build({"id": "b1", "commit": "c"})
+    assert store.builds() == {"b1": {"id": "b1", "commit": "c"}}
+    assert store.set_staging(status="running", pid=7)["pid"] == 7 and store.staging()["status"] == "running"
+    assert store.snapshot()["probes"] == [] and store.snapshot()["worktrees"] == []
+
+
 def test_config_durations():
     cfg = Config.from_toml('[tasks]\nworkers = 2\n[build]\ntimeout = "2m"\n[[gate.unit]]\nname="u"\ncommand="true"\n')
     assert cfg.build_timeout == 120 and cfg.workers == 2 and cfg.unit[0].command == "true"
-
-
-@pytest.mark.parametrize("n", range(1, 9))
-@pytest.mark.parametrize("bad", range(8))
-def test_bisect_isolates_offender(n, bad):
-    if bad >= n:
-        return
-    branches = [f"b{i}" for i in range(n)]
-    res = bisect_branches(branches, lambda sub: f"b{bad}" in sub)
-    assert res.offenders == [f"b{bad}"]
-    assert set(res.safe) == set(branches) - {f"b{bad}"}
-    assert not res.unresolved
 
 
 def test_effective_priority_propagates_and_ages():

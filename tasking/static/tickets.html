@@ -60,7 +60,7 @@ const TW = 200, TH = 46, MW = 180, MH = 46;
 const opened = new Set(JSON.parse(sessionStorage.getItem("graph.open") || "[]"));
 
 async function refresh() {
-  try { STATE = await (await fetch(API + "/state")).json(); $("conn").textContent = "live"; render(); }
+  try { STATE = await (await fetch(TASKS_API + "/state")).json(); $("conn").textContent = "live"; render(); }
   catch (e) { if ($("conn")) $("conn").textContent = "disconnected"; }
 }
 

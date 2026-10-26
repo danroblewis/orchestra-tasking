@@ -1,7 +1,6 @@
-"""The merge gate: assemble, build, unit, start, acceptance, land. SPEC.md section 5.
-
-v1 gates one ticket per run (batch size 1), so a failure is attributed to that ticket unless
-the base branch itself fails. Batching and bisection plug in here later."""
+"""The merge gate: assemble, build, unit, start, acceptance, land. SPEC.md section 5. The gate
+lands one ticket per run, so a failure is attributed to that ticket unless the base branch itself
+fails."""
 
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ from ..config import Project, TestSpec
 from ..events import Events
 from ..git import Git, GitError
 from ..model import Note, State, now
-from ..staging import Staging, build_python, record_build
+from ..staging import Staging, build_python
 from ..store import LocalStore
 
 
@@ -49,6 +48,22 @@ def run_specs(specs: list[TestSpec], cwd: Path, log_dir: Path, placeholders: dic
         if not passed:
             break
     return ok, results
+
+
+def build(project: Project, cwd: Path, log_dir: Path, into: str) -> tuple[list[dict], str | None]:
+    """The ``[build]`` stage in ``cwd``: the command run, then the artifact it names matched and
+    copied to ``artifacts/<into>/``. Returns the stage results and the artifact's path (None when
+    the stage failed, or no artifact is configured)."""
+    cfg = project.config
+    ok, res = run_specs([TestSpec("build", cfg.build_command, timeout=cfg.build_timeout)], cwd, log_dir, stage="build")
+    if not ok or not cfg.build_artifact:
+        return res, None
+    matches = sorted(glob.glob(str(cwd / cfg.build_artifact)))
+    if not matches:
+        return [*res, {"stage": "build", "name": "artifact", "status": "failed", "tail": f"no artifact matched {cfg.build_artifact}"}], None
+    dest = project.artifacts_dir / into
+    dest.mkdir(parents=True, exist_ok=True)
+    return res, str(shutil.copy(matches[-1], dest))
 
 
 def _free_port() -> int:
@@ -109,19 +124,11 @@ def _stages(project: Project, cwd: Path, log_dir: Path, run: dict) -> bool:
     cfg = project.config
     artifact = None
     if cfg.build_command:
-        ok, res = run_specs([TestSpec("build", cfg.build_command, timeout=cfg.build_timeout)], cwd, log_dir, stage="build")
+        res, artifact = build(project, cwd, log_dir, run["id"])
         run["stages"] += res
-        if not ok:
+        if any(s["status"] == "failed" for s in res):
             return False
-        if cfg.build_artifact:
-            matches = sorted(glob.glob(str(cwd / cfg.build_artifact)))
-            if not matches:
-                run["stages"].append({"stage": "build", "name": "artifact", "status": "failed",
-                                      "tail": f"no artifact matched {cfg.build_artifact}"})
-                return False
-            dest = project.state_dir / "artifacts" / run["id"]
-            dest.mkdir(parents=True, exist_ok=True)
-            artifact = str(shutil.copy(matches[-1], dest))
+        if artifact:
             run["artifact"] = artifact
     ok, res = run_specs(cfg.unit, cwd, log_dir, stage="unit")
     run["stages"] += res
@@ -151,7 +158,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
                  "stages": [], "started_at": now(), "finished_at": None, "merged": [], "rejected": [],
                  "summary": ""}
     store.save_gate_run(run)
-    events.emit("gate_started", gate_run=run_id, batch=ticket_ids)
+    events.emit("gate.started", gate_run=run_id, batch=ticket_ids)
     gate_branch = f"orchestra/gate-{run_id}"
     path = project.gate_dir / run_id
     log_dir = project.logs_dir / run_id
@@ -161,9 +168,9 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
         if t.state != State.MERGING:
             return
         store.add_note(tid, Note(author="merge_gate", kind="gate", text=reason[-4000:]))
-        # A merge conflict is routine: the branch simply needs the base merged in. It goes
-        # straight back to the ticket's worker and does not count as a review
-        # round, so it never triggers the repeated-rejection escalation.
+        # a merge conflict is routine: the branch simply needs the base merged in. It goes straight
+        # back to the ticket's worker and does not count as a review round, so it never triggers
+        # the repeated-rejection escalation
         rounds = t.review_rounds if conflict else t.review_rounds + 1
         store.transition(tid, t.version, State.REJECTED, rejected_by="merge_gate", feedback=reason[-8000:],
                          review_rounds=rounds, gate_rejections=t.gate_rejections + 1)
@@ -181,16 +188,15 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
             p = git.merge_no_ff(t.reviewed_commit or t.branch or "", path, f"Merge {tid}: {t.title}")
             if p.returncode != 0:
                 git.abort_merge(path)
-                reject(tid, f"Your branch conflicts with `{base}` because another ticket landed first. This is "
-                            f"routine. In your worktree run `git merge {base}`, resolve every conflict so both "
-                            f"sides' changes survive, run the tests, commit the merge, then call report_ticket "
-                            f"with READY_FOR_REVIEW.\n\n{p.stdout}\n{p.stderr}", conflict=True)
+                reject(tid, f"The branch conflicts with `{base}` because another ticket landed first; this is routine. "
+                            f"To go on: merge `{base}` into your branch in the workspace, resolve the conflicts so both "
+                            f"sides survive, run the tests, commit, and report READY_FOR_REVIEW.\n\n{p.stdout}\n{p.stderr}", conflict=True)
             else:
                 merged.append(tid)
         if not merged:
             run["status"] = "conflict"
             run["summary"] = f"{', '.join(run['rejected'])} conflicted with {base}; sent back to their workers to merge {base}"
-            events.emit("gate_conflict", gate_run=run_id, tickets=list(run["rejected"]))
+            events.emit("gate.conflict", gate_run=run_id, tickets=list(run["rejected"]))
             return run
 
         ok = _stages(project, path, log_dir, run)
@@ -213,15 +219,15 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
                 run["merged"].append(tid)
             run["status"] = "landed"
             run["summary"] = f"landed {', '.join(merged)} on {base} at {gate_commit[:10]}"
-            events.emit("gate_landed", gate_run=run_id, tickets=merged, commit=gate_commit)
+            events.emit("gate.landed", gate_run=run_id, tickets=merged, commit=gate_commit)
             if run.get("artifact") and cfg.staging_configured:
-                build = {"id": run_id, "gate_run_id": run_id, "commit": gate_commit,
-                         "artifact_path": run["artifact"], "created_at": now()}
-                record_build(store, build)
-                run["staging"] = "deployed" if Staging(project, store, events).deploy(build) else "failed"
+                build_rec = {"id": run_id, "gate_run_id": run_id, "commit": gate_commit,
+                             "artifact_path": run["artifact"], "created_at": now()}
+                store.record_build(build_rec)
+                run["staging"] = "deployed" if Staging(project, store, events).deploy(build_rec) else "failed"
             return run
 
-        # Failure: is the base itself broken?
+        # failure: is the base itself broken?
         failed = [s for s in run["stages"] if s["status"] == "failed"]
         failure_text = "\n\n".join(f"[{s['stage']}:{s['name']}] exit {s.get('returncode')}\n{s.get('tail', '')}" for s in failed)
         base_path = project.gate_dir / f"{run_id}-base"
@@ -241,14 +247,14 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
             run["status"] = "base_broken"
             run["summary"] = f"{base} fails the gate with nothing merged; pipeline paused"
             store.set_pipeline(True, f"{base} fails the gate (run {run_id})")
-            store.events.attention("supervisor", f"{base} is broken: gate run {run_id} failed with no branches applied")
-            events.emit("gate_base_broken", gate_run=run_id)
+            events.attention("supervisor", f"{base} is broken: gate run {run_id} failed with no branches applied")
+            events.emit("gate.base_broken", gate_run=run_id)
             return run
         for tid in merged:
             reject(tid, f"Merge gate failed for {tid} on top of {base} (run {run_id}):\n\n{failure_text}")
         run["status"] = "rejected"
         run["summary"] = f"rejected {', '.join(merged)}: {', '.join(s['stage'] + ':' + s['name'] for s in failed)}"
-        events.emit("gate_rejected", gate_run=run_id, tickets=merged)
+        events.emit("gate.rejected", gate_run=run_id, tickets=merged)
         return run
     except GitError as e:
         run["status"] = "error"
@@ -258,9 +264,9 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
             if t.state == State.MERGING:
                 store.transition(tid, t.version, State.APPROVED)
         store.set_pipeline(True, f"gate run {run_id} git error: {e}")
-        store.events.attention("supervisor", f"gate run {run_id} hit a git error and the pipeline is paused: {e}. "
-                         "Fix the cause (or ask the human to), then call resume_pipeline.")
-        events.emit("gate_error", gate_run=run_id, error=str(e))
+        events.attention("supervisor", f"gate run {run_id} hit a git error and the pipeline is paused: {e}. "
+                         "Fix the cause (or ask the human to), then send pipeline.resume_requested (resume_pipeline).")
+        events.emit("gate.error", gate_run=run_id, error=str(e))
         return run
     finally:
         git.worktree_remove(path)

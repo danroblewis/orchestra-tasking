@@ -3,11 +3,12 @@
     uv run demo/run.py [target] [--port 8071]       # target: a new directory, default ~/orchestra-tasking-demo
 
 It copies the template beside it (orchestra.toml, README.md, machines/) to the target, makes it
-a git repository (Orchestra wants orchestra.toml at a repository root), starts Orchestra's web UI,
-the task system's scheduler and the two machines, creates a milestone and four tickets as a
-planner would (requests over the bus, tasking/requests.py), prints the URL and stops everything
-on Ctrl-C. The processes' output goes to run/*.log in the target. The e2e tests use the same
-functions against a temporary directory and a free port (tests/e2e/test_demo_e2e.py)."""
+a git repository (Orchestra wants orchestra.toml at a repository root), removes any state a
+previous run left for it, starts Orchestra's host and web UI, the task system's scheduler and the
+two machines, creates a milestone and four tickets as a planner would (requests over the bus,
+tasking/requests.py), prints the URL and stops everything on Ctrl-C. The processes' output goes
+to run/*.log in the target. The e2e tests use the same functions against a temporary directory
+and a free port (tests/e2e/test_demo_e2e.py)."""
 
 from __future__ import annotations
 
@@ -21,6 +22,8 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+
+from orchestra.config import home, project_key
 
 HERE = Path(__file__).resolve().parent
 PYTHON = sys.executable
@@ -38,7 +41,9 @@ PLAN = {"milestone": {"name": "Demo", "description": "Four tasks done by program
 
 
 def make_project(target: Path) -> Path:
-    """The template as a fresh git repository at ``target`` (which must not exist yet)."""
+    """The template as a fresh git repository at ``target`` (which must not exist yet), with no
+    state: Orchestra names a project's state directory after the target's path, so a previous
+    run of the demo at the same path left tickets and events there that would show up again."""
     if target.exists():
         sys.exit(f"{target} exists; remove it or name another directory")
     shutil.copytree(HERE, target, ignore=shutil.ignore_patterns("run.py", "__pycache__"))
@@ -46,14 +51,19 @@ def make_project(target: Path) -> Path:
     subprocess.run([*git, "init", "-q", "-b", "main"], cwd=target, check=True)
     subprocess.run([*git, "add", "-A"], cwd=target, check=True)
     subprocess.run([*git, "commit", "-q", "-m", "the task system's demo"], cwd=target, check=True)
+    state = home() / project_key(target)
+    if state.exists():
+        shutil.rmtree(state)
+        print(f"removed the state a previous run left in {state}", flush=True)
     return target
 
 
 def start(target: Path, port: int, env: dict[str, str] | None = None) -> dict[str, subprocess.Popen]:
-    """Orchestra's web UI, the scheduler and the two machines, each with its log in run/."""
+    """Orchestra's host and web UI, the scheduler and the two machines, each with its log in run/."""
     env = {**os.environ, **(env or {}), "ORCHESTRA_REPO": str(target), "PYTHONUNBUFFERED": "1"}
     (target / "run").mkdir(exist_ok=True)
-    commands = {"web": [PYTHON, "-m", "orchestra", "web", "--port", str(port)], "scheduler": [PYTHON, "-m", "tasking", "run"],
+    commands = {"host": [PYTHON, "-m", "orchestra", "run"], "web": [PYTHON, "-m", "orchestra", "web", "--port", str(port)],
+                "scheduler": [PYTHON, "-m", "tasking", "run"],
                 "worker": [PYTHON, str(target / "machines" / "shell_worker.py")],
                 "reviewer": [PYTHON, str(target / "machines" / "check_reviewer.py")]}
     procs = {}
@@ -149,6 +159,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nstopping", flush=True)
     finally:
+        for sig in (signal.SIGTERM, signal.SIGINT):      # a second signal while stopping (a `kill` of the uv chain sends two) changes nothing
+            signal.signal(sig, signal.SIG_IGN)
         stop(procs)
 
 

@@ -2,32 +2,24 @@
 
 A probe is a command with a schedule, declared in ``orchestra.toml`` (``[[probes]]``). Exit 0
 means the condition holds. The scheduler remembers each probe's last state and emits
-``probe_failed`` and ``probe_recovered`` only on the transition, so a failing probe wakes
+``probe.failed`` and ``probe.recovered`` only on the transition, so a failing probe wakes
 whatever listens for it once, not every interval. The task system supplies the clock and the
 event; the repository supplies the check."""
 
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Project
+from .config import ConfigError, Project, parse_duration
 from .events import Events
 from .store import LocalStore
 
 OUTPUT_TAIL = 2000
-
-
-def parse_interval(text: str) -> float:
-    m = re.fullmatch(r"\s*(\d+)\s*(s|m|h|d)\s*", text)
-    if not m:
-        raise ValueError("every must look like 30s, 30m, 6h, or 1d")
-    return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
 
 
 @dataclass(frozen=True)
@@ -40,9 +32,8 @@ class ProbeSpec:
 
 
 def _spec(d: dict, project: Project) -> ProbeSpec:
-    every = d.get("every", "5m")
-    secs = parse_interval(every) if isinstance(every, str) else float(every)
-    return ProbeSpec(name=d["name"], command=d["command"], every=secs, timeout=float(d.get("timeout", 120)), cwd=project.repo_root)
+    return ProbeSpec(name=d["name"], command=d["command"], every=parse_duration(d.get("every"), 300.0),
+                     timeout=parse_duration(d.get("timeout"), 120.0), cwd=project.repo_root)
 
 
 def config_probes(project: Project) -> list[ProbeSpec]:
@@ -50,7 +41,7 @@ def config_probes(project: Project) -> list[ProbeSpec]:
     for d in project.config.raw.get("probes", []) or []:
         try:
             out.append(_spec(d, project))
-        except (KeyError, ValueError):
+        except (KeyError, ConfigError):
             continue
     return out
 
@@ -80,8 +71,8 @@ class Prober:
             th = threading.Thread(target=self._run, args=(s,), daemon=True, name=f"probe-{s.name}")
             self.running[s.name] = th
             th.start()
-        for name in self.store.probes():
-            if name not in known and not self.store.probe_state(name).get("removed"):
+        for name, st in self.store.probe_states().items():
+            if name not in known and not st.get("removed"):
                 self.store.set_probe_state(name, removed=True)
 
     def _run(self, s: ProbeSpec) -> None:
@@ -104,6 +95,6 @@ class Prober:
             fields["since"] = started
         self.store.set_probe_state(s.name, **fields)
         if status == "failed" and prev != "failed":
-            self.events.emit("probe_failed", probe=s.name, output=output[-600:])
+            self.events.emit("probe.failed", probe=s.name, output=output[-600:])
         elif status == "ok" and prev == "failed":
-            self.events.emit("probe_recovered", probe=s.name)
+            self.events.emit("probe.recovered", probe=s.name)

@@ -1,5 +1,7 @@
 """The `tasking` command line: the task system's scheduler, its tickets, and its operations. The
-web UI, metrics, model and event commands are Orchestra's (`orchestra web`, …)."""
+web UI, metrics, model and event commands are Orchestra's (`orchestra web`, …). What the command
+line publishes (a staging deploy, a planner's request) is sourced ``task_cli``, or the role a
+request is sent as."""
 
 from __future__ import annotations
 
@@ -10,9 +12,11 @@ import sys
 from pathlib import Path
 
 from .config import ConfigError, Project, init_project, load_project
-from .events import Events
+from .events import SCHEDULER, Events
 from .requests import ask
-from .store import LocalStore
+from .store import LocalStore, StoreError
+
+CLI = "task_cli"
 
 
 def _project(args) -> Project:
@@ -22,12 +26,10 @@ def _project(args) -> Project:
         sys.exit(f"tasking: {e}")
 
 
-def _store(project: Project) -> tuple[LocalStore, Events]:
-    events = Events.for_project(project)
+def _store(project: Project, source: str = CLI) -> tuple[LocalStore, Events]:
+    events = Events.for_project(project, source=source)
     return LocalStore(project, events), events
 
-
-# -- commands --------------------------------------------------------------------
 
 def cmd_init(args) -> int:
     p = init_project(Path(args.repo or os.getcwd()), prefix=args.prefix, unit_command=args.unit_command)
@@ -36,11 +38,11 @@ def cmd_init(args) -> int:
 
 
 def cmd_run(args) -> int:
-    from .loop import Loop
+    from .scheduler import Scheduler
 
     project = _project(args)
-    store, events = _store(project)
-    Loop(project, store, events).run(once=args.once)
+    store, events = _store(project, source=SCHEDULER)
+    Scheduler(project, store, events).run(once=args.once)
     return 0
 
 
@@ -48,8 +50,8 @@ def cmd_status(args) -> int:
     from . import status as st
 
     project = _project(args)
-    store, _ = _store(project)
-    d = st.collect(project, store)
+    store, events = _store(project)
+    d = st.collect(project, store, events)
     print(json.dumps(d, indent=1) if args.json else st.render(d))
     return 0
 
@@ -61,7 +63,12 @@ def cmd_ticket(args) -> int:
         for t in store.list_tickets():
             print(f"{t.id:10} {t.state.value:17} p{t.priority} {t.milestone_id:4} {t.title}")
         return 0
-    t = store.get_ticket(args.id)
+    if not args.id:
+        sys.exit("tasking: ticket show needs an id")
+    try:
+        t = store.get_ticket(args.id)
+    except StoreError:
+        sys.exit(f"tasking: no ticket {args.id}")
     print(json.dumps({**t.to_dict(), "notes": store.notes(t.id)}, indent=2))
     return 0
 
@@ -74,7 +81,12 @@ def cmd_milestone(args) -> int:
             n = len(store.list_tickets(milestone_id=m.id))
             print(f"{m.id:5} {m.status.value:7} {n:3} tickets  {m.name}")
         return 0
-    print(json.dumps(store.get_milestone(args.id).to_dict(), indent=2))
+    if not args.id:
+        sys.exit("tasking: milestone show needs an id")
+    try:
+        print(json.dumps(store.get_milestone(args.id).to_dict(), indent=2))
+    except StoreError:
+        sys.exit(f"tasking: no milestone {args.id}")
     return 0
 
 
@@ -93,9 +105,10 @@ def cmd_api(args) -> int:
 
 
 def cmd_staging(args) -> int:
-    from .gate.runner import run_specs
+    from .gate.runner import build
     from .git import Git
-    from .staging import Staging, record_build
+    from .model import now
+    from .staging import Staging
 
     project = _project(args)
     store, events = _store(project)
@@ -103,11 +116,12 @@ def cmd_staging(args) -> int:
     if not project.config.staging_configured:
         sys.exit("tasking: no [staging] section in orchestra.toml")
     if args.action == "status":
-        print(json.dumps({k: v for k, v in st.state().items()}, indent=2))
+        print(json.dumps(st.state(), indent=2))
     elif args.action == "logs":
         print(st.logs())
     elif args.action == "stop":
-        st.stop(); print("stopped")
+        st.stop()
+        print("stopped")
     elif args.action == "restart":
         r = st.restart()
         print({"ok": "restarted", "no_build": "no build recorded; use `tasking staging deploy`",
@@ -116,9 +130,7 @@ def cmd_staging(args) -> int:
         if r in ("ok", "tunnel_failed"):
             print(f"local:  {st.local_url()}" + (f"\npublic: {st.public_url()}" if st.public_url() else ""))
     elif args.action == "deploy":
-        # Build the current base branch head with the [build] stage and promote it.
-        import glob
-        import shutil
+        # build the current base branch head with the [build] stage (the gate's) and promote it
         import uuid
 
         cfg = project.config
@@ -130,25 +142,16 @@ def cmd_staging(args) -> int:
         path = project.gate_dir / bid
         git.worktree_add(f"orchestra/build-{bid}", path, cfg.base_branch)
         try:
-            from .config import TestSpec
-            ok, res = run_specs([TestSpec("build", cfg.build_command, timeout=cfg.build_timeout)], path,
-                                project.logs_dir / bid, stage="build")
-            if not ok:
-                sys.exit(f"tasking: build failed:\n{res[-1]['tail']}")
-            matches = sorted(glob.glob(str(path / cfg.build_artifact)))
-            if not matches:
-                sys.exit(f"tasking: no artifact matched {cfg.build_artifact}")
-            dest = project.artifacts_dir / bid
-            dest.mkdir(parents=True, exist_ok=True)
-            artifact = shutil.copy(matches[-1], dest)
+            res, artifact = build(project, path, project.logs_dir / bid, bid)
         finally:
             git.worktree_remove(path)
             git.branch_delete(f"orchestra/build-{bid}")
-        build = {"id": bid, "gate_run_id": None, "commit": commit, "artifact_path": str(artifact),
-                 "created_at": __import__("tasking.model", fromlist=["now"]).now()}
-        record_build(store, build)
+        if artifact is None:
+            sys.exit(f"tasking: build failed:\n{res[-1]['tail']}")
+        rec = {"id": bid, "gate_run_id": None, "commit": commit, "artifact_path": artifact, "created_at": now()}
+        store.record_build(rec)
         print(f"built {Path(artifact).name} from {commit[:10]}; deploying")
-        print("deployed" if st.deploy(build) else "deploy FAILED; see `tasking staging logs`")
+        print("deployed" if st.deploy(rec) else "deploy FAILED; see `tasking staging logs`")
         print(f"local:  {st.local_url()}" + (f"\npublic: {st.public_url()}" if st.public_url() else ""))
     return 0
 
@@ -159,7 +162,7 @@ def cmd_doctor(args) -> int:
     project = _project(args)
     store, _ = _store(project)
     git = Git(project.repo_root)
-    known = {w["path"] for w in store.runtime()["worktrees"].values()}
+    known = {w["path"] for w in store.worktrees().values()}
     problems = 0
     for p in project.worktrees_dir.glob("*"):
         if str(p) not in known:
@@ -167,15 +170,14 @@ def cmd_doctor(args) -> int:
             print(f"orphan worktree: {p}")
             if args.fix:
                 git.worktree_remove(p)
-    if not project.config.unit:
-        print("warning: no [[gate.unit]] specs; the gate and reviews run no tests")
-    if not project.config.build_command or not project.config.acceptance:
-        print("warning: no [build]/[[gate.acceptance]]; the gate cannot prove the built artifact works")
+    if project.config.work == "code":
+        if not project.config.unit:
+            print("warning: no [[gate.unit]] specs; the gate and reviews run no tests")
+        if not project.config.build_command or not project.config.acceptance:
+            print("warning: no [build]/[[gate.acceptance]]; the gate cannot prove the built artifact works")
     print("ok" if not problems else f"{problems} problem(s)")
     return 0
 
-
-# -- parser ----------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tasking", description="The task system: tickets, the scheduler that offers them to workers and reviewers, the merge gate")
@@ -184,40 +186,40 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("init", help="register this repository and write orchestra.toml")
     s.add_argument("--prefix", help="ticket id prefix, e.g. ORC")
-    s.add_argument("--unit-command", default="uv run pytest -q")
+    s.add_argument("--unit-command", default="uv run pytest -q", help="the [[gate.unit]] command to start with")
     s.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("run", help="run the scheduler: offer ready tickets to the roles, apply their reports, land approved code")
     s.add_argument("--once", action="store_true", help="one tick, wait for its work, exit")
     s.set_defaults(fn=cmd_run)
 
-    s = sub.add_parser("status", help="scheduler, assignments, merge gate, queue, staging")
-    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("status", help="one screen: what needs a decision, the scheduler, who holds what, the queue, the gate, staging")
+    s.add_argument("--json", action="store_true", help="the same as JSON")
     s.set_defaults(fn=cmd_status)
 
-    s = sub.add_parser("ticket")
-    s.add_argument("action", choices=["list", "show"])
-    s.add_argument("id", nargs="?")
+    s = sub.add_parser("ticket", help="read the tickets")
+    s.add_argument("action", choices=["list", "show"], help="list every ticket, or show one with its notes")
+    s.add_argument("id", nargs="?", help="the ticket to show, e.g. ORC-1")
     s.set_defaults(fn=cmd_ticket)
 
-    s = sub.add_parser("milestone")
-    s.add_argument("action", choices=["list", "show"])
-    s.add_argument("id", nargs="?")
+    s = sub.add_parser("milestone", help="read the milestones")
+    s.add_argument("action", choices=["list", "show"], help="list every milestone, or show one")
+    s.add_argument("id", nargs="?", help="the milestone to show, e.g. M1")
     s.set_defaults(fn=cmd_milestone)
 
     s = sub.add_parser("api", help="ask the running scheduler for one operation (create_ticket, list_tickets, …) as a planner; JSON out")
     s.add_argument("command", help="the operation (tasking/requests.py: REQUESTS and QUERIES)")
     s.add_argument("--args", default="{}", help="JSON object of arguments")
     s.add_argument("--as", dest="by", default="planner", help="the role asking (the event's source and its `by`); default planner")
-    s.add_argument("--compact", action="store_true")
+    s.add_argument("--compact", action="store_true", help="JSON on one line")
     s.set_defaults(fn=cmd_api)
 
     s = sub.add_parser("staging", help="staging environment: status, logs, deploy, restart, stop")
     s.add_argument("action", choices=["status", "logs", "deploy", "restart", "stop"])
     s.set_defaults(fn=cmd_staging)
 
-    s = sub.add_parser("doctor")
-    s.add_argument("--fix", action="store_true")
+    s = sub.add_parser("doctor", help="orphan worktrees and, in code mode, missing gate specs")
+    s.add_argument("--fix", action="store_true", help="remove the orphan worktrees")
     s.set_defaults(fn=cmd_doctor)
     return p
 

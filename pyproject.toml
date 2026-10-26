@@ -7,10 +7,13 @@ name = "orchestra-tasking"
 version = "0.1.0"
 description = "A task system observed by Orchestra: tickets, the scheduler that offers them to whatever fills the worker and reviewer roles, the merge gate."
 requires-python = ">=3.12"
-dependencies = ["orchestra[bus-redis,sd]"]
+dependencies = ["orchestra", "psutil>=5.9", "fastapi>=0.115"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6"]
+# orchestra[sd]: the demo and the e2e tests start `orchestra run`, whose host rediscovers the model;
+# orchestra[bus-redis]: the maintainer's own orchestra.toml at the repository root uses Redis.
+# The task system itself needs neither.
+dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6", "orchestra[sd,bus-redis]"]
 
 [project.scripts]
 tasking = "tasking.cli:main"
@@ -26,10 +29,10 @@ packages = ["tasking"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/e2e"]
-pythonpath = ["tests", "."]          # tests import fake_machine, and the e2e demo test imports demo.run
+pythonpath = ["tests", "."]          # tests import conftest and fake_machine, and the e2e demo test imports demo.run
 
 [tool.ruff]
-line-length = 100
+line-length = 100           # what the import sorter (I001) wraps at; only `ruff check` is used, never `ruff format`
 target-version = "py312"
 
 [tool.ruff.lint]

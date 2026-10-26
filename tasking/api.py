@@ -1,15 +1,17 @@
 """The task system's operations on tickets, milestones, capacity, the gate and staging: what a
 planner's request asks for (tasking/requests.py), applied by the scheduler's desk. ``role`` is
-whoever asked, as the request said: it names the author of what it makes, and a few operations
-are kept for the planner roles that own them (the objective is the supervisor's; capacity is the
-coordinator's or the supervisor's)."""
+the label the asker chose (``by``); it names the author of what it makes. Which planner may change
+what is the planners' own organisation, not the task system's: it checks the rules of tickets and
+milestones (section 2), not who asks."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from .config import Project
+from .events import Events
 from .model import ACTIVE, TERMINAL, Note, State
+from .requests import REQUESTS
 from .store import LocalStore, StoreError
 
 
@@ -19,9 +21,11 @@ def _ticket_view(store: LocalStore, ticket_id: str) -> dict:
     return t
 
 
-def handle(project: Project, store: LocalStore, command: str, args: dict[str, Any], role: str = "") -> dict:
+def handle(project: Project, store: LocalStore, events: Events, command: str, args: dict[str, Any], role: str = "") -> dict:
     a = args or {}
-    author = role or "orchestra"
+    if command in REQUESTS and not role:
+        raise StoreError("a request names who asks (by)")
+    author = role
 
     if command == "project_status":
         snap = store.snapshot()
@@ -31,8 +35,7 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
                 "blocked": [{"id": t["id"], "reason": t["blocked_reason"]} for t in snap["tickets"] if t["state"] == "BLOCKED"]}
 
     if command == "snapshot":
-        snap = store.snapshot()
-        return {"ok": True, "snapshot": snap}
+        return {"ok": True, "snapshot": store.snapshot()}
 
     if command == "list_milestones":
         tickets = store.list_tickets()
@@ -45,7 +48,7 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
 
     if command == "create_milestone":
         m = store.create_milestone(name=a["name"], description=a.get("description", ""))
-        store.events.attention("coordinator", f"milestone {m.id} created by {author}")
+        events.attention("coordinator", f"milestone {m.id} created by {author}")
         return {"ok": True, "milestone": m.to_dict()}
 
     if command == "update_milestone":
@@ -73,15 +76,13 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
             milestone_id=a["milestone_id"], priority=int(a.get("priority") or 5),
             depends_on=list(a.get("depends_on") or []), created_by=author,
         )
-        if author != "coordinator":
-            store.events.attention("coordinator", f"ticket {t.id} created by {author}: {t.title}", ticket=t.id)
+        if author != "coordinator":               # the attention protocol: the coordinator role hears of others' tickets
+            events.attention("coordinator", f"ticket {t.id} created by {author}: {t.title}", ticket=t.id)
         return {"ok": True, "ticket": t.to_dict()}
 
     if command == "update_ticket":
         changes = {k: a[k] for k in ("title", "description", "acceptance", "objective", "verification",
                                      "priority", "milestone_id", "depends_on") if k in a and a[k] is not None}
-        if role == "coordinator" and "objective" in changes:
-            raise StoreError("the coordinator may not change a ticket's objective; that is the supervisor's")
         return {"ok": True, "ticket": store.update_ticket(a["id"], None, **changes).to_dict()}
 
     if command == "add_note":
@@ -104,15 +105,13 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
             raise StoreError(f"{t.id} is {t.state}, not BLOCKED")
         store.add_note(t.id, Note(author=author, text=f"unblocked: {a.get('note', '')}"))
         t = store.transition(t.id, t.version, State.OPEN, blocked_reason=None,
-                             feedback=f"Blocker resolved by {author}: {a.get('note', '')}")
+                             feedback=f"the blocker was resolved by {author}: {a.get('note', '')}")
         return {"ok": True, "ticket": t.to_dict()}
 
     if command == "get_capacity":
         return {"ok": True, "capacity": store.capacity()}
 
     if command == "set_capacity":
-        if role and role not in ("coordinator", "supervisor"):
-            raise StoreError("only the coordinator or supervisor may change capacity")
         cap = store.set_capacity(a.get("workers"), a.get("reviewers"), note=a.get("note", ""), by=author)
         return {"ok": True, "capacity": cap,
                 "message": f"effective workers={cap['workers']} (max {cap['max_workers']}), reviewers={cap['reviewers']} (max {cap['max_reviewers']})"}
@@ -129,12 +128,8 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
 
     if command == "get_staging_status":
         from .staging import Staging
-        st = Staging(project, store, store.events)
+        st = Staging(project, store, events)
         return {"ok": True, "staging": st.state(), "log_tail": st.logs(3000)}
-
-    if command == "restart_staging":
-        from .staging import Staging
-        return {"ok": True, "result": Staging(project, store, store.events).restart()}
 
     if command == "resume_pipeline":
         store.set_pipeline(False, None)

@@ -1,6 +1,6 @@
-/* The task system's look: its ticket states, the ticket cards of the Tasks panel, the ticket and
-   gate drawers, the ticket graph. Loaded by the Tickets page and by the task system's scripts on
-   Orchestra's pages (Orchestra's style.css has the frame: panels, drawers, .kv, .note, .empty). */
+/* The task system's look: its ticket states, the ticket cards of the Tasks panel, the ticket
+   drawer, the ticket graph. Loaded by the Tickets page and by tasks.js on Orchestra's other pages
+   (Orchestra's style.css has the frame: panels, drawers, .kv, .note, .empty). */
 :root {
   --OPEN:#6b7280; --BLOCKED:#f0883e; --IN_PROGRESS:#3b82f6; --READY_FOR_REVIEW:#7c3aed; --IN_REVIEW:#a855f7; --REJECTED:#ef4444;
   --APPROVED:#d97706; --MERGING:#f59e0b; --DONE:#16a34a; --CANCELLED:#374151;
@@ -12,8 +12,7 @@
 .work .id { font-family:var(--mono); font-weight:700; color:var(--c); text-decoration:underline dotted; text-underline-offset:3px } .work .title { font-weight:600 }
 .work .right { display:flex; align-items:center; gap:8px; flex:none; white-space:nowrap }
 .work .turns { font-family:var(--mono); font-size:11px; color:#fcd34d; background:#3a2e0a; border:1px solid #6b5313; border-radius:999px; padding:1px 7px; cursor:help; white-space:nowrap; flex:none }
-.work .lane { display:grid; grid-template-columns:auto 1fr; gap:8px; align-items:center; margin-top:6px; font-size:12px; color:var(--text2) }
-.work .lane .who { color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.05em } .work .lane .msg { white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.work .lane { margin-top:6px; font-size:12px; color:var(--text2) } .work .lane .msg { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
 .work, .work > *, .work .lane > * { min-width:0 }
 .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:10.5px; font-weight:700; letter-spacing:.04em; color:#0b0d12; background:var(--c); white-space:nowrap }
 /* ---- the ticket drawer ---- */

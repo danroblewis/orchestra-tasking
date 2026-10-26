@@ -1,57 +1,48 @@
 """Staging against a trivial HTTP server as the 'artifact'."""
 
-import subprocess
 import time
 import urllib.request
 
 import pytest
+from conftest import asked
 
-from tasking.config import Config, init_project
+from tasking.config import Config
 from tasking.events import Events
-from tasking.staging import Staging, record_build
+from tasking.staging import Staging
 from tasking.store import LocalStore
 
 
-def asked(events, to):
-    """What the task system asked the planner ``to`` to look at: its attention events on the bus."""
-    return [e["data"] for e in events.bus.read(0, limit=100000)[0] if e.get("type") == "task.attention_needed" and (e.get("data") or {}).get("to") == to]
-
-
-
 @pytest.fixture
-def project(tmp_path, monkeypatch):
-    monkeypatch.setenv("ORCHESTRATOR_HOME", str(tmp_path / "home"))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    p = init_project(repo)
-    (repo / "orchestra.toml").write_text(
+def staged(project):
+    (project.repo_root / "orchestra.toml").write_text(
         '[staging]\nstart = "python3 -m http.server {port} --bind 127.0.0.1 --directory {artifact}"\n'
         'port = 18765\nhealth = "/"\nhealth_timeout = "20s"\n')
-    p.config = Config.from_toml((repo / "orchestra.toml").read_text())
-    return p
+    project.config = Config.from_toml((project.repo_root / "orchestra.toml").read_text())
+    return project
 
 
-def test_deploy_restart_rollback(project, tmp_path):
-    store = LocalStore(project)
-    st = Staging(project, store, Events(project.events_file))
+def test_deploy_restart_rollback(staged, tmp_path):
+    project = staged
+    events = Events(project.events_file, source="task_scheduler")
+    store = LocalStore(project, events)
+    st = Staging(project, store, events)
     good = tmp_path / "good"
     good.mkdir()
     (good / "index.html").write_text("v1")
     build1 = {"id": "b1", "commit": "c1", "artifact_path": str(good)}
-    record_build(store, build1)
+    store.record_build(build1)
     try:
         assert st.deploy(build1)
         assert urllib.request.urlopen("http://127.0.0.1:18765/").read() == b"v1"
         assert st.state()["status"] == "running" and st.state()["alive"]
         # A bad build fails health and rolls back to b1.
         bad = {"id": "b2", "commit": "c2", "artifact_path": str(tmp_path / "missing")}
-        record_build(store, bad)
+        store.record_build(bad)
         assert not st.deploy(bad)
         time.sleep(0.5)
         assert st.state()["current_build_id"] == "b1"
         assert urllib.request.urlopen("http://127.0.0.1:18765/").read() == b"v1"
-        wake = asked(store.events, "supervisor")
+        wake = asked(events, "supervisor")
         assert wake and "staging deploy" in wake[0]["reason"]
         # Supervision restarts a dead process.
         import os

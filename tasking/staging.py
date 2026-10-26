@@ -21,6 +21,7 @@ import psutil
 from .config import Project
 from .events import Events
 from .model import now
+from .procs import alive
 from .store import LocalStore
 
 HEALTH_STALE = 600        # seconds a running staging process may go without a healthy answer
@@ -71,16 +72,6 @@ def build_python(project: Project, artifact: str | None) -> str:
     return str(py)
 
 
-def _pid_alive(pid: int | None) -> bool:
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
-
-
 class Staging:
     def __init__(self, project: Project, store: LocalStore, events: Events):
         self.project = project
@@ -91,25 +82,19 @@ class Staging:
 
     @property
     def cfg(self):
-        # Always the project's current config: the loop reloads orchestra.toml every
-        # tick, and a stale snapshot here once restarted staging with an old command.
+        # always the project's current config: the scheduler reloads orchestra.toml every
+        # tick, and a stale snapshot here once restarted staging with an old command
         return self.project.config
 
-    # -- state -----------------------------------------------------------------
-
     def state(self) -> dict:
-        s = self.store.runtime().get("staging") or {}
+        s = self.store.staging()
         s.setdefault("status", "stopped")
-        s["alive"] = _pid_alive(s.get("pid"))
+        s["alive"] = alive(s.get("pid"))
         s["configured"] = self.cfg.staging_configured
         return s
 
     def _set(self, **fields) -> dict:
-        def fn(d):
-            st = d.setdefault("staging", {})
-            st.update(fields)
-            return dict(st)
-        return self.store._mutate_runtime(fn)
+        return self.store.set_staging(**fields)
 
     def _log(self, line: str) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,8 +106,6 @@ class Staging:
 
     def public_url(self) -> str | None:
         return f"https://{self.cfg.tunnel_hostname}" if self.cfg.tunnel_hostname else None
-
-    # -- process control -------------------------------------------------------
 
     def _group_pids(self, pgid: int) -> list[int]:
         out = []
@@ -140,7 +123,7 @@ class Staging:
 
     def stop(self) -> None:
         """Stop the staging process group completely, then anything still holding the
-        staging port. A loop started inside the group that survives SIGTERM, or an
+        staging port. A process started inside the group that survives SIGTERM, or an
         instance whose record was lost, must not linger and mask the next deploy."""
         st = self.state()
         pid = st.get("pid")
@@ -202,8 +185,6 @@ class Staging:
         self._set(status="failed")
         return False
 
-    # -- tunnel ----------------------------------------------------------------
-
     def _tunnel_id(self, name: str) -> str | None:
         p = subprocess.run(["cloudflared", "tunnel", "list", "-o", "json"], capture_output=True, text=True, timeout=30, check=False)
         try:
@@ -218,14 +199,14 @@ class Staging:
         """Run the named cloudflared tunnel against the staging port and probe it.
 
         The tunnel, its credentials file, and the DNS route are operator setup
-        (`cloudflared tunnel create` / `tunnel route dns`); Orchestra only writes
+        (`cloudflared tunnel create` / `tunnel route dns`); the task system only writes
         the ingress config for this port and keeps the process running."""
         name, host = self.cfg.tunnel_name, self.cfg.tunnel_hostname
         if not (name and host):
             return True
         public = f"https://{host}{self.cfg.staging_health}"
         st = self.state()
-        if _pid_alive(st.get("tunnel_pid")) and _probe(public, max_status=500):
+        if alive(st.get("tunnel_pid")) and _probe(public, max_status=500):
             self._set(public_url=f"https://{host}")
             return True
         if not shutil.which("cloudflared"):
@@ -243,7 +224,7 @@ class Staging:
         cfg = self.project.staging_dir / "tunnel.yml"
         cfg.write_text(f"tunnel: {tid}\ncredentials-file: {cred_file}\ningress:\n"
                        f"  - hostname: {host}\n    service: {self.local_url()}\n  - service: http_status:404\n")
-        if not _pid_alive(st.get("tunnel_pid")):
+        if not alive(st.get("tunnel_pid")):
             self._log(f"starting cloudflared tunnel {name} ({tid[:8]}) -> https://{host}")
             out = (self.project.staging_dir / "tunnel.log").open("a", encoding="utf-8")
             proc = subprocess.Popen(["cloudflared", "--no-autoupdate", "--config", str(cfg), "tunnel", "run", name],
@@ -262,7 +243,7 @@ class Staging:
     @contextmanager
     def _exclusive(self):
         """One deploy/restart at a time per project, across processes (the gate in the
-        loop and a manual `tasking staging deploy` must not interleave)."""
+        scheduler and a manual `tasking staging deploy` must not interleave)."""
         self.project.staging_dir.mkdir(parents=True, exist_ok=True)
         with (self.project.staging_dir / ".deploy.lock").open("a+") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
@@ -270,8 +251,6 @@ class Staging:
                 yield
             finally:
                 fcntl.flock(fh, fcntl.LOCK_UN)
-
-    # -- public ----------------------------------------------------------------
 
     def deploy(self, build: dict) -> bool:
         with self._exclusive():
@@ -287,13 +266,12 @@ class Staging:
         ok = self._start(build) and self.ensure_tunnel()
         if ok:
             self._set(previous_build_id=prev_id)
-            self.events.emit("staging_deployed", build=build["id"], commit=build.get("commit"),
+            self.events.emit("staging.deployed", build=build["id"], commit=build.get("commit"),
                              local_url=self.local_url(), public_url=self.public_url())
             return True
-        self.events.emit("staging_failed", build=build["id"])
-        self.store.events.attention("supervisor",
-                              f"staging deploy of build {build['id']} failed (see staging log); rolled back")
-        prev = self.store.runtime().get("builds", {}).get(prev_id or "")
+        self.events.emit("staging.failed", build=build["id"])
+        self.events.attention("supervisor", f"staging deploy of build {build['id']} failed (see staging log); rolled back")
+        prev = self.store.builds().get(prev_id or "")
         if prev:
             self.stop()
             self._log(f"rolling back to build {prev_id}")
@@ -317,18 +295,18 @@ class Staging:
                     st = self.state()
                     if st["alive"]:
                         return
-                    build = self.store.runtime().get("builds", {}).get(st.get("current_build_id") or "")
+                    build = self.store.builds().get(st.get("current_build_id") or "")
                     if build:
                         self._log("staging process died; restarting")
                         self.stop()
                         self._start(build)
                         self.ensure_tunnel()
-                        self.events.emit("staging_restarted", build=build["id"])
+                        self.events.emit("staging.restarted", build=build["id"])
                 finally:
                     fcntl.flock(fh, fcntl.LOCK_UN)
         elif st.get("status") == "running" and st["alive"]:
-            # Probe health every 15s, not every tick, so the staging log is not
-            # dominated by Orchestra's own health requests.
+            # probe health every 15s, not every tick, so the staging log is not
+            # dominated by the task system's own health requests
             if time.time() - self._last_probe >= 15:
                 self._last_probe = time.time()
                 if _probe(self.local_url() + self.cfg.staging_health):
@@ -342,9 +320,9 @@ class Staging:
                     if stale and st.get("current_build_id") and st.get("failed_build") != st.get("current_build_id"):
                         self._log(f"staging stopped answering its health check for {HEALTH_STALE // 60} minutes; recording the failure and restarting")
                         self._set(failed_build=st.get("current_build_id"))
-                        self.events.emit("staging_failed", build=st["current_build_id"], reason=f"health check unanswered for {HEALTH_STALE // 60} minutes")
+                        self.events.emit("staging.failed", build=st["current_build_id"], reason=f"health check unanswered for {HEALTH_STALE // 60} minutes")
                         self.stop()
-            if self.cfg.tunnel_name and not _pid_alive(st.get("tunnel_pid")):
+            if self.cfg.tunnel_name and not alive(st.get("tunnel_pid")):
                 self.ensure_tunnel()
 
     def restart(self) -> str:
@@ -353,7 +331,7 @@ class Staging:
             return self._restart()
 
     def _restart(self) -> str:
-        build = self.store.runtime().get("builds", {}).get(self.state().get("current_build_id") or "")
+        build = self.store.builds().get(self.state().get("current_build_id") or "")
         if not build:
             return "no_build"
         self.stop()
@@ -364,6 +342,3 @@ class Staging:
     def logs(self, n: int = 20000) -> str:
         return self.log_path.read_text(encoding="utf-8", errors="replace")[-n:] if self.log_path.exists() else ""
 
-
-def record_build(store: LocalStore, build: dict) -> None:
-    store._mutate_runtime(lambda d: d.setdefault("builds", {}).__setitem__(build["id"], build))

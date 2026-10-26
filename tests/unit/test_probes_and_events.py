@@ -1,29 +1,8 @@
 """Probes turn conditions into events on the transition."""
 
-import subprocess
-
-import pytest
-
-from tasking.config import init_project
 from tasking.events import Events
 from tasking.probes import Prober, ProbeSpec, config_probes
 from tasking.store import LocalStore
-
-
-@pytest.fixture
-def project(tmp_path, monkeypatch):
-    monkeypatch.setenv("ORCHESTRATOR_HOME", str(tmp_path / "home"))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
-        subprocess.run(["git", *args], cwd=repo, check=True)
-    (repo / "README.md").write_text("x")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
-    p = init_project(repo)
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "orchestra"], cwd=repo, check=True)
-    return p
 
 
 def run_probe(prober, spec):
@@ -33,7 +12,8 @@ def run_probe(prober, spec):
 
 
 def test_probe_emits_only_on_transitions(project, tmp_path):
-    store, events = LocalStore(project), Events(project.events_file)
+    events = Events(project.events_file, source="task_scheduler")
+    store = LocalStore(project, events)
     flag = tmp_path / "broken"
     spec = ProbeSpec(name="readme_ok", command=f"test ! -e {flag}", every=0, timeout=10)
     prober = Prober(project, store, events)
@@ -48,7 +28,7 @@ def test_probe_emits_only_on_transitions(project, tmp_path):
     flag.unlink()
     run_probe(prober, spec)
     kinds = [(e["type"], e.get("probe")) for e in events.read(0)[0] if e["type"].startswith("probe")]
-    assert kinds == [("probe_failed", "readme_ok"), ("probe_recovered", "readme_ok")]
+    assert kinds == [("probe.failed", "readme_ok"), ("probe.recovered", "readme_ok")]
     assert "readme_ok" in [p["name"] for p in store.snapshot()["probes"]]
     # not due yet: a probe with an interval is skipped until it elapses
     spec2 = ProbeSpec(name="slow", command="true", every=3600, timeout=10)
@@ -62,7 +42,8 @@ def test_probe_emits_only_on_transitions(project, tmp_path):
 
 
 def test_probes_are_declared_in_orchestra_toml(project):
-    (project.repo_root / "orchestra.toml").write_text((project.repo_root / "orchestra.toml").read_text()
-                                                      + '\n[[probes]]\nname = "always"\ncommand = "true"\nevery = "1h"\n')
+    toml = project.repo_root / "orchestra.toml"
+    toml.write_text(toml.read_text() + '\n[[probes]]\nname = "always"\ncommand = "true"\nevery = "1h"\ntimeout = "30s"\n'
+                    '\n[[probes]]\nname = "bad"\ncommand = "true"\nevery = "1d"\n')      # Orchestra's durations: ms, s, m, h; no d
     project.reload_config()
-    assert [(s.name, s.every) for s in config_probes(project)] == [("always", 3600)]
+    assert [(s.name, s.every, s.timeout) for s in config_probes(project)] == [("always", 3600, 30)]

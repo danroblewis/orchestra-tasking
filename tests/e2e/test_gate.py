@@ -6,48 +6,24 @@ conflict (the branch does not merge), a build whose artifact is missing, and the
 build + start + acceptance stage run. The ticket state, notes, feedback, pipeline flag,
 and attention each outcome must produce are asserted, not just the run status."""
 
-import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import UNIT, asked, git
 
-from tasking.config import Config, init_project
+from tasking.config import Config
 from tasking.events import Events
 from tasking.gate import run_gate
 from tasking.model import State
 from tasking.store import LocalStore
 
-UNIT = "test -f README.md && test ! -f BROKEN"
-
-def asked(events, to):
-    """What the task system asked the planner ``to`` to look at: its attention events on the bus."""
-    return [e["data"] for e in events.bus.read(0, limit=100000)[0] if e.get("type") == "task.attention_needed" and (e.get("data") or {}).get("to") == to]
-
-
-
-def git(*args, cwd):
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
-
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
-    monkeypatch.setenv("ORCHESTRATOR_HOME", str(tmp_path / "home"))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    git("init", "-q", "-b", "main", cwd=repo)
-    git("config", "user.email", "t@t", cwd=repo)
-    git("config", "user.name", "t", cwd=repo)
-    (repo / "README.md").write_text("# gate\nline one\n")
-    git("add", "-A", cwd=repo)
-    git("commit", "-qm", "init", cwd=repo)
-    project = init_project(repo, prefix="G", unit_command=UNIT)
-    git("add", "-A", cwd=repo)
-    git("commit", "-qm", "orchestra config", cwd=repo)
-    monkeypatch.setenv("ORCHESTRA_REPO", str(repo))
-    events = Events(project.events_file)
+def env(project):
+    events = Events(project.events_file, source="task_scheduler")
     store = LocalStore(project, events)
     ms = store.create_milestone(name="m")
-    return project, store, events, ms, repo
+    return project, store, events, ms, project.repo_root
 
 
 def set_config(project, repo, toml: str):
@@ -59,7 +35,7 @@ def set_config(project, repo, toml: str):
 
 def merging_ticket(store, ms, repo, title, mutate, base="main"):
     """A ticket in MERGING with a branch off `base` whose content `mutate` produced,
-    walked through the same transitions the loop uses."""
+    walked through the same transitions the scheduler uses."""
     t = store.create_ticket(title=title, milestone_id=ms.id)
     branch = f"orchestra/{t.id}"
     wt = repo.parent / f"wt-{t.id}"
@@ -92,7 +68,7 @@ def test_landed(env):
     assert [s["name"] for s in run["stages"]] == ["unit"] and run["stages"][0]["status"] == "passed"
     assert not (project.gate_dir / run["id"]).exists()
     assert not git("branch", "--list", "orchestra/*", cwd=repo).strip()
-    assert "gate_landed" in event_types(events)
+    assert "gate.landed" in event_types(events)
 
 
 def test_failing_tests_reject_the_ticket(env):
@@ -112,7 +88,7 @@ def test_failing_tests_reject_the_ticket(env):
     assert store.pipeline()["paused"] is False
     assert not (project.gate_dir / run["id"]).exists()
     assert git("branch", "--list", f"orchestra/{t.id}", cwd=repo).strip()  # the worker's branch survives
-    assert "gate_rejected" in event_types(events)
+    assert "gate.rejected" in event_types(events)
 
 
 def test_broken_base_pauses_pipeline_and_keeps_ticket_approved(env):
@@ -130,7 +106,7 @@ def test_broken_base_pauses_pipeline_and_keeps_ticket_approved(env):
     assert p["paused"] is True and run["id"] in p["reason"]
     wake = asked(events, "supervisor")
     assert wake and "broken" in wake[0]["reason"]
-    assert "gate_base_broken" in event_types(events)
+    assert "gate.base_broken" in event_types(events)
     assert not (project.gate_dir / f"{run['id']}-base").exists()
 
 
@@ -146,9 +122,9 @@ def test_conflict_goes_back_to_worker_without_a_review_round(env):
     assert b.state == State.REJECTED and b.rejected_by == "merge_gate"
     assert b.review_rounds == 0                       # routine, not a review failure
     assert b.gate_rejections == 1                     # but still a re-engagement the human can see
-    assert "git merge main" in b.feedback and "routine" in b.feedback
+    assert "merge `main`" in b.feedback and "routine" in b.feedback
     assert git("show", "main:README.md", cwd=repo) == "# gate\nline from A\n"
-    assert "gate_conflict" in event_types(events)
+    assert "gate.conflict" in event_types(events)
 
 
 def test_batch_with_one_conflict_lands_the_rest(env):

@@ -23,7 +23,6 @@ workers = 1
 reviewers = 1
 
 [gate]
-batch_size = 1
 timeout = "900s"
 
 [[gate.unit]]

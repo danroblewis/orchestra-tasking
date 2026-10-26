@@ -4,8 +4,11 @@ work, and reports. What the scheduler does with the answers is under test, not w
 
 - worker: in a task's folder it writes RESULT.md; in a code worktree it adds a line to WORK.md
   and commits. ``block`` reports BLOCKED instead; ``break_first`` also deletes README.md on the
-  first attempt (the e2e unit command checks for it) and restores it on the next.
-- reviewer: APPROVED, or REJECTED the first time when ``reject_first``."""
+  first attempt (the unit command checks for it) and restores it on the next.
+- reviewer: APPROVED, or REJECTED the first time when ``reject_first``.
+- ``instance`` names it (``worker/<instance>``). With ``heartbeat`` set it works slowly: after
+  accepting it publishes task.working every that many seconds and reports only once ``finish``
+  is set; a task.released naming its assignment (and it, or nobody in particular) stops it."""
 
 from __future__ import annotations
 
@@ -13,16 +16,19 @@ import subprocess
 import threading
 from pathlib import Path
 
-from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, Follower
+from tasking.assignments import ACCEPTED, ASSIGNED, RELEASED, REPORTED, WORKING, Follower
 
 
 class FakeMachine:
-    def __init__(self, events, roles=("worker", "reviewer"), *, block=False, break_first=False, reject_first=False):
-        self.events, self.roles = events, tuple(roles)
-        self.block, self.break_first, self.reject_first = block, break_first, reject_first
+    def __init__(self, events, roles=("worker", "reviewer"), *, instance="1", block=False, break_first=False,
+                 reject_first=False, heartbeat: float | None = None):
+        self.events, self.roles, self.instance = events, tuple(roles), instance
+        self.block, self.break_first, self.reject_first, self.heartbeat = block, break_first, reject_first, heartbeat
         self.offers: list[dict] = []
+        self.finish = threading.Event()
         self._broke: set[str] = set()
         self._rejected: set[str] = set()
+        self._released: set[str] = set()
         self._stop = threading.Event()
         self._follow = Follower(events, start=0)
         self._t = threading.Thread(target=self._run, daemon=True)
@@ -33,21 +39,33 @@ class FakeMachine:
 
     def __exit__(self, *exc):
         self._stop.set()
+        self.finish.set()
         self._t.join(timeout=5)
+
+    def _me(self, role: str) -> str:
+        return f"{role}/{self.instance}"
 
     def _run(self):
         while not self._stop.wait(0.05):
             for ev in self._follow.new():
                 if ev.get("type") == ASSIGNED and ev.get("role") in self.roles:
                     self.offers.append(ev)
-                    self._answer(ev)
+                    threading.Thread(target=self._answer, args=(ev,), daemon=True).start()
+                elif ev.get("type") == RELEASED and ev.get("instance") in (None, self._me(ev.get("role", ""))):
+                    self._released.add(ev.get("assignment"))
 
     def _answer(self, a: dict) -> None:
-        role, tid = a["role"], a["ticket"]
-        inst = f"{role}/1"
-        say = lambda kind, **d: self.events.publish(kind, {"assignment": a["assignment"], "ticket": tid, "role": role, **d},
-                                                    source=inst, subject=tid)
+        role, tid, aid = a["role"], a["ticket"], a["assignment"]
+        inst = self._me(role)
+        say = lambda kind, **d: self.events.publish(kind, {"assignment": aid, "ticket": tid, "role": role, **d}, source=inst, subject=tid)
         say(ACCEPTED, instance=inst)
+        if self.heartbeat:
+            while not self.finish.wait(self.heartbeat):
+                if aid in self._released or self._stop.is_set():
+                    return
+                say(WORKING)
+        if aid in self._released:
+            return
         report, commit = (self._work if role == "worker" else self._review)(a, Path(a["workspace"]))
         say(REPORTED, report=report, failed=False, text="done", commit=commit)
 

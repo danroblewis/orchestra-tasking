@@ -4,7 +4,7 @@ milestones, over Orchestra's bus.
 
 A request is an event named for what it asks (``task.requested`` to create a ticket,
 ``task.unblock_requested``, ``milestone.close_requested`` …) with ``request`` (an id), ``args`` and
-``by`` (the role asking; a few operations are reserved to the planner roles named in api.py).
+``by`` (the label the asker chooses; it names the author of what it makes).
 Reads are one event type, ``task.query_requested``, with the operation in ``op``. The scheduler's
 desk (``Desk``, in the scheduler's process) checks and applies each with the task system's rules
 (``api.handle``) and answers ``request.done`` with the result or ``request.refused`` with why. So
@@ -85,7 +85,7 @@ class Desk:
                 continue
             args, by = dict(ev.get("args") or {}), ev.get("by") or ""
             try:
-                result = api.handle(self.project, self.store, op, args, role=by)
+                result = api.handle(self.project, self.store, self.events, op, args, role=by)
             except Exception as e:  # noqa: BLE001 - a refused request is an answer, not a crash
                 result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
             ok = bool(result.get("ok", True))

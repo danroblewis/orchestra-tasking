@@ -35,7 +35,7 @@ def main(instance: str) -> None:
     me = f"{ROLE}/{instance}"
     events = Events.for_project(load_project(), source=me)
     events.publish("orchestra.machine.started", {"mode": "continuous", "kind": "program", "listens_for": [ASSIGNED, RELEASED],
-                                                 "does": "runs the ```sh blocks of a ticket's description in its workspace"})
+                                                 "does": "runs the `sh` code blocks of a ticket's description in its workspace"})
     print(f"{me}: waiting for {ROLE} assignments", flush=True)
     offset, jobs = events.end(), {}                      # assignment id -> the Job doing it
     while True:
@@ -89,7 +89,7 @@ class Job:
         ran_before = self.folder / ".commands"
         if not commands:
             return {"state": "BLOCKED", "summary": "the ticket gives no commands",
-                    "blocked_reason": "This worker runs the ```sh blocks of a ticket's description, and this ticket has none. "
+                    "blocked_reason": "This worker runs the `sh` code blocks of a ticket's description, and this ticket has none. "
                                       "Add the commands, or give the ticket to a worker that can do it."}
         if brief.get("rejected_by") and ran_before.exists() and ran_before.read_text() == "\n".join(commands):
             return {"state": "BLOCKED", "summary": "rejected, and the same commands would give the same result",

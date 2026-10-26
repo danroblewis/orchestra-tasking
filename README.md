@@ -15,8 +15,9 @@ page of Python using only Orchestra's library (`demo/machines/`). `SPEC.md` is t
     uv sync --extra dev
     uv run demo/run.py                 # a fresh demo project at ~/orchestra-tasking-demo, http://127.0.0.1:8071
 
-Four tickets are created and worked while you watch: two are done, two end blocked for a
-planner to decide. `demo/README.md` says what you will see and where. Ctrl-C stops everything.
+Four tickets are created and worked by the two programs; in about fifteen seconds two are done
+and two are blocked for a planner to decide. `demo/README.md` says what you will see and where.
+Ctrl-C stops everything.
 
 ## Use it on a repository
 
@@ -34,3 +35,17 @@ are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; stat
 
     uv run python -m pytest -q         # about two minutes: the e2e tests drive whole tickets, one suite through a real Orchestra
     uv run ruff check tasking tests demo
+
+The demo suite also executes the Tickets page in a headless Chrome when it finds one: `node` on
+the PATH, `puppeteer-core` resolvable by node (`NODE_PATH=<dir>/node_modules`) and Chrome at
+`CHROME` (default: the macOS application path). Without them that check is skipped.
+
+## The maintainer's own setup
+
+The `orchestra.toml` at this repository's root and `bin/orchestra-ctl` are the maintainer's
+setup for watching this repository with Orchestra itself: the TOML points the bus at Redis
+(`redis://127.0.0.1:6379/3`) and the metrics at a VictoriaMetrics on port 8428, and
+`orchestra-ctl start` runs Orchestra's host, its web UI on port 8060 and `tasking run` from this
+repository's `.venv`, with pids and logs under `run/`. No machine fills the worker and reviewer
+roles there, so tickets created in it are offered and offered again; it is a watching setup, not
+a working one. Nothing else in the repository depends on either file.

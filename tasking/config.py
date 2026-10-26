@@ -1,9 +1,9 @@
 """The task system's settings and where it keeps its state.
 
 The settings are sections of the repository's ``orchestra.toml`` that Orchestra itself ignores
-([project], [tasks], [build], [acceptance], [gate], [staging], [[probes]]); [events] and
-[metrics] are Orchestra's, read here only to reach the same bus and metrics store. State lives
-in ``~/.orchestrator/<key>/tasks/``, beside Orchestra's own; the project key is Orchestra's."""
+([project], [tasks], [build], [acceptance], [gate], [staging], [[probes]]). The project is
+Orchestra's (``orchestra.config.Project``: the key, the bus, the metrics store), held here with the
+task system's own config; its state lives in ``~/.orchestrator/<key>/tasks/``, beside Orchestra's."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from orchestra.config import Config as OrchestraConfig
 from orchestra.config import ConfigError, find_repo_root, home, parse_duration, project_key
 from orchestra.config import Project as OrchestraProject
 from orchestra.config import load_project as load_orchestra_project
@@ -26,7 +25,6 @@ __all__ = ["Config", "ConfigError", "Project", "TestSpec", "find_repo_root", "ho
 class TestSpec:
     name: str
     command: str
-    select: str | None = None
     timeout: float = 900.0
 
 
@@ -47,8 +45,6 @@ class Config:
     acceptance_ready: str | None = None
     acceptance_ready_timeout: float = 60.0
     acceptance_stop: str | None = None
-    batch_size: int = 6
-    batch_wait: float = 120.0
     gate_timeout: float = 900.0
     unit: list[TestSpec] = field(default_factory=list)
     acceptance: list[TestSpec] = field(default_factory=list)
@@ -59,8 +55,6 @@ class Config:
     staging_stop: str | None = None
     tunnel_name: str | None = None
     tunnel_hostname: str | None = None
-    events_url: str | None = None      # [events] url: file (default), redis://, amqp://, kafka://
-    metrics_url: str | None = None     # [metrics] url: file (default) or http://host:port (VictoriaMetrics)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -76,13 +70,7 @@ class Config:
         gt = parse_duration(g.get("timeout"), 900.0)
 
         def specs(items: list[dict]) -> list[TestSpec]:
-            return [
-                TestSpec(
-                    name=i["name"], command=i["command"], select=i.get("select"),
-                    timeout=parse_duration(i.get("timeout"), gt),
-                )
-                for i in items
-            ]
+            return [TestSpec(name=i["name"], command=i["command"], timeout=parse_duration(i.get("timeout"), gt)) for i in items]
 
         return cls(
             base_branch=p.get("base_branch", "main"),
@@ -100,8 +88,6 @@ class Config:
             acceptance_ready=acc.get("ready"),
             acceptance_ready_timeout=parse_duration(acc.get("ready_timeout"), 60.0),
             acceptance_stop=acc.get("stop"),
-            batch_size=int(g.get("batch_size", 6)),
-            batch_wait=parse_duration(g.get("batch_wait"), 120.0),
             gate_timeout=gt,
             unit=specs(g.get("unit", [])),
             acceptance=specs(g.get("acceptance", [])),
@@ -112,8 +98,6 @@ class Config:
             staging_stop=st.get("stop"),
             tunnel_name=tun.get("name"),
             tunnel_hostname=tun.get("hostname"),
-            events_url=(raw.get("events", {}) or {}).get("url"),
-            metrics_url=(raw.get("metrics", {}) or {}).get("url"),
             raw=raw,
         )
 
@@ -139,8 +123,6 @@ aging_days_per_level = 2        # a ticket gains one priority level per N days o
 # ready = "http://127.0.0.1:{{port}}/health"
 
 [gate]
-batch_size = 6
-batch_wait = "120s"
 timeout = "900s"
 
 [[gate.unit]]
@@ -152,27 +134,39 @@ command = "{unit_command}"
 # command = "uv run pytest tests/acceptance -q --base-url {{url}}"
 #
 # [[probes]]                       # a condition the scheduler checks on an interval; exit 0 = holds.
-# name = "staging_fast"            # probe_failed / probe_recovered events fire on the transition,
+# name = "staging_fast"            # probe.failed / probe.recovered events fire on the transition,
 # command = "scripts/p95_under_1s.sh $STAGING_URL"   # so whatever listens for them wakes once.
-# every = "5m"
+# every = "5m"                     # ms, s, m or h (a day is "24h")
 # timeout = "60s"
 """
 
 
 @dataclass
 class Project:
-    key: str
-    repo_root: Path
+    orchestra: OrchestraProject    # the same repository as Orchestra sees it: its key, bus, metrics store and state
     config: Config
 
+    @classmethod
+    def from_orchestra(cls, o: OrchestraProject) -> Project:
+        project = cls(orchestra=o, config=Config.from_toml((o.repo_root / "orchestra.toml").read_text()))
+        project.ensure_dirs()
+        return project
+
     @property
-    def orchestra(self) -> OrchestraProject:
-        """The same repository as Orchestra sees it (its bus, metrics store and state)."""
-        return OrchestraProject(self.key, self.repo_root, OrchestraConfig.from_toml((self.repo_root / "orchestra.toml").read_text()))
+    def key(self) -> str:
+        return self.orchestra.key
+
+    @property
+    def repo_root(self) -> Path:
+        return self.orchestra.repo_root
 
     @property
     def state_dir(self) -> Path:
-        return home() / self.key / "tasks"
+        return self.orchestra.state_dir / "tasks"
+
+    @property
+    def events_file(self) -> Path:
+        return self.orchestra.events_file                  # Orchestra's (the file bus), not the task system's
 
     @property
     def tickets_file(self) -> Path:
@@ -181,10 +175,6 @@ class Project:
     @property
     def runtime_file(self) -> Path:
         return self.state_dir / "runtime.json"
-
-    @property
-    def events_file(self) -> Path:
-        return home() / self.key / "events.jsonl"     # Orchestra's (the file bus), not the task system's
 
     @property
     def lock_file(self) -> Path:
@@ -220,15 +210,13 @@ class Project:
             d.mkdir(parents=True, exist_ok=True)
 
     def reload_config(self) -> None:
+        """The task system's own sections, re-read (the scheduler does this every tick)."""
         self.config = Config.from_toml((self.repo_root / "orchestra.toml").read_text())
 
 
 def load_project(repo: Path | str | None = None) -> Project:
     """The project for ``repo`` (default: ORCHESTRA_REPO, else the cwd), as Orchestra resolves it."""
-    o = load_orchestra_project(repo)
-    project = Project(key=o.key, repo_root=o.repo_root, config=Config.from_toml((o.repo_root / "orchestra.toml").read_text()))
-    project.ensure_dirs()
-    return project
+    return Project.from_orchestra(load_orchestra_project(repo))
 
 
 def init_project(repo: Path, *, prefix: str | None = None, unit_command: str = "uv run pytest -q") -> Project:

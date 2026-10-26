@@ -25,15 +25,8 @@ class State(StrEnum):
     CANCELLED = "CANCELLED"
 
 
-WAITING = {State.OPEN, State.BLOCKED, State.READY_FOR_REVIEW, State.REJECTED, State.APPROVED}
 ACTIVE = {State.IN_PROGRESS, State.IN_REVIEW, State.MERGING}
 TERMINAL = {State.DONE, State.CANCELLED}
-
-# Board column order.
-STATE_ORDER = [
-    State.OPEN, State.BLOCKED, State.IN_PROGRESS, State.REJECTED, State.READY_FOR_REVIEW,
-    State.IN_REVIEW, State.APPROVED, State.MERGING, State.DONE, State.CANCELLED,
-]
 
 TRANSITIONS: dict[State, set[State]] = {
     State.OPEN: {State.IN_PROGRESS, State.CANCELLED},
@@ -72,9 +65,9 @@ class MilestoneStatus(StrEnum):
 
 @dataclass
 class Note:
-    author: str  # worker | reviewer | merge_gate | orchestra (the task system itself) | a planner's role
+    author: str  # worker | reviewer | merge_gate | task_scheduler (the task system itself) | a planner's role
     text: str
-    kind: str = "note"  # note | review | gate | blocker
+    kind: str = "note"  # note | review | gate | blocker | crash
     created_at: str = field(default_factory=now)
 
     def to_dict(self) -> dict[str, Any]:

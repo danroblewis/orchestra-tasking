@@ -1,12 +1,10 @@
-// Blocked tickets, on every page of Orchestra's web UI (a plugin script: Orchestra loads it and
-// knows nothing of it): a banner under the navigation that says which tickets wait for a decision,
-// "(n)" in the tab's title, and the ticket a click away. A blocked ticket is answered by whoever
-// plans the work; a package that shows these tickets in its own way calls
-// window.TaskAttention.standAside() and this banner stays hidden.
+// Blocked tickets, on every page of Orchestra's web UI (loaded by tasks-boot.js after tasks.js):
+// a banner under the navigation that says which tickets wait for a decision, "(n)" in the tab's
+// title, and the ticket a click away. A blocked ticket is answered by whoever plans the work; a
+// package that shows these tickets in its own way calls window.TaskAttention.standAside() and
+// this banner stays hidden.
 (function () {
-  const API = "/api/plugins/tasks";
   const POLL_MS = 5000;
-  window.__tasksJs = window.__tasksJs || new Promise((ok) => { const s = document.createElement("script"); s.src = "/plugins/tasks/static/tasks.js"; s.onload = ok; s.onerror = ok; document.head.appendChild(s); });
 
   const css = document.createElement("style");
   css.textContent = `
@@ -23,7 +21,6 @@
   let A = { blocked: [], count: 0 }, dismissed = "", aside = false;
   const baseTitle = document.title;
   const sig = () => JSON.stringify(A.blocked.map((b) => b.id));
-  const e_ = (s) => (typeof esc === "function" ? esc(s) : String(s ?? ""));
   const nav = document.getElementById("nav");
   const bar = document.createElement("div");
   bar.className = "att-bar";
@@ -34,17 +31,17 @@
     const show = !aside && A.blocked.length && sig() !== dismissed;
     bar.classList.toggle("on", !!show);
     if (show) bar.innerHTML = `<span>⚠</span><span class="att-what"><b>${A.blocked.length} ticket${A.blocked.length === 1 ? " is" : "s are"} blocked</b> waiting for a decision: `
-      + A.blocked.slice(0, 5).map((b) => `<a title="${e_(b.reason)}" onclick="window.TaskAttention.ticket('${e_(b.id)}')">${e_(b.id)}</a>`).join(", ")
+      + A.blocked.slice(0, 5).map((b) => `<a title="${esc(b.reason)}" onclick="window.TaskAttention.ticket('${esc(b.id)}')">${esc(b.id)}</a>`).join(", ")
       + `${A.blocked.length > 5 ? ", …" : ""}</span><button class="att-x" title="hide until something changes" onclick="window.TaskAttention.dismiss()">✕</button>`;
   }
 
   window.TaskAttention = {
-    ticket: (id) => window.__tasksJs.then(() => openTicket(id)),
+    ticket: (id) => openTicket(id),
     dismiss: () => { dismissed = sig(); render(); },
     standAside: () => { aside = true; render(); },
   };
   async function refresh() {
-    try { const d = await (await fetch(API + "/attention")).json(); if (d.ok) { A = d; render(); } }
+    try { const d = await (await fetch(TASKS_API + "/attention")).json(); if (d.ok) { A = d; render(); } }
     catch (e) { /* the task system is down: keep the last state */ }
   }
   refresh();

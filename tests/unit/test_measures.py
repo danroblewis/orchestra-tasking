@@ -1,25 +1,16 @@
 """The task system's metrics: levels and the counters that move them, from the same change."""
 
-import subprocess
-
 import pytest
 from orchestra.metrics import for_project as metrics_for
 
-from tasking.config import init_project
 from tasking.events import Events
 from tasking.model import State
 from tasking.store import LocalStore
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
-    monkeypatch.setenv("ORCHESTRATOR_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("ORCHESTRA_METRICS_URL", raising=False)
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    p = init_project(repo, prefix="T")
-    return LocalStore(p, Events(p.events_file, source="worker/2"))
+def store(project):
+    return LocalStore(project, Events(project.events_file, source="worker/2"))
 
 
 def test_ticket_levels_and_flows_balance(store):

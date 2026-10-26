@@ -9,8 +9,10 @@ broken without updating the spec and saying so in the commit.
    request on the bus, by the transition table in `tasking/model.py`. Never add a path where
    anything else moves a ticket, or where a report's words are translated into another state.
 2. **No zombies.** A ticket is `IN_PROGRESS`, `IN_REVIEW` or `MERGING` only while an assignment
-   with a live lease holds it. A lease that runs out is released and the ticket goes back to
-   waiting in the same code path; on start, every active ticket goes back.
+   with a live lease holds it. A lease that runs out, a report the task system cannot apply, the
+   operator's stop: each releases the assignment and sends the ticket back to waiting in the same
+   code path; on start and on shutdown, every holder is told to stop and every active ticket
+   goes back.
 3. **The task system starts no machine and knows none.** It offers work to a role and reads an
    acceptance's `instance` and a report's `report`; nothing else about the machine. No session,
    transcript, prompt, harness or model is named anywhere in this repository. A machine from
@@ -34,18 +36,21 @@ broken without updating the spec and saying so in the commit.
    `orchestra.config` and `orchestra.events`; they are the example of how to fill a role and must
    stay about a page each, readable, with no words from any other package.
 10. **One package, no path hacks.** Everything importable is under `tasking/`; `demo/` is a
-    template project and its runner, not a package. No `sys.path` manipulation. Orchestra comes
-    from `../orchestra_2` (editable) and the task system uses its bus, metrics store, config and
-    plugin interface, nothing else.
+    template project and its runner, not a package. No `sys.path` manipulation; the one
+    exception is pytest's `pythonpath` in `pyproject.toml`, for the tests only, so that they can
+    import `conftest`, `fake_machine` and `demo.run`. Orchestra comes from `../orchestra_2`
+    (editable) and the task system uses its bus, metrics store, config and plugin interface,
+    nothing else.
 
 ## Conventions
 
 - Python 3.12+, `uv` for everything, `pytest` (`uv run python -m pytest -q`), `ruff` for lint
-  and format (`uv run ruff check tasking tests demo`; the rule choices and their reasons are in
-  `pyproject.toml`).
-- `tests/unit` is fast and pure. `tests/e2e` drives the real scheduler, store, git and gate:
-  in-process with `tests/fake_machine.py` (extend the fake rather than mocking the scheduler),
-  and as processes through a real `orchestra web` in `test_demo_e2e.py`, which uses
-  `demo/run.py`'s own functions. Run the tests before every commit.
+  (`uv run ruff check tasking tests demo`, never `ruff format`; the rule choices and their
+  reasons are in `pyproject.toml`).
+- `tests/unit` is fast and in-process. `tests/e2e` drives the real scheduler, store, git and
+  gate: in-process with `tests/fake_machine.py` (extend the fake rather than mocking the
+  scheduler), and as processes through a real `orchestra run` and `orchestra web` in
+  `test_demo_e2e.py`, which uses `demo/run.py`'s own functions. The fixtures they share are in
+  `tests/conftest.py`. Run the tests before every commit.
 - Keep modules small and single-purpose. If a file needs a section divider comment, it should
   be two files. Comments and docs in plain language, honest about limits.

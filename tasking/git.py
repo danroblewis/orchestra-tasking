@@ -1,4 +1,4 @@
-"""Thin git wrappers: worktrees, branches, diffs, landing. No Python git binding."""
+"""Thin git wrappers: worktrees, branches, merging, landing. No Python git binding."""
 
 from __future__ import annotations
 
@@ -37,8 +37,6 @@ class Git:
     def is_ancestor(self, a: str, b: str) -> bool:
         return self.run("merge-base", "--is-ancestor", a, b, check=False).returncode == 0
 
-    # -- worktrees -------------------------------------------------------------
-
     def worktree_add(self, branch: str, path: Path, base: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         if self.branch_exists(branch):
@@ -58,25 +56,11 @@ class Git:
     def branch_delete(self, name: str) -> None:
         self.run("branch", "-D", name, check=False)
 
-    # -- content ---------------------------------------------------------------
-
-    def diff(self, base: str, head: str, cwd: Path | None = None) -> str:
-        return self.run("diff", f"{base}...{head}", cwd=cwd).stdout
-
-    def changed_files(self, base: str, head: str, cwd: Path | None = None) -> list[str]:
-        out = self.run("diff", "--name-status", f"{base}...{head}", cwd=cwd).stdout
-        return [ln for ln in out.splitlines() if ln.strip()]
-
-    def log(self, base: str, head: str, cwd: Path | None = None) -> str:
-        return self.run("log", "--oneline", f"{base}..{head}", cwd=cwd).stdout
-
     def merge_no_ff(self, branch_or_commit: str, cwd: Path, message: str) -> subprocess.CompletedProcess:
         return self.run("merge", "--no-ff", "-m", message, branch_or_commit, cwd=cwd, check=False)
 
     def abort_merge(self, cwd: Path) -> None:
         self.run("merge", "--abort", cwd=cwd, check=False)
-
-    # -- landing ---------------------------------------------------------------
 
     def land(self, base: str, commit: str, expected_old: str) -> None:
         """Fast-forward `base` to `commit`. Refuses if base moved since expected_old."""

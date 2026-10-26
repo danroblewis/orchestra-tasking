@@ -476,20 +476,26 @@ name = "orchestra-tasking"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "orchestra", extra = ["bus-redis", "sd"] },
+    { name = "fastapi" },
+    { name = "orchestra" },
+    { name = "psutil" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "httpx" },
+    { name = "orchestra", extra = ["bus-redis", "sd"] },
     { name = "pytest" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
-    { name = "orchestra", extras = ["bus-redis", "sd"], editable = "../orchestra_2" },
+    { name = "orchestra", editable = "../orchestra_2" },
+    { name = "orchestra", extras = ["sd", "bus-redis"], marker = "extra == 'dev'", editable = "../orchestra_2" },
+    { name = "psutil", specifier = ">=5.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
 ]

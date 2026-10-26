@@ -69,11 +69,11 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | `OPEN`, `REJECTED` | `IN_PROGRESS` | the scheduler offers it to a worker (`worker_turns` + 1) |
 | `IN_PROGRESS` | `READY_FOR_REVIEW` | the worker reports it; in code mode the branch head becomes `reviewed_commit` |
 | `IN_PROGRESS` | `BLOCKED` | the worker reports it with a reason; or the worker went away three times in a row; or in code mode the branch has no commits |
-| `IN_PROGRESS` | `OPEN` | the worker went away (lease ran out, no report), the operator stopped it, or the scheduler restarted: offered again |
+| `IN_PROGRESS` | `OPEN` | the worker went away (lease ran out, no report, or a report the task system cannot use), the operator stopped it, or the scheduler restarted or shut down: offered again; or nobody accepted the offer within the lease: offered again, counted against no one |
 | `READY_FOR_REVIEW` | `IN_REVIEW` | the scheduler offers it to a reviewer |
 | `IN_REVIEW` | `APPROVED` | the reviewer approves |
 | `IN_REVIEW` | `REJECTED` | the reviewer rejects with feedback (`review_rounds` + 1); or three reviews in a row ended without a verdict |
-| `IN_REVIEW` | `READY_FOR_REVIEW` | the reviewer went away or was stopped: reviewed again |
+| `IN_REVIEW` | `READY_FOR_REVIEW` | the reviewer went away or was stopped, nobody accepted the offer, or the review could not be prepared: reviewed again |
 | `APPROVED` | `DONE` | tasks mode: nothing to merge |
 | `APPROVED` | `MERGING` | code mode: the gate takes it |
 | `MERGING` | `DONE` | the gate landed it |
@@ -83,13 +83,17 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | any waiting state | `CANCELLED` | a planner cancels it (an active ticket must settle first) |
 
 When `review_rounds` reaches `review_rounds_before_escalation` (and every multiple of it), the
-coordinator role is asked to decide; nothing fails automatically. On start the scheduler moves
-every active ticket to the waiting state before it and drops every assignment: no zombies.
+coordinator role is asked to decide; nothing fails automatically. On start and on shutdown the
+scheduler tells whoever holds work to stop (`task.released`), drops every assignment and moves
+every active ticket to the waiting state before it, with a note: no zombies.
 
 ## 3. The contract on the bus
 
 Everything crosses Orchestra's bus as CloudEvents (`tasking/events.py` over
-`orchestra.events`). The ticket is the `subject`; the `source` is the machine (or `<machine>/<instance>`).
+`orchestra.events`). The ticket is the `subject`; the `source` is the machine (or
+`<machine>/<instance>`). The task system's own sources are `task_scheduler` (the scheduler and its
+desk), `task_web` (the operator's controls in the web UI) and `task_cli` (`tasking staging
+deploy`); `tasking api` publishes as the role it is asked to be.
 
 **Assignment.** The table in the docstring of `tasking/assignments.py` is the one source of
 truth for `task.assigned`, `task.accepted`, `task.working`, `task.reported` and
@@ -98,8 +102,11 @@ with the ticket's brief and a workspace; the machine that takes it publishes `ta
 with its instance; it publishes `task.working` every `HEARTBEAT_S` (30 s) while it works, and
 `task.reported` with its report when done; the scheduler publishes `task.released` when the
 lease (`LEASE_S`, 180 s without a word) runs out, when the operator stops the work, when another
-instance already holds it, or when it shuts down. The first instance to accept holds the ticket
-and becomes its `owner`.
+instance already holds it, or when it restarts or shuts down. The first instance to accept holds
+the ticket and becomes its `owner`; a heartbeat or report from any other source is ignored. An
+offer nobody accepts within the lease is released and offered again, counted against no one. The
+lease and the heartbeat are fixed, and every offer says its `lease_s`: a machine accepts only
+what it can do within them.
 
 **Requests** (`tasking/requests.py`). A planner changes tickets only by asking: `task.requested`
 (create), `task.change_requested`, `task.note_requested`, `task.cancel_requested`,
@@ -107,10 +114,12 @@ and becomes its `owner`.
 `milestone.close_requested`, `capacity.change_requested`, `pipeline.resume_requested`; and reads
 with `task.query_requested` naming the `op` (`list_tickets`, `get_ticket`, `project_status`,
 `list_milestones`, `get_capacity`, `snapshot`, `list_gate_runs`, `get_gate_run`,
-`get_staging_status`). Each carries `request` (an id), `args` and `by` (the role). The
-scheduler's desk applies it with `tasking/api.py` and answers `request.done` {request, result}
-or `request.refused` {request, error}. `tasking api` sends one such request from the command
-line; `requests.ask` does it from Python.
+`get_staging_status`). Each carries `request` (an id), `args` and `by`: the label the asker
+chooses, which names the author of what it makes (a change without one is refused). Which planner
+may change what is the planners' own organisation; the task system checks the rules of tickets
+and milestones, not who asks. The scheduler's desk applies it with `tasking/api.py` and answers
+`request.done` {request, result} or `request.refused` {request, error}. `tasking api` sends one
+such request from the command line; `requests.ask` does it from Python.
 
 **Attention.** `task.attention_needed` {to, reason, ticket?} from the scheduler when a planner
 should look: a ticket blocked, rejected again and again, done; a ticket or milestone created by
@@ -121,21 +130,26 @@ someone else; the base branch broken; the pipeline paused. `to` is the planner r
 scheduler: `package: tasks`, `mode: continuous`, what it `listens_for`, where its `log` is).
 Orchestra's Machines page reads only those fields; the rest is passed to the package's card.
 
-**Observations.** The scheduler also publishes what happened, for Orchestra and anyone
-listening: `ticket_created`, `ticket_updated`, `ticket_transition` {from, to, owner},
-`note_added`, `milestone_*`, `capacity_changed`, `pickup_paused`/`pickup_resumed`,
-`kill_requested`, `pipeline_paused`/`pipeline_resumed`, `probe_failed`/`probe_recovered`,
-`gate_*`, `staging_*`, `loop_started`/`loop_stopped`. Orchestra never reads their data.
+**Observations.** The task system also publishes what happened, for Orchestra and anyone
+listening, in families named up to the first dot (Orchestra's event map groups them so):
+`ticket.created`, `ticket.updated`, `ticket.transitioned` {from, to, owner}, `ticket.note_added`,
+`milestone.created`/`updated`/`closed`, `capacity.changed`, `pickup.paused`/`resumed`,
+`kill.requested`, `pipeline.paused`/`resumed`, `probe.failed`/`recovered`,
+`gate.started`/`conflict`/`landed`/`base_broken`/`rejected`/`error`,
+`staging.deployed`/`failed`/`restarted`, `scheduler.started`/`stopped`. Orchestra never reads
+their data.
 
-## 4. The scheduler (`tasking/loop.py`, `tasking run`)
+## 4. The scheduler (`tasking/scheduler.py`, `tasking run`)
 
-One process per project. Every 3 s it:
+One process per project. On start it recovers (above). Every 3 s it:
 
-1. reloads `orchestra.toml`, reaps finished threads, and releases the work of any ticket the
-   operator asked to stop;
-2. **follows the bus**: an acceptance names the owner and starts the lease, a heartbeat extends
-   it, a report drops the assignment and is applied to the ticket; then every lease that ran out
-   is released and applied as a crash;
+1. reloads `orchestra.toml`, reaps finished threads, and for any ticket the operator asked to
+   stop releases the assignment and sends the ticket back at once, counting it against no one;
+2. **follows the bus**: the first acceptance names the holder and starts the lease, a heartbeat
+   extends it, a report is applied to the ticket and then the assignment is dropped (a report
+   that cannot be applied still frees the ticket: back to waiting, with a note); then every lease
+   that ran out is released: a holder that went quiet is a crash, an offer nobody took is offered
+   again;
 3. **offers work**: reviews first (finished work lands before new work starts), then, unless
    pickup is paused, ready `OPEN` and `REJECTED` tickets in effective-priority order, up to the
    role's capacity. Capacity is the operator's ceiling from the Dashboard if set, otherwise
@@ -143,18 +157,27 @@ One process per project. Every 3 s it:
 4. in code mode, starts a gate run for the oldest `APPROVED` ticket if none runs and the
    pipeline is not paused, and drops the worktrees of cancelled tickets;
 5. keeps staging running (section 5) and runs the due **probes** (`tasking/probes.py`:
-   `[[probes]]` commands on an interval; `probe_failed`/`probe_recovered` fire on the transition).
+   `[[probes]]` commands on an interval; `probe.failed`/`probe.recovered` fire on the transition).
+
+What a report makes of a ticket is `tasking/reports.py`. A report is usable only if a worker's
+says `state` `READY_FOR_REVIEW`, or `BLOCKED` with a `blocked_reason`, and a reviewer's says
+`verdict` `APPROVED` or `REJECTED`; anything else counts as no report, with what was wrong as the
+machine's last words.
 
 **Applying a worker's report.** `READY_FOR_REVIEW` moves the ticket on (code mode: uncommitted
 changes are committed, and a branch with no commits beyond the base is `BLOCKED` instead).
-`BLOCKED` records the reason and asks the coordinator. No report (the lease ran out) is a crash:
-up to two in a row go back to `OPEN` with a note and are offered again; the third blocks the
-ticket. An operator stop or a scheduler shutdown goes back to `OPEN` without counting.
+`BLOCKED` records the reason and asks the coordinator. No report (the lease ran out, or the
+report was unusable) is a crash: up to two in a row go back to `OPEN` with a note and are offered
+again; the third blocks the ticket. An operator stop, a restart or a shutdown goes back to `OPEN`
+without counting; an offer nobody accepted gives its worker turn back. Notes and feedback written
+by the task system are signed `task_scheduler` and state what happened.
 
 **Applying a reviewer's report.** `APPROVED` moves to `APPROVED` (and in tasks mode straight to
-`DONE`); `REJECTED` records the feedback and sends the ticket back. No verdict is not a
-rejection: the review is redone, up to three times, before the ticket is sent back by the
-scheduler with that reason.
+`DONE`); `REJECTED` records the feedback and sends the ticket back, `rejected_by` the reviewer.
+No verdict is not a rejection: the review is redone, up to three times, before the ticket is sent
+back by the task system (`rejected_by` `task_scheduler`); the merge gate's send-backs say
+`merge_gate`. In code mode a review whose preparation fails (the unit tests cannot run, git
+fails) is not offered: the ticket goes back to `READY_FOR_REVIEW`.
 
 **Requests** are served by the desk, a thread in the same process (section 3). The scheduler's
 log is `<state>/logs/scheduler.log`, which it announces so Orchestra can show it.
@@ -174,7 +197,7 @@ done or cancelled. A code worker's offer names the project's first `[[gate.unit]
 a review is offered, the scheduler runs the unit specs on the branch and puts the output and the
 commit in the offer (`review.test_output`, `review.commit`), so the reviewer sees the facts.
 
-**The merge gate** (`tasking/gate/`) lands approved code, one ticket per run today: a gate
+**The merge gate** (`tasking/gate/`) lands approved code, one ticket per run: a gate
 worktree on a temporary branch from the base head, `git merge --no-ff` of the reviewed commit (a
 conflict sends the ticket back to its worker without counting as a review round), then the
 stages from `orchestra.toml`: `[build]` (the artifact is copied to `<state>/artifacts/<run>/`),
@@ -183,9 +206,7 @@ started on a free port and the acceptance specs run against it. All pass: the ba
 fast-forwarded (pushed if `push = true`), the ticket is `DONE`, its worktree and branch removed,
 and the build deployed to staging. A failure: the base is checked alone; if the base itself fails
 the pipeline pauses and the supervisor role is told; otherwise the ticket is rejected with the
-failing stage's output as feedback. `gate/bisect.py` is the pure bisection over a batch, unit
-tested and not yet wired: batches (`[gate] batch_size`, `batch_wait`) are read from the config
-and not yet used.
+failing stage's output as feedback.
 
 **Staging** (`tasking/staging.py`): when `[staging] start` is set, one long-lived instance of the
 last build that passed the gate, started with the artifact and port as placeholders, probed at
@@ -211,9 +232,11 @@ event types of section 3. The demo's `demo/machines/shell_worker.py` and
    `task.assigned` whose `data.role` is yours is an offer: the ticket's `brief` (title,
    description, acceptance, feedback from a rejection, …), the `workspace` to work in, and in
    code mode the `branch`.
-4. **Accept**: publish `task.accepted` {assignment, ticket, role, instance} with
-   `subject=ticket`. If another instance was first you get `task.released` naming your instance:
-   stop.
+4. **Accept**, only what you can do: the offer says its `lease_s`, and a machine that cannot
+   keep the lease, or cannot do the role's work, leaves the offer alone (it is offered again, and
+   nothing is counted). To accept, publish `task.accepted` {assignment, ticket, role, instance}
+   with `subject=ticket`. If another instance was first you get `task.released` naming your
+   instance: stop.
 5. **Work, and say so**: do the task in the workspace; every 30 s publish `task.working`
    {assignment} so the lease goes on (a review that takes a moment needs none). If
    `task.released` names your assignment, stop what you are doing: the ticket is no longer yours.
@@ -263,8 +286,6 @@ stop = ""
 
 [gate]
 timeout = "900s"         # per spec
-batch_size = 6           # read, not yet used: one ticket per run today
-batch_wait = "120s"
 
 [[gate.unit]]
 name = "unit"
@@ -287,12 +308,13 @@ hostname = "staging.example.com"
 [[probes]]               # optional: conditions checked on an interval; exit 0 = holds
 name = "staging_fast"
 command = "scripts/p95_under_1s.sh $STAGING_URL"
-every = "5m"
+every = "5m"             # Orchestra's durations: ms, s, m, h (a day is "24h")
 timeout = "60s"
 ```
 
-`[events]` and `[metrics]` are Orchestra's; the task system reads them only to reach the same
-bus and metrics store. Capacity and the config are re-read every tick, so a change is live.
+`[events]` and `[metrics]` are Orchestra's: the task system opens the bus and the metrics store
+through Orchestra's own project (`tasking.config.Project.orchestra`), so where they go is decided
+in one place. Capacity and the config are re-read every tick, so a change is live.
 
 ## 8. State
 
@@ -310,7 +332,8 @@ bus and metrics store. Capacity and the config are re-read every tick, so a chan
     logs/scheduler.log  logs/<run>/<stage>-<spec>.log  logs/review/<ticket>/
 ```
 
-Only `tasking/store/` reads or writes these JSON files. Metrics go to Orchestra's metrics store
+Only `tasking/store/` reads or writes these JSON files (`store/tickets.py` the first,
+`store/runtime.py` the second, behind one `LocalStore`). Metrics go to Orchestra's metrics store
 (`tasking/measures.py`): `tasks_tickets{state}`, `tasks_tickets_created_total{machine}`,
 `tasks_ticket_transitions_total{from,to,machine}`, a level and the counters that move it from
 the same change, so they balance.
@@ -321,23 +344,29 @@ Inside Orchestra's web UI, under the plugin name `tasks`:
 
 - **Tickets** (`/tickets`): the graph of milestones and tickets (dagre), done tickets collapsed
   into "via n done" edges, a drawer per ticket (what needs attention first: the blocker, the
-  rejection, why it waits; then its fields, texts and notes) and per gate run.
-- **The Tasks panel** on the Dashboard (`tasks-panel.js`): the tickets in flight with who holds
-  each and since when, the queue by state, the capacity and pause controls.
-- **The scheduler's card** on the Machines page and Dashboard (`machine-cards.js`): the queue by
-  state and the same controls.
+  rejection, why it waits; then its fields, texts and notes). The gate's result is on the ticket
+  as the `merge_gate` note and feedback.
+- **The Tasks panel** on the Dashboard (`tasks-panel.js`): the tickets in flight with the
+  instance that holds each and since when, or to whom it is offered, the queue by state, the
+  capacity and pause controls.
+- **The scheduler's card** (`task_scheduler`, the task queue) on the Machines page and Dashboard
+  (`machine-cards.js`): the queue by state and the same controls.
 - **The blocked-ticket banner** on every page (`attention.js`): which tickets wait for a
   decision; a package that shows them itself calls `TaskAttention.standAside()`.
+
+`tasks-boot.js` is the one script Orchestra loads on every page: it loads `tasks.js` (the shared
+code, the controls and the look, `tasks.css`) and then the three above. The plugin declares two
+machines, `task_scheduler` and `task_web` (the operator's controls), so the Machines page knows
+their package before they are seen.
 
 API at `/api/plugins/tasks`:
 
 | Route | What |
 |---|---|
-| `GET /state` | the snapshot the Tickets page draws: tickets with readiness and effective priority, milestones, assignments, capacity, pipeline, probes, gate runs, whether the scheduler runs |
-| `GET /board` | the Tasks panel: tickets in flight with their assignment, counts by state, capacity, pause, scheduler |
+| `GET /state` | what the Tickets page draws: tickets with readiness and effective priority, milestones, counts by state, whether the scheduler runs (the whole snapshot is the `snapshot` query on the bus) |
+| `GET /board` | the Tasks panel: tickets in flight with their assignment (instance, since when), counts by state, capacity, pause, scheduler |
 | `GET /attention` | the blocked tickets |
 | `GET /tickets/{id}` | one ticket with its notes and worktree |
-| `GET /gate/runs/{id}` | one gate run with its stages |
 | `POST /control` | the operator's controls: `{action: pause\|resume}`, `{action: capacity, workers, reviewers}` (omit both to return to the file), `{action: kill, ticket}` (release whoever holds it; the ticket goes back) |
 
 These controls are the only writes a person has; tickets change only through the scheduler
@@ -349,11 +378,11 @@ These controls are the only writes a person has; tickets change only through the
 |---|---|
 | `tasking init [--prefix P] [--unit-command C]` | write the task system's sections into `orchestra.toml` and register the project with Orchestra |
 | `tasking run [--once]` | the scheduler |
-| `tasking status [--json]` | one screen: scheduler, who holds what, gate, queue, staging |
+| `tasking status [--json]` | one screen: what needs a decision, scheduler, who holds what, queue; the gate in code mode, staging when configured |
 | `tasking ticket list\|show ID`, `tasking milestone list\|show ID` | read the store |
 | `tasking api [--as ROLE] OP [--args JSON]` | one request over the bus, answered by the running scheduler |
 | `tasking staging status\|logs\|deploy\|restart\|stop` | staging |
-| `tasking doctor [--fix]` | orphan worktrees, missing gate specs |
+| `tasking doctor [--fix]` | orphan worktrees; in code mode, missing gate specs |
 
 `--repo` names the repository (default `ORCHESTRA_REPO`, else the current directory).
 
@@ -364,9 +393,10 @@ These controls are the only writes a person has; tickets change only through the
     uv run python -m pytest -q                # unit, e2e in-process (tests/fake_machine.py), e2e through a real Orchestra
     uv run ruff check tasking tests demo
 
-`tests/unit` is fast and pure. `tests/e2e/test_loop_e2e.py` and `test_tasks_e2e.py` drive the
-real scheduler, store, git and gate in-process with a protocol-speaking machine
-(`tests/fake_machine.py`), including the code-mode gate flow the demo does not cover;
-`test_gate.py` and `test_staging.py` drive the gate and staging directly;
-`test_demo_e2e.py` runs the demo as processes against a real `orchestra web` and reads
-everything back over HTTP.
+`tests/unit` is fast and in-process. `tests/e2e/test_code_e2e.py` and `test_tasks_e2e.py` drive
+the real scheduler, store, git and gate in-process with a protocol-speaking machine
+(`tests/fake_machine.py`), including the code-mode gate flow the demo does not cover and the
+contract's hard cases (leases, two machines answering, the operator's stop, restarts);
+`test_gate.py` and `test_staging.py` drive the gate and staging directly; `test_demo_e2e.py` runs
+the demo as processes against a real `orchestra run` and `orchestra web`, reads everything back
+over HTTP, and executes the Tickets page in a headless Chrome when one is at hand (README).
