@@ -3,7 +3,7 @@ machine. A report the task system cannot use never leaves a ticket held by nobod
 
 import pytest
 
-from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, WORKING, Follower
+from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, WORKING
 from tasking.events import Events
 from tasking.model import State
 from tasking.reports import NO_VERDICT_BUDGET, unusable
@@ -22,9 +22,9 @@ def env(project):
     return store, events, sched, t
 
 
-def offer(events, follow) -> dict:
+def offer(events) -> dict:
     """The latest task.assigned on the bus."""
-    return [e for e in follow.new() if e["type"] == ASSIGNED][-1]
+    return [e for e in events.after(0)[0] if e["type"] == ASSIGNED][-1]
 
 
 def answer(events, a: dict, report, **more) -> None:
@@ -53,9 +53,8 @@ def test_unusable_reports():
                                          ({"state": "BLOCKED", "summary": "x"}, "BLOCKED without a blocked_reason")])
 def test_a_workers_unusable_report_sends_the_ticket_back_as_a_crash(env, report, why):
     store, events, sched, t = env
-    follow = Follower(events, start=0)
     sched.tick()
-    a = offer(events, follow)
+    a = offer(events)
     answer(events, a, report)
     sched.tick()                                                   # applied: back to OPEN with the reason, then offered again
     notes = store.notes(t.id)
@@ -68,11 +67,10 @@ def test_a_workers_unusable_report_sends_the_ticket_back_as_a_crash(env, report,
 
 def test_a_reviewers_unusable_report_redoes_the_review(env):
     store, events, sched, t = env
-    follow = Follower(events, start=0)
     sched.tick()
-    answer(events, offer(events, follow), {"state": "READY_FOR_REVIEW", "summary": "done"})
+    answer(events, offer(events), {"state": "READY_FOR_REVIEW", "summary": "done"})
     sched.tick()                                                   # READY_FOR_REVIEW, offered to a reviewer
-    a = offer(events, follow)
+    a = offer(events)
     assert a["role"] == "reviewer"
     answer(events, a, {"verdict": "MAYBE"})
     sched.tick()                                                   # no verdict: redone
@@ -82,7 +80,7 @@ def test_a_reviewers_unusable_report_redoes_the_review(env):
     assert [x["role"] for x in store.assignments().values()] == ["reviewer"]   # offered again
     assert store.get_ticket(t.id).review_rounds == 0               # not a rejection
     for _ in range(NO_VERDICT_BUDGET):                             # the budget's reviews are redone; the one after sends it back
-        answer(events, offer(events, follow), None, failed=True)
+        answer(events, offer(events), None, failed=True)
         sched.tick()
     t = store.get_ticket(t.id)
     assert t.state == State.REJECTED and t.rejected_by == "task_scheduler" and t.reviewer_rejections == 0
@@ -91,9 +89,8 @@ def test_a_reviewers_unusable_report_redoes_the_review(env):
 
 def test_a_report_the_store_refuses_still_frees_the_ticket(env, monkeypatch):
     store, events, sched, t = env
-    follow = Follower(events, start=0)
     sched.tick()
-    a = offer(events, follow)
+    a = offer(events)
     answer(events, a, {"state": "READY_FOR_REVIEW", "summary": "done"})
     monkeypatch.setattr(sched.reports, "apply", lambda *args: (_ for _ in ()).throw(RuntimeError("disk full")))
     sched.tick()
@@ -111,9 +108,8 @@ def test_a_heartbeat_keeps_the_lease_and_what_the_holder_said(env):
     """``task.working`` extends the lease; its ``text``, when sent, is what the holder is doing now,
     kept on the assignment for the Tasks panel (whoever holds the ticket, a program or not)."""
     store, events, sched, _t = env
-    follow = Follower(events, start=0)
     sched.tick()
-    a = offer(events, follow)
+    a = offer(events)
     say = lambda kind, **d: events.publish(kind, {"assignment": a["assignment"], "ticket": a["ticket"], "role": a["role"], **d},
                                            source="worker/1", subject=a["ticket"])
     say(ACCEPTED, instance="worker/1")

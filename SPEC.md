@@ -267,7 +267,7 @@ event types of section 3. The demo's `demo/machines/shell_worker.py` and
    (`program`), `listens_for` (`["task.assigned", "task.released"]`) and, if you keep one, `log`.
    The Machines page shows the machine from this and from what it then publishes.
 3. **Follow the bus from now.** `offset = events.end()`, then in a loop read what is new
-   (`events.read(offset, limit=end - offset)`) and look at `type` and `data`. Every
+   (`evs, offset = events.after(offset)`) and look at `type` and `data`. Every
    `task.assigned` whose `data.role` is yours is an offer: the ticket's `brief` (title,
    description, acceptance, feedback from a rejection, …), the `workspace` to work in, and in
    code mode the `branch`.
@@ -407,7 +407,8 @@ Inside Orchestra's web UI, under the plugin name `tasks`:
   decision; a package that shows them itself calls `TaskAttention.standAside()`.
 
 `tasks-boot.js` is the one script Orchestra loads on every page: it loads `tasks.js` (the shared
-code, the controls and the look every page needs, `tasks.css`) and then the three above. The
+code and the controls) and then the three above. The look every page needs, `tasks.css`, is a
+stylesheet the plugin declares (`stylesheets`), which Orchestra links in every page's head. The
 Tickets page adds its own `tickets.js` (the graph) and `tickets.css`. The plugin declares one
 machine, `task_scheduler`; the operator's controls publish as `task_web` and appear on the
 Machines page once used.

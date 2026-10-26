@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from orchestra.events import machine_and_instance
+
 from .config import Project
 from .events import Events
-from .measures import machine_of
 from .model import ACTIVE, TERMINAL, Note, State
 from .staging import Staging
 from .store import LocalStore, StoreError
@@ -69,7 +70,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
 
     if command == "create_ticket":
         t = store.create_ticket(
-            by=machine_of(author), title=a["title"], description=a.get("description", ""), acceptance=a.get("acceptance", ""),
+            by=machine_and_instance(author)[0] or "unknown", title=a["title"], description=a.get("description", ""), acceptance=a.get("acceptance", ""),
             objective=a.get("objective", ""), verification=a.get("verification", ""),
             milestone_id=a["milestone_id"], priority=int(a.get("priority") or 5),
             depends_on=list(a.get("depends_on") or []), created_by=author,
@@ -92,7 +93,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
         if t.state in ACTIVE:
             raise StoreError(f"{t.id} is {t.state}: someone holds it; wait for it to settle, then cancel")
         store.add_note(t.id, Note(author=author, text=f"cancelled: {a.get('reason', '')}"))
-        t = store.transition(t.id, t.version, State.CANCELLED, by=machine_of(author))
+        t = store.transition(t.id, t.version, State.CANCELLED, by=machine_and_instance(author)[0] or "unknown")
         return {"ok": True, "ticket": t.to_dict()}
 
     if command == "unblock_ticket":
@@ -100,7 +101,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
         if t.state != State.BLOCKED:
             raise StoreError(f"{t.id} is {t.state}, not BLOCKED")
         store.add_note(t.id, Note(author=author, text=f"unblocked: {a.get('note', '')}"))
-        t = store.transition(t.id, t.version, State.OPEN, by=machine_of(author), blocked_reason=None, rejected_by=None,   # the planner's word replaces the rejection's
+        t = store.transition(t.id, t.version, State.OPEN, by=machine_and_instance(author)[0] or "unknown", blocked_reason=None, rejected_by=None,   # the planner's word replaces the rejection's
                              feedback=f"the blocker was resolved by {author}: {a.get('note', '')}")
         return {"ok": True, "ticket": t.to_dict()}
 

@@ -24,7 +24,6 @@ import time
 import uuid
 
 from . import api
-from .assignments import Follower
 from .model import epoch
 
 REQUESTS = {"create_ticket": "task.requested", "update_ticket": "task.change_requested", "add_note": "task.note_requested",
@@ -55,7 +54,7 @@ def _subject(args: dict) -> str | None:
 def ask(events, command: str, args: dict, by: str) -> dict:
     """Send one request as ``by`` and wait for the task system's answer. ``events`` is the
     asker's (its source names the machine asking)."""
-    follow = Follower(events)                       # from now: the answer comes after the request
+    offset = events.end()                           # from now: the answer comes after the request
     rid = uuid.uuid4().hex[:12]
     if command in QUERIES:
         events.publish(QUERY, {"request": rid, "op": command, "args": args, "by": by}, subject=_subject(args))
@@ -65,7 +64,8 @@ def ask(events, command: str, args: dict, by: str) -> dict:
         return {"ok": False, "error": f"the task system has no operation {command!r}; changes: {', '.join(REQUESTS)}; queries: {', '.join(QUERIES)}"}
     end = time.time() + WAIT_S
     while time.time() < end:
-        for ev in follow.new():
+        evs, offset = events.after(offset)
+        for ev in evs:
             if ev.get("request") == rid and ev.get("type") == DONE:
                 return ev.get("result") or {"ok": True}
             if ev.get("request") == rid and ev.get("type") == REFUSED:
@@ -82,7 +82,7 @@ class Desk:
         self.project, self.store, self.events, self.log = project, store, events, log
         rec = store.desk() or {}
         start = min(int(rec.get("offset", 0)), events.end()) if rec else None     # a stream shorter than the record: from its end
-        self.follow = Follower(events, start=start)
+        self.offset = events.end() if start is None else start
         self.answered: list[str] = list(rec.get("answered") or [])   # answered from ``start`` on before this desk started
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True, name="requests")
@@ -101,8 +101,9 @@ class Desk:
         """One batch of new events. The offset is saved after the batch and, while it is being
         answered, the ids answered from the batch's start, so a desk that stops halfway (a crash)
         picks up without answering any request twice."""
-        start, served = self.follow.offset, False
-        for ev in self.follow.new():
+        start, served = self.offset, False
+        evs, self.offset = self.events.after(self.offset)
+        for ev in evs:
             query = ev.get("type") == QUERY
             op = ev.get("op") if query else OP_OF.get(ev.get("type") or "")
             if (not query and not op) or ev.get("request") in self.answered:
@@ -113,7 +114,7 @@ class Desk:
             served = True
         if served:
             self.answered = []
-            self.store.set_desk(self.follow.offset, [])
+            self.store.set_desk(self.offset, [])
 
     def _answer(self, ev: dict, op: str, query: bool) -> None:
         args, by, age = dict(ev.get("args") or {}), ev.get("by") or "", _age(ev)

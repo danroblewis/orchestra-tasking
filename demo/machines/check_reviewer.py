@@ -39,8 +39,7 @@ def main(instance: str) -> None:
     print(f"{me}: waiting for {ROLE} assignments", flush=True)
     offset = events.end()
     while True:
-        end = events.end()
-        evs, offset = events.read(offset, limit=end - offset) if end > offset else ([], offset)
+        evs, offset = events.after(offset)
         for ev in evs:
             d = ev.get("data") or {}
             if ev.get("type") == ASSIGNED and d.get("role") == ROLE:

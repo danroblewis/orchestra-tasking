@@ -11,10 +11,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from orchestra.plugins import Declared, Page, Plugin
+from orchestra.runtime import alive
 
 from .config import Project
 from .events import SCHEDULER, Events
-from .procs import alive
 from .store import LocalStore, StoreError
 
 STATIC = Path(__file__).parent / "static"
@@ -25,7 +25,7 @@ def plugin(orchestra_project) -> Plugin:
     """The plugin for the repository Orchestra serves (its entry point, in pyproject.toml)."""
     project = Project.from_orchestra(orchestra_project)
     return Plugin("tasks", [Page("/tickets", "Tickets", STATIC / "tickets.html")],
-                  STATIC, router(project), scripts=["tasks-boot.js"], machines=declared())
+                  STATIC, router(project), scripts=["tasks-boot.js"], stylesheets=["tasks.css"], machines=declared())
 
 
 def declared() -> list[Declared]:

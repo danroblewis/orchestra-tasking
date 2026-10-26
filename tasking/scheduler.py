@@ -13,6 +13,9 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from orchestra.events import machine_and_instance
+from orchestra.runtime import alive
+
 from .assignments import (
     ACCEPTED,
     ASSIGNED,
@@ -20,7 +23,6 @@ from .assignments import (
     RELEASED,
     REPORTED,
     WORKING,
-    Follower,
     brief,
     new_id,
 )
@@ -28,10 +30,8 @@ from .config import Project
 from .events import SCHEDULER, SUPERVISOR, Events
 from .gate import run_gate, run_specs
 from .git import Git, GitError
-from .measures import machine_of
 from .model import ACTIVE, State, Ticket, TransitionError, effective_priorities, is_ready, now
 from .probes import Prober, config_probes
-from .procs import alive
 from .reports import Reports
 from .requests import QUERY, REQUESTS, Desk
 from .staging import Staging
@@ -71,7 +71,7 @@ class Scheduler:
         self.staging = Staging(project, store, events)
         self.prober = Prober(project, store, events)
         self.reports = Reports(project, store, events, self.git, log)
-        self.follow = Follower(events)               # what the assignees say back (tasking/assignments.py)
+        self.offset = events.end()                   # read on from here: what the assignees say back (tasking/assignments.py)
         self.unanswered: dict[tuple[str, str], float] = {}   # (ticket, role) -> when an offer nobody has answered yet was first made
         self.levels_at = 0.0                        # when the levels were last re-asserted (every discovery step)
 
@@ -332,7 +332,8 @@ class Scheduler:
         lease that ran out is released: a holder that went quiet counts as a crash; an offer
         nobody took is dropped and offered again."""
         out = self.store.assignments()
-        for ev in self.follow.new():
+        evs, self.offset = self.events.after(self.offset)
+        for ev in evs:
             try:
                 aid = ev.get("assignment")
                 if ev.get("type") not in (ACCEPTED, WORKING, REPORTED):
@@ -398,7 +399,7 @@ class Scheduler:
         fields = ({"worker_turns": t.worker_turns + 1, **({"branch": a["branch"]} if a.get("branch") else {})}
                   if a["role"] == "worker" else {})
         try:
-            self.store.transition(t.id, t.version, State.IN_PROGRESS if a["role"] == "worker" else State.IN_REVIEW, by=machine_of(holder),
+            self.store.transition(t.id, t.version, State.IN_PROGRESS if a["role"] == "worker" else State.IN_REVIEW, by=machine_and_instance(holder)[0] or "unknown",
                                   owner=holder, **fields)
         except (Conflict, StoreError, TransitionError) as e:
             self._release(a, f"the ticket cannot be {'worked' if a['role'] == 'worker' else 'reviewed'} now: {e}", instance=holder)

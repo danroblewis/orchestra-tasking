@@ -29,6 +29,7 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
+from orchestra.events import machine_and_instance
 from orchestra.metrics import Point
 from orchestra.metrics import for_project as metrics_for
 
@@ -36,11 +37,6 @@ from .model import State
 
 if TYPE_CHECKING:
     from .config import Project
-
-
-def machine_of(source: str | None) -> str:
-    """``worker/1`` is the machine ``worker``."""
-    return (source or "unknown").partition("/")[0]
 
 
 class Measures:
@@ -77,7 +73,7 @@ class Measures:
         id -> record); ``source`` is the writer's, ``by`` the actor's machine (the writer's own
         when None). ``counts`` is updated in place and must be saved with the tickets."""
         t = time.time()
-        machine = machine_of(source)
+        machine = machine_and_instance(source)[0] or "unknown"
         by = by or machine
         out = []
         if created:

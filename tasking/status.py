@@ -6,10 +6,11 @@ from __future__ import annotations
 import re
 import time
 
+from orchestra.runtime import alive
+
 from .config import Project
 from .events import Events
 from .model import State, epoch
-from .procs import alive
 from .staging import Staging
 from .store import LocalStore
 

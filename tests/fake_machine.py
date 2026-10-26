@@ -22,7 +22,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from tasking.assignments import ACCEPTED, ASSIGNED, RELEASED, REPORTED, WORKING, Follower
+from tasking.assignments import ACCEPTED, ASSIGNED, RELEASED, REPORTED, WORKING
 
 
 class FakeMachine:
@@ -38,7 +38,7 @@ class FakeMachine:
         self._rejected: set[str] = set()
         self._released: set[str] = set()
         self._stop = threading.Event()
-        self._follow = Follower(events, start=0)
+        self._offset = 0
         self._t = threading.Thread(target=self._run, daemon=True)
 
     def __enter__(self):
@@ -55,7 +55,8 @@ class FakeMachine:
 
     def _run(self):
         while not self._stop.wait(0.05):
-            for ev in self._follow.new():
+            evs, self._offset = self.events.after(self._offset)
+            for ev in evs:
                 if ev.get("type") == ASSIGNED and ev.get("role") in self.roles:
                     self.offers.append(ev)
                     threading.Thread(target=self._answer, args=(ev,), daemon=True).start()

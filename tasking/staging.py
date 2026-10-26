@@ -16,11 +16,11 @@ import urllib.request
 from pathlib import Path
 
 import psutil
+from orchestra.runtime import alive
 
 from .config import Project
 from .events import SUPERVISOR, Events
 from .model import epoch, now
-from .procs import alive
 from .store import LocalStore
 from .store.files import locked
 

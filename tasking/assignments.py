@@ -34,22 +34,6 @@ def new_id(ticket: str, role: str) -> str:
     return f"{ticket}.{role}.{uuid.uuid4().hex[:8]}"
 
 
-class Follower:
-    """Every event on the bus after an offset, in order (a bus read returns the last ``limit``
-    events after ``since``, so it is asked for all of them)."""
-
-    def __init__(self, events, start: int | None = None):
-        self.events = events
-        self.offset = events.end() if start is None else start
-
-    def new(self) -> list[dict]:
-        end = self.events.end()
-        if end <= self.offset:
-            return []
-        evs, self.offset = self.events.read(self.offset, limit=end - self.offset)
-        return evs
-
-
 def brief(t) -> dict:
     """What a machine needs to do the ticket, whoever it is."""
     return {k: getattr(t, k, None) for k in ("id", "title", "objective", "description", "acceptance", "verification", "feedback",

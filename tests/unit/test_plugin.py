@@ -11,6 +11,7 @@ def test_orchestra_serves_the_task_pages_and_api(project):
     assert [p["path"] for p in d["pages"] if p["plugin"] == "tasks"] == ["/tickets"] and d["errors"] == []
     assert d["scripts"] == ["/plugins/tasks/static/tasks-boot.js"]            # one loader; it loads the rest after tasks.js
     assert "tasks.js" in c.get("/tickets").text
+    assert '<link rel="stylesheet" href="/plugins/tasks/static/tasks.css">' in c.get("/").text   # the look, on every page
     for f in ("tasks-boot.js", "tasks.js", "attention.js", "machine-cards.js", "tasks-panel.js", "tasks.css"):
         assert c.get(f"/plugins/tasks/static/{f}").status_code == 200
     state = c.get("/api/plugins/tasks/state").json()

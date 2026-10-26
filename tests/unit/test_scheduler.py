@@ -7,7 +7,7 @@ import time
 import pytest
 from conftest import on_bus
 
-from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, WORKING, Follower
+from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, WORKING
 from tasking.events import Events
 from tasking.model import State
 from tasking.scheduler import Scheduler
@@ -32,11 +32,10 @@ def test_an_error_on_one_event_does_not_lose_the_rest_of_the_batch(project, monk
     store = LocalStore(project, events)
     sched = Scheduler(project, store, events)
     sched.recover()
-    follow = Follower(events, start=0)
     ms = store.create_milestone(name="m")
     t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
     sched.tick()                                                     # offered
-    a = [e for e in follow.new() if e["type"] == ASSIGNED][-1]
+    a = [e for e in events.after(0)[0] if e["type"] == ASSIGNED][-1]
     say = lambda kind, **d: events.publish(kind, {"assignment": a["assignment"], "ticket": t.id, "role": "worker", **d},
                                            source="worker/1", subject=t.id)
     say(ACCEPTED)
@@ -67,11 +66,10 @@ def test_a_report_for_an_assignment_a_restart_dropped_is_ignored_with_a_line_in_
     store = LocalStore(project, events)
     first = Scheduler(project, store, events)
     first.recover()
-    follow = Follower(events, start=0)
     ms = store.create_milestone(name="m")
     t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
     first.tick()
-    old = [e for e in follow.new() if e["type"] == ASSIGNED][-1]
+    old = [e for e in events.after(0)[0] if e["type"] == ASSIGNED][-1]
     say = lambda kind, **d: events.publish(kind, {"assignment": old["assignment"], "ticket": t.id, "role": "worker", **d},
                                            source="worker/1", subject=t.id)
     say(ACCEPTED)
