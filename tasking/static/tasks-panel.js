@@ -24,7 +24,7 @@
     return `<span class="turns" title="worker opened ${t.worker_turns} times: ${t.reviewer_rejections || 0} after a reviewer rejection${other > 0 ? `, ${other} after a crash, timeout or operator stop` : ""}">${bits.join(" ")}</span>`;
   }
 
-  Orchestra.panels.register({ id: "tasks", title: "Tasks", mount(body, ui) {
+  Orchestra.panels.register({ id: "tasks", title: "Tasks", size: { w: 12, h: 9 }, mount(body, ui) {
     let D = null;
     const control = async (b) => {
       const r = await fetch(API + "/control", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) });
