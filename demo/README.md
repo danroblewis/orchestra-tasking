@@ -29,15 +29,19 @@ how to write a machine that takes work from the task system.
 
 `run.py` creates one milestone and four tickets as a planner would (requests over the bus). The
 whole run takes about twenty seconds; DEMO-1 sleeps for four of them, so the Tasks panel shows
-`worker/1 · since Ns` and then `reviewer/1 · since Ns` on its card before the end state:
+`worker/1 · since Ns` on its card before the end state (the reviewer's turn is over within one
+poll, too short to see). Were a role unfilled, its offers would be re-offered every lease
+(`task.assigned`/`task.released` pairs on the bus) and the card would say "offered to a worker
+Nm ago", growing from the first offer.
 
 - **DEMO-1 Say hello** and **DEMO-2 Report the Python version** (which depends on DEMO-1) went
   OPEN → IN_PROGRESS → READY_FOR_REVIEW → IN_REVIEW → APPROVED → DONE.
-- **DEMO-3 Decide the project's name** has no commands: the worker reported it BLOCKED. A banner
-  on every page says a ticket waits for a decision.
+- **DEMO-3 Decide the project's name** has no commands: the worker reported it BLOCKED, saying
+  so. A banner on every page says a ticket waits for a decision.
 - **DEMO-4 Write today's date** asks for a file nothing writes: the reviewer rejected it with the
   missing file named, the worker was offered it again, saw that the same commands would give the
-  same result, and reported it BLOCKED with the reviewer's words.
+  same result, and reported it BLOCKED: the reviewer wants what the commands never produce, with
+  the reviewer's words quoted.
 
 Where to look, at http://127.0.0.1:8071:
 
@@ -54,17 +58,21 @@ Where to look, at http://127.0.0.1:8071:
   them: `task.assigned` from the scheduler, `task.accepted`/`task.reported` from the machines,
   `task.requested` from the planner, `request.done` back. `task_web` appears once an operator
   control has been pressed.
-- **Dynamics**: empty. Discovery looks at a 60-minute window on a 30-second grid (`[discovery]`
-  in orchestra.toml), and the demo's twenty seconds of ticket changes are far too few for it to
-  find a model; left running, it may show a thin one after a while. A meaningful model is shown
-  on the sample project, not here.
+- **Dynamics**: a thin model, hidden at first. Seconds after the start the host saves a first
+  version with one stock, `tasks tickets (OPEN)` (the series `tasks_tickets{state="OPEN"}`), fed
+  by one flow, `tasks tickets created` (the counter `tasks_tickets_created_total`), attributed to
+  `task_scheduler`. A stock that only fills starts hidden, so the page looks empty until the
+  "stocks that only fill (1)" box is ticked. Discovery looks at a 60-minute window on a 30-second
+  grid (`[discovery]` in orchestra.toml), and the demo's twenty seconds of ticket changes give it
+  nothing more. A meaningful model is shown on the sample project, not here.
 - **Core**: the event log itself.
 
 ## To go on
 
-The two blocked tickets wait for a planner. DEMO-4 is unblocked by dropping the criterion
-nothing can meet and saying so, from the demo target (or anywhere, with `ORCHESTRA_REPO` set to
-it):
+The two blocked tickets wait for a planner: the attention events name a planner role
+(`coordinator`), and nothing in the demo fills it, so the two requests below are what a planner
+would send. DEMO-4 is unblocked by dropping the criterion nothing can meet and saying so, from
+the demo target (or anywhere, with `ORCHESTRA_REPO` set to it):
 
     uv run tasking api --as planner update_ticket --args '{"id": "DEMO-4", "acceptance": "- `today.txt` exists"}'
     uv run tasking api --as planner unblock_ticket --args '{"id": "DEMO-4", "note": "dropped the impossible criterion"}'

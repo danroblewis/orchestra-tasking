@@ -128,14 +128,15 @@ def test_tickets_are_worked_reviewed_and_done_or_blocked_by_programs(demo):
     assert result is not None and result.read_text().splitlines()[0] == "# DEMO-1: Say hello"
     four = get(url + f"{API}/tickets/DEMO-4")
     assert four["review_rounds"] == 1 and four["worker_turns"] == 2 and "> - the file `yesterday.txt` is missing" in four["blocked_reason"]
-    assert four["blocked_reason"].split("\n\n")[0] == "This worker runs the ticket's commands as written and cannot act on review feedback."
+    first = four["blocked_reason"].split("\n\n")[0]                 # the fact first: what the Tasks panel's card shows
+    assert first.startswith("The reviewer wants what these commands never produce") and "yesterday.txt" in first
     assert four["rejected_by"] == "reviewer" and any(n["kind"] == "review" and n["text"].startswith("REJECTED") for n in four["notes"])
     assert [e["type"] for e in evs if e["type"] == "task.attention_needed"] == ["task.attention_needed"] * 2   # the two blocked tickets, nothing routine
 
     # blocked tickets wait for a planner: the attention endpoint every page reads
     attention = get(url + f"{API}/attention")
     assert attention["count"] == 2 and {b["id"] for b in attention["blocked"]} == {"DEMO-3", "DEMO-4"}
-    assert "this ticket has none" in next(b["reason"] for b in attention["blocked"] if b["id"] == "DEMO-3")
+    assert next(b["reason"] for b in attention["blocked"] if b["id"] == "DEMO-3").startswith("The ticket gives no commands")
     board = get(url + f"{API}/board")
     assert board["scheduler"] is True and board["counts"] == {"DONE": 2, "BLOCKED": 2}
 

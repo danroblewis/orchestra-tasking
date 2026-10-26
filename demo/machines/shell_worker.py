@@ -89,13 +89,15 @@ class Job:
         ran_before = self.folder / ".commands"
         if not commands:
             return {"state": "BLOCKED", "summary": "the ticket gives no commands",
-                    "blocked_reason": "This worker runs the `sh` code blocks of a ticket's description, and this ticket has none. "
-                                      "Add the commands, or give the ticket to a worker that can do it."}
+                    "blocked_reason": "The ticket gives no commands: this worker runs the `sh` code blocks of a ticket's description, "
+                                      "and there are none. Commands in the description, or a worker that can act on prose, would move it."}
         if brief.get("rejected_by") and ran_before.exists() and ran_before.read_text() == "\n".join(commands):
-            quoted = "\n".join(f"> {line}" for line in (brief.get("feedback") or "")[:600].splitlines())
+            feedback = (brief.get("feedback") or "").strip()
+            first = feedback.splitlines()[0].lstrip("-* ").rstrip(".") if feedback else "no feedback was given"
+            quoted = "\n".join(f"> {line}" for line in feedback[:600].splitlines())
             return {"state": "BLOCKED", "summary": "rejected, and the same commands would give the same result",
-                    "blocked_reason": "This worker runs the ticket's commands as written and cannot act on review feedback.\n\n"
-                                      f"{quoted}\n\nTo go on, change the commands or the acceptance criteria, then unblock the ticket."}
+                    "blocked_reason": "The reviewer wants what these commands never produce, and this worker cannot change commands "
+                                      f"on feedback: {first}. Changed commands or acceptance criteria, then an unblock, would move it.\n\n{quoted}"}
         lines, codes, last = [f"# {tid}: {brief.get('title', '')}", ""], [], ""
         for c in commands:
             self.proc = subprocess.Popen(["bash", "-c", c], cwd=self.folder, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
