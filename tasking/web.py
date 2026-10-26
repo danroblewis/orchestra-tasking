@@ -41,7 +41,7 @@ def plugin(orchestra_project) -> Plugin:
     """The plugin for the repository Orchestra serves (its entry point, in pyproject.toml)."""
     project = load_project(orchestra_project.repo_root)
     return Plugin("tasks", [Page("/tickets", "Tickets", STATIC / "tickets.html"), Page("/agents", "Agents", STATIC / "agents.html")],
-                  STATIC, router(project))
+                  STATIC, router(project), scripts=["attention.js"])
 
 
 def router(project) -> APIRouter:
@@ -310,6 +310,28 @@ def router(project) -> APIRouter:
             if r["id"] == run_id:
                 return r
         raise HTTPException(404)
+
+    @r.get("/attention")
+    async def attention() -> dict:
+        """What waits on the human: blocked tickets (a worker could not go on; usually escalated
+        through the Coordinator to the Supervisor) and Supervisor messages written since the
+        human last read its chat. Read on every page (static/attention.js)."""
+        snap = store.snapshot()
+        blocked = [{"id": t["id"], "title": t["title"], "reason": t.get("blocked_reason") or "", "since": t.get("state_since"),
+                    "milestone": t.get("milestone_id")} for t in snap["tickets"] if t["state"] == "BLOCKED"]
+        s = store.find_session("supervisor") or {}
+        seen = float(store.runtime().get("supervisor_seen_at") or 0)
+        settled = float(s.get("settled_at") or 0)
+        message = {"text": s.get("last_text") or "", "at": settled} if settled > seen and s.get("last_text") else None
+        return {"ok": True, "blocked": blocked, "message": message, "working": s.get("status") == "running",
+                "count": len(blocked) + (1 if message else 0)}
+
+    @r.post("/attention/seen")
+    async def attention_seen() -> dict:
+        """The human has read the Supervisor's chat up to now."""
+        now_t = time.time()
+        store._mutate_runtime(lambda d: d.__setitem__("supervisor_seen_at", now_t))
+        return {"ok": True, "seen_at": now_t}
 
     @r.get("/agents")
     async def agents_view() -> dict:
