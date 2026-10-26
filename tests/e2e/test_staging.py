@@ -11,6 +11,11 @@ from tasking.events import Events
 from tasking.staging import Staging, record_build
 from tasking.store import LocalStore
 
+def asked(events, to):
+    """What the task system asked the planner ``to`` to look at: its attention events on the bus."""
+    return [e["data"] for e in events.bus.read(0, limit=100000)[0] if e.get("type") == "task.attention_needed" and (e.get("data") or {}).get("to") == to]
+
+
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
@@ -45,7 +50,7 @@ def test_deploy_restart_rollback(project, tmp_path):
         time.sleep(0.5)
         assert st.state()["current_build_id"] == "b1"
         assert urllib.request.urlopen("http://127.0.0.1:18765/").read() == b"v1"
-        wake = store.drain_wakeups("supervisor")
+        wake = asked(store.events, "supervisor")
         assert wake and "staging deploy" in wake[0]["reason"]
         # Supervision restarts a dead process.
         import os, signal

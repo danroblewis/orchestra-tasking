@@ -19,6 +19,11 @@ from tasking.store import LocalStore
 
 UNIT = "test -f README.md && test ! -f BROKEN"
 
+def asked(events, to):
+    """What the task system asked the planner ``to`` to look at: its attention events on the bus."""
+    return [e["data"] for e in events.bus.read(0, limit=100000)[0] if e.get("type") == "task.attention_needed" and (e.get("data") or {}).get("to") == to]
+
+
 
 def git(*args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
@@ -123,7 +128,7 @@ def test_broken_base_pauses_pipeline_and_keeps_ticket_approved(env):
     assert run["base_check"] and any(s["status"] == "failed" for s in run["base_check"])
     p = store.pipeline()
     assert p["paused"] is True and run["id"] in p["reason"]
-    wake = store.drain_wakeups("supervisor")
+    wake = asked(events, "supervisor")
     assert wake and "broken" in wake[0]["reason"]
     assert "gate_base_broken" in event_types(events)
     assert not (project.gate_dir / f"{run['id']}-base").exists()
@@ -170,7 +175,7 @@ def test_missing_build_artifact_is_a_base_problem(env):
     assert run["stages"][-1] == {"stage": "build", "name": "artifact", "status": "failed", "tail": "no artifact matched dist/*.whl"}
     assert "unit" not in [s["name"] for s in run["stages"]]  # later stages did not run
     assert store.get_ticket(t.id).state == State.APPROVED and store.pipeline()["paused"]
-    assert store.drain_wakeups("supervisor")
+    assert asked(events, "supervisor")
 
 
 def test_build_start_and_acceptance_stages(env):

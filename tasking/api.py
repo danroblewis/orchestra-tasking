@@ -37,7 +37,7 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
     # An agent's change to tickets or milestones is a request to the task system, over the bus
     # (tasking/requests.py); the scheduler's desk applies it here, with direct=True.
     from . import requests
-    if not direct and command in requests.REQUESTS and requests.via_bus():
+    if not direct and (command in requests.REQUESTS or command in requests.QUERIES) and requests.via_bus():
         return requests.ask(project, command, a, role)
 
     if command == "project_status":
@@ -46,6 +46,11 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
                 "milestones": [{"id": m["id"], "name": m["name"], "status": m["status"]} for m in snap["milestones"]],
                 "active_sessions": [s["id"] for s in snap["sessions"] if s.get("status") == "running"],
                 "blocked": [{"id": t["id"], "reason": t["blocked_reason"]} for t in snap["tickets"] if t["state"] == "BLOCKED"]}
+
+    if command == "snapshot":
+        snap = store.snapshot()
+        snap.pop("sessions", None)                       # the agents' own, not the task system's
+        return {"ok": True, "snapshot": snap}
 
     if command == "list_milestones":
         tickets = store.list_tickets()
@@ -58,7 +63,7 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
 
     if command == "create_milestone":
         m = store.create_milestone(name=a["name"], description=a.get("description", ""))
-        store.add_wakeup("coordinator", f"milestone {m.id} created by {author}")
+        store.events.attention("coordinator", f"milestone {m.id} created by {author}")
         return {"ok": True, "milestone": m.to_dict()}
 
     if command == "update_milestone":
@@ -89,7 +94,7 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
             depends_on=list(a.get("depends_on") or []), created_by=author,
         )
         if author != "coordinator":
-            store.add_wakeup("coordinator", f"ticket {t.id} created by {author}: {t.title}")
+            store.events.attention("coordinator", f"ticket {t.id} created by {author}: {t.title}", ticket=t.id)
         return {"ok": True, "ticket": t.to_dict()}
 
     if command == "update_ticket":

@@ -291,7 +291,7 @@ class Staging:
                              local_url=self.local_url(), public_url=self.public_url())
             return True
         self.events.emit("staging_failed", build=build["id"])
-        self.store.add_wakeup("supervisor",
+        self.store.events.attention("supervisor",
                               f"staging deploy of build {build['id']} failed (see staging log); rolled back")
         prev = self.store.runtime().get("builds", {}).get(prev_id or "")
         if prev:

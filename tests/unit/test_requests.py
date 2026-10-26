@@ -45,8 +45,13 @@ def test_an_agents_change_is_a_request_the_scheduler_applies_and_answers(env, mo
     assert created and all(e["source"] == "task_scheduler" for e in created)     # the task system made it, on request
 
 
-def test_reads_are_not_requests(env, monkeypatch):
+def test_reads_are_queries_the_desk_answers(env, monkeypatch):
     p, store = env
     monkeypatch.setenv("TASKING_REQUESTS", "bus")
-    assert api.handle(p, store, "list_tickets", {}, role="supervisor")["ok"]
-    assert not [e for e in Events(p.events_file).bus.read(0, limit=100)[0] if e["type"].endswith("requested")]
+    monkeypatch.setenv("ORCHESTRA_SOURCE", "coordinator")
+    agent_store = LocalStore(p, Events(p.events_file))
+    api.handle(p, agent_store, "create_milestone", {"name": "M"}, role="supervisor")
+    got = api.handle(p, agent_store, "list_milestones", {}, role="coordinator")
+    assert got["ok"] and [m["id"] for m in got["milestones"]] == ["M1"]
+    queries = [e for e in Events(p.events_file).bus.read(0, limit=100)[0] if e["type"] == "task.query_requested"]
+    assert [(e["data"]["op"], e["source"]) for e in queries] == [("list_milestones", "coordinator")]

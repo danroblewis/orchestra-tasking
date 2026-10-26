@@ -11,6 +11,11 @@ from tasking.loop import Loop
 from tasking.model import State
 from tasking.store import LocalStore
 
+def asked(events, to):
+    """What the task system asked the planner ``to`` to look at: its attention events on the bus."""
+    return [e["data"] for e in events.bus.read(0, limit=100000)[0] if e.get("type") == "task.attention_needed" and (e.get("data") or {}).get("to") == to]
+
+
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
@@ -34,7 +39,7 @@ def test_escalation_fires_at_the_threshold_and_its_multiples(project):
         t = store.transition(t.id, t.version, State.READY_FOR_REVIEW)
         t = store.transition(t.id, t.version, State.IN_REVIEW)
         loop._reject(t.id, "reviewer" if i % 2 else "orchestra", "no", "")
-        if store.drain_wakeups("coordinator"):
+        if len(asked(events, "coordinator")) > len(fired):
             fired.append(i)
     assert fired == [3, 6]                                              # threshold 3: rounds 3 and 6, not 4, 5, 7
     t = store.get_ticket(t.id)

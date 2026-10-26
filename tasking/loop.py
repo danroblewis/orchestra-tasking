@@ -14,7 +14,7 @@ from .agents.roles import ROLES, resident_roles
 from .assignments import ACCEPTED, ASSIGNED, LEASE_S, RELEASED, REPORTED, WORKING, Follower, brief, new_id
 from .config import Project
 from .control import ControlServer
-from .events import Events
+from .events import ATTENTION, Events
 from .gate import run_gate
 from .git import Git, GitError
 from .harness import AgentSession, SessionSpec, get_harness
@@ -141,7 +141,7 @@ class Loop:
         self._start_control()
         paused = self.store.pipeline()
         if paused.get("paused"):
-            self.store.add_wakeup("supervisor", f"the pipeline is still paused after a restart: {paused.get('reason')}. "
+            self.events.attention("supervisor", f"the pipeline is still paused after a restart: {paused.get('reason')}. "
                                   "Diagnose, fix what you can or escalate, then call resume_pipeline.")
         # Staging survives loop restarts; only bring it back if its process is gone.
         if self.cfg.staging_configured and self.staging.state().get("current_build_id"):
@@ -391,6 +391,9 @@ class Loop:
         """Match new events against every agent's wake_on list and queue wake-ups."""
         evs, self._events_tail = self.events.read(self._events_tail, limit=5000)
         for ev in evs:
+            if ev.get("type") == ATTENTION and ev.get("to"):           # the task system asks a planner to look
+                self.store.add_wakeup(ev["to"], ev.get("reason") or "the task system needs your attention")
+                continue
             for name, agent in self.agents.items():
                 if name == "supervisor" or not agent.wake_on or not agent.matches_event(ev):
                     continue
@@ -734,13 +737,13 @@ class Loop:
             reason += f". Last message: {text[-600:]}" if text else "."
             self.store.add_note(tid, Note(author="orchestra", kind="blocker", text=reason))
             self.store.transition(tid, t.version, State.BLOCKED, blocked_reason=reason)
-            self.store.add_wakeup("coordinator", f"{tid} BLOCKED: {reason[:200]}")
+            self.events.attention("coordinator", f"{tid} BLOCKED: {reason[:200]}", ticket=tid)
             log(f"{tid}: BLOCKED ({reason[:80]})")
             return
         self.store.add_note(tid, Note(author="worker", text=report.get("summary", "")))
         if report["state"] == "BLOCKED":
             self.store.transition(tid, t.version, State.BLOCKED, blocked_reason=report.get("blocked_reason"))
-            self.store.add_wakeup("coordinator", f"{tid} BLOCKED by worker: {report.get('blocked_reason', '')[:200]}")
+            self.events.attention("coordinator", f"{tid} BLOCKED by worker: {report.get('blocked_reason', '')[:200]}", ticket=tid)
             log(f"{tid}: BLOCKED by worker")
             return
         # READY_FOR_REVIEW: make sure there is something to review.
@@ -756,7 +759,7 @@ class Loop:
             reason = "worker reported READY_FOR_REVIEW but the branch has no commits beyond the base branch"
             self.store.add_note(tid, Note(author="orchestra", kind="blocker", text=reason))
             self.store.transition(tid, t.version, State.BLOCKED, blocked_reason=reason)
-            self.store.add_wakeup("coordinator", f"{tid} BLOCKED: {reason}")
+            self.events.attention("coordinator", f"{tid} BLOCKED: {reason}", ticket=tid)
             return
         self.store.transition(tid, t.version, State.READY_FOR_REVIEW, reviewed_commit=head, feedback=None)
         log(f"{tid}: READY_FOR_REVIEW at {head[:10]}")
@@ -803,7 +806,7 @@ class Loop:
             if self.cfg.work != "code":                       # nothing to merge: approved is done
                 self.store.transition(t.id, t.version, State.DONE)
                 log(f"{t.id}: DONE")
-                self.store.add_wakeup("coordinator", f"{t.id} is DONE")
+                self.events.attention("coordinator", f"{t.id} is DONE", ticket=t.id)
         else:
             self._reject(t.id, "reviewer", report.get("feedback") or report.get("summary", ""), text)
 
@@ -818,7 +821,7 @@ class Loop:
         # not on every rejection: the Coordinator should decide once, not be told 38 times.
         th = self.cfg.review_rounds_before_escalation
         if th and rounds % th == 0:
-            self.store.add_wakeup("coordinator", f"{tid} has been rejected {rounds} times; decide whether to narrow, split, or cancel it")
+            self.events.attention("coordinator", f"{tid} has been rejected {rounds} times; decide whether to narrow, split, or cancel it", ticket=tid)
 
     # -- gate ------------------------------------------------------------------
 
@@ -831,7 +834,7 @@ class Loop:
             run = run_gate(self.project, self.store, self.events, ticket_ids)
             log(f"gate {run['id']}: {run['status']} {run.get('summary', '')}")
             if run["status"] == "landed":
-                self.store.add_wakeup("coordinator", f"landed {', '.join(run['merged'])} on {self.cfg.base_branch}")
+                self.events.attention("coordinator", f"landed {', '.join(run['merged'])} on {self.cfg.base_branch}")
         except (Conflict, StoreError) as e:
             log(f"gate: {e}")
 

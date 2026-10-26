@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from .config import Project
 
 LOOP = "task_scheduler"
+ATTENTION = "task.attention_needed"
 
 
 def default_source() -> str:
@@ -83,6 +84,12 @@ class Events(OrchestraEvents):
             except Exception:  # noqa: BLE001, S110 - a subscriber never breaks the publisher
                 pass
         return f
+
+    def attention(self, to: str, reason: str, ticket: str | None = None) -> dict:
+        """The task system needs a planner's attention (a ticket blocked, rejected again and
+        again, done; the pipeline broken): an event the planner's machine listens for, not a
+        write into its queue. ``to`` is the role (coordinator, supervisor)."""
+        return self.emit(ATTENTION, to=to, reason=reason, **({"ticket": ticket} if ticket else {}))
 
     def read(self, since: int = 0, limit: int = 500) -> tuple[list[dict], int]:
         evs, nxt = super().read(since, limit)

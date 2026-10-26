@@ -28,6 +28,10 @@ REQUESTS = {"create_ticket": "task.requested", "update_ticket": "task.change_req
             "close_milestone": "milestone.close_requested", "set_capacity": "capacity.change_requested",
             "resume_pipeline": "pipeline.resume_requested"}
 OP_OF = {v: k for k, v in REQUESTS.items()}
+# reads: one event type, the operation named in it (they change nothing, so they are not told apart on the map)
+QUERY = "task.query_requested"
+QUERIES = ("list_tickets", "get_ticket", "project_status", "list_milestones", "get_capacity", "snapshot",
+           "list_gate_runs", "get_gate_run", "get_staging_status")
 DONE, REFUSED = "request.done", "request.refused"
 WAIT_S = 30.0
 
@@ -47,7 +51,10 @@ def ask(project, command: str, args: dict, role: str) -> dict:
     events = Events.for_project(project)
     follow = Follower(events)                       # from now: the answer comes after the request
     rid = uuid.uuid4().hex[:12]
-    events.publish(REQUESTS[command], {"request": rid, "args": args, "by": role}, subject=_subject(args))
+    if command in QUERIES:
+        events.publish(QUERY, {"request": rid, "op": command, "args": args, "by": role}, subject=_subject(args))
+    else:
+        events.publish(REQUESTS[command], {"request": rid, "args": args, "by": role}, subject=_subject(args))
     end = time.time() + WAIT_S
     while time.time() < end:
         for ev in follow.new():
@@ -81,7 +88,7 @@ class Desk:
     def serve(self) -> None:
         from . import api
         for ev in self.follow.new():
-            op = OP_OF.get(ev.get("type") or "")
+            op = OP_OF.get(ev.get("type") or "") or (ev.get("op") if ev.get("type") == QUERY and ev.get("op") in QUERIES else None)
             if not op:
                 continue
             args, by = dict(ev.get("args") or {}), ev.get("by") or ""
@@ -93,4 +100,5 @@ class Desk:
             self.events.publish(DONE if ok else REFUSED, {"request": ev.get("request"), "op": op, "by": by,
                                                           **({"result": result} if ok else {"error": result.get("error")})},
                                 subject=_subject(args) or (result.get("ticket") or {}).get("id"))
-            self.log(f"request {op} by {by or 'someone'}: {'done' if ok else 'refused: ' + str(result.get('error'))[:80]}")
+            if op not in QUERIES:
+                self.log(f"request {op} by {by or 'someone'}: {'done' if ok else 'refused: ' + str(result.get('error'))[:80]}")

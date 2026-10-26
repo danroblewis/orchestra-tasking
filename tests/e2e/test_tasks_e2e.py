@@ -78,7 +78,7 @@ def test_work_is_assigned_over_the_bus_and_the_machine_that_accepts_owns_it(env)
     t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
     Loop(project, store, events).run(once=True)
     evs = [e for e in events.bus.read(0, limit=10000)[0] if e.get("subject") == t.id]
-    proto = [(e["type"], e["source"], (e["data"] or {}).get("role")) for e in evs if e["type"].startswith("task.")]
+    proto = [(e["type"], e["source"], (e["data"] or {}).get("role")) for e in evs if e["type"].startswith("task.") and e["type"] != "task.attention_needed"]
     assert [p for p in proto if p[0] != "task.working"] == [
         ("task.assigned", "task_scheduler", "worker"), ("task.accepted", "worker/1", "worker"), ("task.reported", "worker/1", "worker"),
         ("task.assigned", "task_scheduler", "reviewer"), ("task.accepted", "reviewer/1", "reviewer"), ("task.reported", "reviewer/1", "reviewer")]
