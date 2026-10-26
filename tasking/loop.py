@@ -76,6 +76,7 @@ class Loop:
         self._last_token_write: dict[str, float] = {}
         self._partial: dict[str, dict] = {}         # session id -> the assistant text streamed so far this message
         self._events_tail = self.events.read(0, limit=1)[1]   # only events after startup can wake agents
+        self._slots: dict[str, str] = {}             # session id -> the machine instance it runs as ("worker/1")
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -118,6 +119,8 @@ class Loop:
                 pass
         self.recover()
         self.events.emit("loop_started")
+        self.events.publish("orchestra.machine.started", {"mode": "continuous", "listens_for": [], "kind": "program",
+                                                          "does": "assigns ready tickets to workers and reviewers; starts the agents"})
         log(f"project {self.project.key} on {self.project.repo_root}; workers={self.cfg.workers} reviewers={self.cfg.reviewers}")
         self._start_project_agents()
         self._start_control()
@@ -188,14 +191,14 @@ class Loop:
                 continue
             if t.state == State.REJECTED or (t.state == State.OPEN and is_ready(t, tickets, milestones)):
                 self._spawn(self.workers, t.id, self._work, t)
-        if self.gate_thread is None and not self.store.pipeline().get("paused"):
+        if self.cfg.work == "code" and self.gate_thread is None and not self.store.pipeline().get("paused"):
             approved = [t for t in ordered if t.state == State.APPROVED]
             if approved:
                 approved.sort(key=lambda t: t.state_since)
                 self.gate_thread = threading.Thread(target=self._gate, args=([approved[0].id],), daemon=True)
                 self.gate_thread.start()
         for t in ordered:
-            if t.state == State.CANCELLED and self.store.worktree(t.id):
+            if self.cfg.work == "code" and t.state == State.CANCELLED and self.store.worktree(t.id):
                 self._drop_worktree(t)
         self.staging.ensure_running()
         self._refresh_org()
@@ -289,6 +292,9 @@ class Loop:
         prompt_file = self.project.logs_dir / "agents" / f"{session_id}.prompt.md"
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
         prompt_file.write_text(system_prompt, encoding="utf-8")
+        source = self._instance(session_id, role, ticket_id)
+        extra_env = {**(extra_env or {}), "ORCHESTRA_SOURCE": source}
+        self._announce(source, role)
         return self.harness.start(SessionSpec(
             session_id=session_id, session_dir=self.project.sessions_dir, cwd=cwd,
             system_prompt=system_prompt, role=role, tool_groups=tools,
@@ -297,6 +303,36 @@ class Loop:
             log_path=self.project.logs_dir / "agents" / f"{session_id}.stderr.log",
             model=self.cfg.model, provider=self.cfg.provider, thinking=self.cfg.thinking, ticket_id=ticket_id,
             compact_tokens=self.cfg.compact_tokens))
+
+    def _instance(self, session_id: str, role: str, ticket_id: str = "") -> str:
+        """The machine instance a session runs as, which is also the source of its events: a
+        resident agent is its role ("supervisor"); a worker or reviewer for one ticket takes the
+        lowest free slot of its role ("worker/1"), given back when its turn ends."""
+        if session_id in self._slots:
+            return self._slots[session_id]
+        if not ticket_id:
+            source = role
+        else:
+            taken = {s for s in self._slots.values() if s.startswith(role + "/")}
+            source = next(f"{role}/{n}" for n in range(1, 1000) if f"{role}/{n}" not in taken)
+        self._slots[session_id] = source
+        self.events.bind(session_id, source)
+        return source
+
+    def _release(self, session_id: str) -> None:
+        source = self._slots.pop(session_id, None)
+        if source and "/" in source:
+            self.events.unbind(session_id)
+
+    def _announce(self, source: str, role: str) -> None:
+        """An agent instance says what it is when it starts (AGENTS.md: a machine announces its
+        mode and what it listens for): an AI agent, on which harness and model, engaged how."""
+        agent = self.agents.get(role) or all_agents(self.project).get(role)
+        mode = {"continuous": "continuous", "scheduled": "scheduled", "ad_hoc": "ad hoc"}.get(getattr(agent, "kind", ""), "ad hoc")
+        listens = sorted({w.split(":")[0] for w in (getattr(agent, "wake_on", None) or [])})
+        self.events.publish("orchestra.machine.started", {"mode": mode, "listens_for": listens, "kind": "agent", "role": role,
+                                                          "harness": self.harness.name, "model": self.cfg.model},
+                            source=source)
 
     @staticmethod
     def _pid(proc: AgentSession) -> int | None:
@@ -434,6 +470,8 @@ class Loop:
         self.store.set_session(sid, status="idle", last_text=(text or "")[-500:], settled_at=time.time(), phase="idle", tool_name=None,
                                **fields)
         self.events.emit("session_settled", session=sid)
+        if not resident:
+            self._release(sid)
 
     def _note_turn(self, sid: str, res, kind: str = "") -> None:
         """A turn that Orchestra cut off, or that the harness failed, is recorded as an event
@@ -527,16 +565,28 @@ class Loop:
         self.store.set_worktree(t.id, str(path), branch)
         return path, branch
 
+    def _workspace(self, t: Ticket) -> Path:
+        """A task's scratch folder (work = "tasks"): the worker's working directory, kept for the
+        reviewer. Not a git checkout; nothing in it is merged anywhere."""
+        path = self.project.workspaces_dir / t.id
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def _work(self, t: Ticket) -> None:
         sid = f"worker-{t.id}"
+        tasks = self.cfg.work != "code"
         try:
-            path, branch = self._worktree(t)
-            t = self.store.transition(t.id, t.version, State.IN_PROGRESS, branch=branch, worker_session=sid,
-                                      worker_turns=t.worker_turns + 1)
+            if tasks:
+                path, branch = self._workspace(t), None
+                t = self.store.transition(t.id, t.version, State.IN_PROGRESS, worker_session=sid, worker_turns=t.worker_turns + 1)
+            else:
+                path, branch = self._worktree(t)
+                t = self.store.transition(t.id, t.version, State.IN_PROGRESS, branch=branch, worker_session=sid,
+                                          worker_turns=t.worker_turns + 1)
         except (Conflict, StoreError, GitError) as e:
             log(f"{t.id}: cannot start worker: {e}")
             return
-        log(f"{t.id}: worker starting on {branch}")
+        log(f"{t.id}: worker starting in {path}" if tasks else f"{t.id}: worker starting on {branch}")
         proc = self._session(sid, "worker", path, t.id)
         text = ""
         try:
@@ -546,9 +596,9 @@ class Loop:
                 self._session_running(sid, "worker", proc, t.id)
             unit_cmd = self.cfg.unit[0].command if self.cfg.unit else None
             report, text, failed = self._prompt_with_retry(
-                proc, t.id, agents.worker_task(self.project, t, unit_cmd),
-                "You stopped without reporting. Call `report_ticket` now: READY_FOR_REVIEW if your work is "
-                "committed and tested, otherwise BLOCKED with the reason.")
+                proc, t.id, agents.worker_task_tasks(t) if tasks else agents.worker_task(self.project, t, unit_cmd),
+                "You stopped without reporting. Call `report_ticket` now: READY_FOR_REVIEW if your result is "
+                "written" + ("" if tasks else ", committed and tested") + ", otherwise BLOCKED with the reason.")
         finally:
             proc.close()
             self._session_idle(sid, text)
@@ -601,6 +651,10 @@ class Loop:
             log(f"{tid}: BLOCKED by worker")
             return
         # READY_FOR_REVIEW: make sure there is something to review.
+        if branch is None:                                   # a task: its result is the report and RESULT.md
+            self.store.transition(tid, t.version, State.READY_FOR_REVIEW, feedback=None)
+            log(f"{tid}: READY_FOR_REVIEW")
+            return
         if self.git.run("status", "--porcelain", cwd=path, check=False).stdout.strip():
             self.git.run("add", "-A", cwd=path, check=False)
             self.git.run("commit", "-q", "-m", f"{tid}: commit remaining worker changes", cwd=path, check=False)
@@ -617,6 +671,8 @@ class Loop:
     # -- reviewer --------------------------------------------------------------
 
     def _review(self, t: Ticket) -> None:
+        if self.cfg.work != "code":
+            return self._review_task(t)
         sid = f"reviewer-{t.id}"
         wt = self.store.worktree(t.id)
         if not wt:
@@ -678,11 +734,58 @@ class Loop:
             self._reject(t.id, "orchestra", "three reviewers in a row produced no verdict" + (" (timed out)" if failed else "") +
                          ". Make the diff small and focused so a review can finish, and report again.", text)
             return
+        self._verdict(t, report, text, commit)
+
+    def _review_task(self, t: Ticket) -> None:
+        """Review a finished task (work = "tasks"): the reviewer reads the worker's result in the
+        ticket's folder. Approved is DONE: there is nothing to merge."""
+        sid = f"reviewer-{t.id}"
+        path = self.project.workspaces_dir / t.id
+        try:
+            t = self.store.transition(t.id, t.version, State.IN_REVIEW, reviewer_session=sid)
+        except (Conflict, StoreError) as e:
+            log(f"{t.id}: cannot start review: {e}")
+            return
+        if not path.is_dir():
+            self._reject(t.id, "orchestra", "the task's folder is missing at review time; please do the task again", reviewer_text="")
+            return
+        log(f"{t.id}: review starting")
+        files = sorted(str(p.relative_to(path)) for p in path.rglob("*") if p.is_file())[:200]
+        result = (path / "RESULT.md").read_text(encoding="utf-8", errors="replace") if (path / "RESULT.md").exists() else ""
+        summary = next((n.get("text", "") for n in reversed(self.store.notes(t.id)) if n.get("author") == "worker"), "")
+        proc = self._session(sid, "reviewer", path, t.id)
+        text = ""
+        try:
+            self._session_running(sid, "reviewer", proc, t.id)
+            report, text, failed = self._prompt_with_retry(
+                proc, t.id, agents.reviewer_task_tasks(t, summary, files, result),
+                "You stopped without a verdict. Call `report_review` now with APPROVED or REJECTED.")
+        finally:
+            proc.close()
+            self._session_idle(sid, text)
+        t = self.store.get_ticket(t.id)
+        if t.state != State.IN_REVIEW:
+            return
+        if t.id in self.killed:
+            self.killed.discard(t.id)
+            self.store.transition(t.id, t.version, State.READY_FOR_REVIEW)
+            return
+        if report is None:
+            self.store.add_note(t.id, Note(author="orchestra", kind="crash", text="reviewer produced no verdict; review will be redone"))
+            self.store.transition(t.id, t.version, State.READY_FOR_REVIEW)
+            return
+        self._verdict(t, report, text, None)
+
+    def _verdict(self, t: Ticket, report: dict, text: str, commit: str | None) -> None:
         self.store.add_note(t.id, Note(author="reviewer", kind="review",
                                        text=f"{report['verdict']}: {report.get('summary', '')}\n{report.get('feedback') or ''}"))
         if report["verdict"] == "APPROVED":
-            self.store.transition(t.id, t.version, State.APPROVED, reviewed_commit=commit, feedback=None, rejected_by=None)
+            t = self.store.transition(t.id, t.version, State.APPROVED, reviewed_commit=commit, feedback=None, rejected_by=None)
             log(f"{t.id}: APPROVED")
+            if self.cfg.work != "code":                       # nothing to merge: approved is done
+                self.store.transition(t.id, t.version, State.DONE)
+                log(f"{t.id}: DONE")
+                self.store.add_wakeup("coordinator", f"{t.id} is DONE")
         else:
             self._reject(t.id, "reviewer", report.get("feedback") or report.get("summary", ""), text)
 

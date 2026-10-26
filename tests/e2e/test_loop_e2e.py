@@ -52,7 +52,7 @@ def env(tmp_path, monkeypatch, request):
     git("commit", "-qm", "init", cwd=repo)
     project = init_project(repo, prefix="E2E", unit_command="test -f README.md")
     toml = repo / "orchestra.toml"
-    toml.write_text(toml.read_text().replace('harness = "pi"', f'harness = "{harness}"'))
+    toml.write_text(toml.read_text().replace('harness = "pi"', f'harness = "{harness}"').replace('work = "tasks"', 'work = "code"'))   # the code path: a branch per ticket, the gate
     project.reload_config()
     assert project.config.harness == harness
     git("add", "-A", cwd=repo)

@@ -114,8 +114,11 @@ def main() -> None:
                 (cwd / "README.md").unlink()
             elif broke.exists() and not (cwd / "README.md").exists():
                 (cwd / "README.md").write_text("# e2e\n")
-            subprocess.run(["git", "add", "-A"], cwd=cwd, check=True)
-            subprocess.run(["git", "commit", "-qm", f"{ticket}: fake work"], cwd=cwd, check=True)
+            if (cwd / ".git").exists():                  # a code ticket's worktree; a task's folder is not a checkout
+                subprocess.run(["git", "add", "-A"], cwd=cwd, check=True)
+                subprocess.run(["git", "commit", "-qm", f"{ticket}: fake work"], cwd=cwd, check=True)
+            else:
+                (cwd / "RESULT.md").write_text(f"# {ticket}\n\nthe answer\n")
             use_tool("report_ticket", {"state": "READY_FOR_REVIEW", "summary": "added WORK.md line"})
             text = "Done, reported ready."
     elif role == "reviewer":

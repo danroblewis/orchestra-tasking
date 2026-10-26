@@ -36,6 +36,7 @@ class TestSpec:
 class Config:
     base_branch: str = "main"
     ticket_prefix: str = "ORC"
+    work: str = "tasks"          # tasks: a scratch folder per ticket, no merging | code: a branch per ticket, the merge gate
     push: bool = False
     harness: str = "pi"          # pi | claude_code | codex
     provider: str | None = None
@@ -96,6 +97,7 @@ class Config:
         return cls(
             base_branch=p.get("base_branch", "main"),
             ticket_prefix=p.get("ticket_prefix", "ORC"),
+            work=p.get("work", "tasks"),
             push=bool(p.get("push", False)),
             harness=(a.get("harness") or "pi").replace("-", "_"),
             provider=a.get("provider") or None,
@@ -138,6 +140,7 @@ class Config:
 STARTER_TOML = """[project]
 base_branch = "main"
 ticket_prefix = "{prefix}"
+work = "tasks"           # tasks: agents do tasks in a scratch folder per ticket | code: a git branch per ticket and the merge gate
 push = false
 
 [agents]
@@ -220,6 +223,10 @@ class Project:
     @property
     def worktrees_dir(self) -> Path:
         return self.state_dir / "worktrees"
+
+    @property
+    def workspaces_dir(self) -> Path:
+        return self.state_dir / "workspaces"
 
     @property
     def gate_dir(self) -> Path:

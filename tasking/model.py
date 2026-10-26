@@ -41,7 +41,7 @@ TRANSITIONS: dict[State, set[State]] = {
     State.READY_FOR_REVIEW: {State.IN_REVIEW, State.CANCELLED},
     State.IN_REVIEW: {State.APPROVED, State.REJECTED, State.READY_FOR_REVIEW, State.CANCELLED},
     State.REJECTED: {State.IN_PROGRESS, State.CANCELLED},
-    State.APPROVED: {State.MERGING, State.CANCELLED},
+    State.APPROVED: {State.MERGING, State.DONE, State.CANCELLED},     # DONE directly when nothing is merged (work = "tasks")
     State.MERGING: {State.DONE, State.REJECTED, State.APPROVED, State.CANCELLED},
     State.BLOCKED: {State.OPEN, State.CANCELLED},
     State.DONE: set(),

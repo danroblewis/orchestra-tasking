@@ -15,7 +15,8 @@ def role_prompt(project: Project, role: str) -> str:
     """A role's own prompt, placeholders resolved: the job description. Built-in roles
     ship with Orchestra (overridable per project); custom roles come from the role store."""
     override = project.config.prompt_overrides.get(role)
-    path = (project.repo_root / override) if override else (PROMPTS_DIR / f"{role}.md")
+    variant = PROMPTS_DIR / f"{role}.{project.config.work}.md"         # e.g. worker.tasks.md: no git, no merge gate
+    path = (project.repo_root / override) if override else variant if variant.exists() else (PROMPTS_DIR / f"{role}.md")
     if path.exists():
         text = path.read_text(encoding="utf-8")
     else:
@@ -164,6 +165,28 @@ def worker_task(project: Project, t: Ticket, unit_command: str | None) -> str:
         return head + env + f"## Note from the planner\n{t.feedback.strip()}\n\nImplement the ticket, then call `report_ticket`.\n"
     return (head + env + "Implement the ticket. If the verification section names a test to add or extend, "
             "that test is part of the work. Verify, commit on your branch, then call `report_ticket`.\n")
+
+
+def worker_task_tasks(t: Ticket) -> str:
+    """A task (not a code change): the worker works in its own scratch folder and reports a result."""
+    head = f"# Your assignment\n\n{_ticket_block(t)}\n"
+    env = ("## Environment\nYour working directory is this ticket's scratch folder. Put your result in "
+           "`RESULT.md` there, with any supporting files beside it.\n\n")
+    if t.feedback and t.rejected_by:
+        return (head + env + f"## This ticket was REJECTED by the {t.rejected_by} (round {t.review_rounds})\n"
+                f"Address every point below, update `RESULT.md`, then call `report_ticket`.\n\n{t.feedback.strip()}\n")
+    if t.feedback:
+        return head + env + f"## Note from the planner\n{t.feedback.strip()}\n\nDo the task, then call `report_ticket`.\n"
+    return head + env + "Do the task, write `RESULT.md`, then call `report_ticket`.\n"
+
+
+def reviewer_task_tasks(t: Ticket, summary: str, files: list[str], result: str) -> str:
+    """A finished task to review: the ticket, the worker's summary, its RESULT.md and its files."""
+    result = result if len(result) < 60000 else result[:60000] + "\n... (truncated; open RESULT.md for the rest)\n"
+    return (f"# Review request\n\n{_ticket_block(t)}\n## The worker's summary\n{summary.strip() or '(none)'}\n\n"
+            f"## Files in the folder\n```\n" + ("\n".join(files) or "(none)") + "\n```\n\n"
+            f"## RESULT.md\n{result.strip() or '(missing)'}\n\n"
+            "Judge the result against the ticket, then call `report_review` exactly once.\n")
 
 
 def reviewer_task(project: Project, t: Ticket, commit: str, diff: str, files: list[str],
