@@ -31,8 +31,10 @@ PLAN = {"milestone": {"name": "Demo", "description": "Four tasks done by program
         "tickets": [
             {"title": "Say hello", "description": "Write a greeting into a file and show it.\n\n```sh\nsleep 4\necho 'hello from the task system' > hello.txt\ncat hello.txt\n```",
              "acceptance": "- `hello.txt` exists\n- RESULT.md shows \"hello from the task system\""},
-            {"title": "Report the Python version", "depends_on": [0], "description": "```sh\npython3 --version\n```",
-             "acceptance": "- RESULT.md shows \"Python 3\""},
+            {"title": "Count the lines in the project's README", "depends_on": [0],
+             "description": "The commands run in the ticket's own empty folder; a task about the repository goes there first.\n\n"
+                            "```sh\ncd \"$ORCHESTRA_REPO\" && wc -l README.md\n```",
+             "acceptance": "- RESULT.md shows \"README.md\""},
             {"title": "Decide the project's name", "description": "Pick a name for the project and write it to NAME.txt. (No commands: the worker cannot do this.)",
              "acceptance": "- `NAME.txt` exists\n- The name is short and pronounceable."},
             {"title": "Write today's date", "description": "```sh\ndate > today.txt\ncat today.txt\n```",

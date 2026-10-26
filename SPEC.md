@@ -213,9 +213,12 @@ ignored, with a line in the log: the ticket was offered afresh. The scheduler's 
 `[project] work` chooses what a ticket's workspace is.
 
 **`tasks`** (the default): the workspace is a folder, `<state>/workspaces/<ticket>/`, made when
-the ticket is first offered and kept for the reviewer and for any further turn. Nothing is
-merged; approval is done. The result of a task is whatever the worker left there (the demo's
-worker writes `RESULT.md`) and its report.
+the ticket is first offered and kept for the reviewer and for any further turn. It is empty at
+first and holds nothing of the repository: a task about the repository says so in its own words
+(the demo's worker runs its commands there with `ORCHESTRA_REPO` naming the repository; the
+README's section on writing tickets has the rule). Nothing is merged; approval is done. The
+result of a task is whatever the worker left there (the demo's worker writes `RESULT.md`) and
+its report.
 
 **`code`**: the workspace is a git worktree at `<state>/worktrees/<ticket>/` on a branch
 `orchestra/<ticket>-<slug>` from `base_branch`, reused by every turn, removed when the ticket is

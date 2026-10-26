@@ -18,7 +18,7 @@ removes the state a previous run left for that path (under `~/.orchestrator/<nam
 | `orchestra run` | Orchestra's host: the Core strip shows it up, and it rediscovers the system dynamics model from the metrics |
 | `orchestra web --port 8071` | Orchestra's web UI, with the task system's Tickets page, Tasks panel and scheduler card (its plugin) |
 | `tasking run` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back |
-| `machines/shell_worker.py` | the machine `worker` (instance `worker/1`): runs the `sh` code blocks of a ticket's description in its workspace, writes RESULT.md |
+| `machines/shell_worker.py` | the machine `worker` (instance `worker/1`): runs the `sh` code blocks of a ticket's description in its workspace (the ticket's own empty folder; `ORCHESTRA_REPO` names the repository), writes RESULT.md |
 | `machines/check_reviewer.py` | the machine `reviewer` (`reviewer/1`): approves when RESULT.md exists and the acceptance text's `` `files` `` and `"lines"` are there |
 
 The two machines are each a page of Python that imports only Orchestra (`orchestra.config`,
@@ -34,8 +34,11 @@ poll, too short to see). Were a role unfilled, its offers would be re-offered ev
 (`task.assigned`/`task.released` pairs on the bus) and the card would say "offered to a worker
 Nm ago", growing from the first offer.
 
-- **DEMO-1 Say hello** and **DEMO-2 Report the Python version** (which depends on DEMO-1) went
-  OPEN → IN_PROGRESS → READY_FOR_REVIEW → IN_REVIEW → APPROVED → DONE.
+- **DEMO-1 Say hello** and **DEMO-2 Count the lines in the project's README** (which depends on
+  DEMO-1) went OPEN → IN_PROGRESS → READY_FOR_REVIEW → IN_REVIEW → APPROVED → DONE. DEMO-1 makes
+  its own file in the ticket's folder; DEMO-2 is about the repository, so its command goes there
+  first (`cd "$ORCHESTRA_REPO" && …`): the rule for writing tickets is in the repository's
+  README.
 - **DEMO-3 Decide the project's name** has no commands: the worker reported it BLOCKED, saying
   so. A banner on every page says a ticket waits for a decision.
 - **DEMO-4 Write today's date** asks for a file nothing writes: the reviewer rejected it with the

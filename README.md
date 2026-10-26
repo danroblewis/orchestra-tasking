@@ -34,6 +34,30 @@ Then run something that fills the roles (`demo/machines/` as they are, or your o
 are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
 `~/.orchestrator/<key>/tasks/`; events go on Orchestra's bus.
 
+## Writing tickets for the demo's worker
+
+The demo's worker (`demo/machines/shell_worker.py`) runs the ```` ```sh ```` blocks of a ticket's
+description, in order, each with `bash -c`, **in the ticket's workspace**: a folder of the
+ticket's own under `~/.orchestrator/<key>/tasks/workspaces/<ticket>/`, empty at the first turn
+and kept for later turns and for the reviewer. Nothing of the repository is there. So a ticket:
+
+- makes and inspects its own files there (`echo hi > hello.txt`, `cat hello.txt`) and names
+  them in the acceptance (`` `hello.txt` ``) for the reviewer to check;
+- when it is about the repository, says so: the worker sets `ORCHESTRA_REPO` to the
+  repository's path for every command, so `cd "$ORCHESTRA_REPO" && wc -w README.md`. A command
+  that assumes the repository silently (`wc -w README.md`, `ls -1`) runs in the empty folder,
+  fails, and is rejected every time. RESULT.md's second line says where the commands ran;
+- writes the acceptance so a program can check it: a file in backticks exists in the
+  workspace, a `"text"` appears in RESULT.md; the reviewer leaves anything else to a person
+  and says so.
+
+A rejected ticket comes back to the worker with the reviewer's feedback. The worker cannot
+change commands on feedback, so unless a planner changed the description or the acceptance
+first it reports BLOCKED, with the reviewer's first point in the reason and the whole feedback
+quoted under it: that is what a planner reads in the banner and acts on. Any other demo that
+uses this worker (the agents' demo in orchestra-agents copies it) writes its tickets the same
+way.
+
 ## Tests
 
     uv run python -m pytest -q         # about two minutes: the e2e tests drive whole tickets, one suite through a real Orchestra

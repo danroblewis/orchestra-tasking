@@ -3,17 +3,20 @@
 It fills the task system's ``worker`` role by speaking the assignment protocol on Orchestra's bus
 (orchestra-tasking: tasking/assignments.py), using nothing but Orchestra's library. On
 ``task.assigned`` for a worker it accepts, runs the commands the ticket's description gives in
-fenced ``sh`` blocks, in the ticket's workspace, writes what they printed to RESULT.md, says it
-is still working while they run, and reports READY_FOR_REVIEW. It reports BLOCKED when the
-ticket gives no commands, or was rejected and running the same commands again could only give
-the same result: a program cannot act on a reviewer's words, so it hands the decision back. A
-``task.released`` for its assignment stops the commands.
+fenced ``sh`` blocks, in the ticket's workspace (a folder of the ticket's own, empty at first;
+nothing of the repository is there, and ``ORCHESTRA_REPO`` names the repository for a command
+that wants it: ``cd "$ORCHESTRA_REPO" && …``), writes what they printed to RESULT.md, says it is
+still working while they run, and reports READY_FOR_REVIEW. It reports BLOCKED when the ticket
+gives no commands, or was rejected and running the same commands again could only give the same
+result: a program cannot act on a reviewer's words, so it hands the decision back, with the
+reviewer's words in the reason. A ``task.released`` for its assignment stops the commands.
 
     python machines/shell_worker.py [instance]      # the machine ``worker``, instance 1 by default
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -33,7 +36,9 @@ BLOCK = re.compile(r"```(?:sh|bash|shell)\s*\n(.*?)```", re.DOTALL)
 
 def main(instance: str) -> None:
     me = f"{ROLE}/{instance}"
-    events = Events.for_project(load_project(), source=me)
+    project = load_project()
+    events = Events.for_project(project, source=me)
+    env = {**os.environ, "ORCHESTRA_REPO": str(project.repo_root)}   # what every command runs with
     events.publish("orchestra.machine.started", {"mode": "continuous", "kind": "program", "listens_for": [ASSIGNED, RELEASED],
                                                  "does": "runs the `sh` code blocks of a ticket's description in its workspace"})
     print(f"{me}: waiting for {ROLE} assignments", flush=True)
@@ -44,15 +49,15 @@ def main(instance: str) -> None:
         for ev in evs:
             d = ev.get("data") or {}
             if ev.get("type") == ASSIGNED and d.get("role") == ROLE:
-                jobs[d["assignment"]] = Job(events, me, d, jobs)
+                jobs[d["assignment"]] = Job(events, me, d, jobs, env)
             elif ev.get("type") == RELEASED and d.get("assignment") in jobs and d.get("instance") in (None, me):
                 jobs[d["assignment"]].stop()            # the lease ran out, the operator stopped it, or another holds it
         time.sleep(0.5)
 
 
 class Job:
-    def __init__(self, events: Events, me: str, offer: dict, jobs: dict):
-        self.events, self.me, self.offer, self.jobs = events, me, offer, jobs
+    def __init__(self, events: Events, me: str, offer: dict, jobs: dict, env: dict[str, str]):
+        self.events, self.me, self.offer, self.jobs, self.env = events, me, offer, jobs, env
         self.folder = Path(offer["workspace"])
         self.released, self.done = threading.Event(), threading.Event()
         self.proc: subprocess.Popen | None = None
@@ -98,9 +103,11 @@ class Job:
             return {"state": "BLOCKED", "summary": "rejected, and the same commands would give the same result",
                     "blocked_reason": "The reviewer wants what these commands never produce, and this worker cannot change commands "
                                       f"on feedback: {first}. Changed commands or acceptance criteria, then an unblock, would move it.\n\n{quoted}"}
-        lines, codes, last = [f"# {tid}: {brief.get('title', '')}", ""], [], ""
+        lines = [f"# {tid}: {brief.get('title', '')}", "", f"Ran in {self.folder} (ORCHESTRA_REPO={self.env['ORCHESTRA_REPO']}).", ""]
+        codes, last = [], ""
         for c in commands:
-            self.proc = subprocess.Popen(["bash", "-c", c], cwd=self.folder, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            self.proc = subprocess.Popen(["bash", "-c", c], cwd=self.folder, env=self.env,
+                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             try:
                 last, _ = self.proc.communicate(timeout=COMMAND_TIMEOUT_S)
             except subprocess.TimeoutExpired:
