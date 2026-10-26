@@ -320,3 +320,16 @@ def test_mcp_server_serves_the_role_tools(project, tmp_path):
     finally:
         w.close()
     assert store.pop_report(t.id)["state"] == "READY_FOR_REVIEW"
+
+
+def test_claude_transcript_folder_is_named_as_claude_names_it(tmp_path, monkeypatch):
+    """Claude Code turns every character of the working directory that is not a letter or a digit
+    into "-": a folder under ~/.orchestrator is ...--orchestrator-..., not ...-.orchestrator-....
+    Getting it wrong made every second turn start a new session with a used id, which Claude
+    refuses ("Session ID ... is already in use")."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    cwd = tmp_path / ".orchestrator" / "tasks_1" / "TK-1"
+    cwd.mkdir(parents=True)
+    key = "".join(c if c.isascii() and c.isalnum() else "-" for c in str(cwd.resolve()))
+    assert transcript_path(cwd, "u") == tmp_path / "claude" / "projects" / key / "u.jsonl"
+    assert "--orchestrator-tasks-1-TK-1" in key

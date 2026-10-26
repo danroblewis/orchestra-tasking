@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -71,9 +72,13 @@ def main() -> None:
     env = mcp_cfg.get("env", {})
     role, ticket = env.get("ORCHESTRA_ROLE", ""), env.get("ORCHESTRA_TICKET", "")
     cwd = Path.cwd()
-    tdir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects" / str(cwd.resolve()).replace("/", "-")
+    projects = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    tdir = projects / re.sub(r"[^A-Za-z0-9]", "-", str(cwd.resolve()))   # as Claude Code names it
     tdir.mkdir(parents=True, exist_ok=True)
     transcript = tdir / f"{sid}.jsonl"
+    if arg("--session-id") and any(projects.glob(f"*/{sid}.jsonl")):     # as Claude Code refuses it
+        print(f"Error: Session ID {sid} is already in use.", file=sys.stderr)
+        sys.exit(1)
 
     def record(entry_type: str, content) -> None:
         with transcript.open("a") as f:

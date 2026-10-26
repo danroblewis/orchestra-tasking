@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -27,8 +28,9 @@ def claude_config_dir() -> Path:
 
 
 def transcript_path(cwd: Path, session_uuid: str) -> Path:
-    """Where Claude Code writes the session: projects/<cwd with / as ->/<uuid>.jsonl."""
-    key = str(Path(cwd).resolve()).replace("/", "-")
+    """Where Claude Code writes the session: projects/<cwd with every character but letters and
+    digits as ->/<uuid>.jsonl (so /Users/me/.orchestrator/x is -Users-me--orchestrator-x)."""
+    key = re.sub(r"[^A-Za-z0-9]", "-", str(Path(cwd).resolve()))
     return claude_config_dir() / "projects" / key / f"{session_uuid}.jsonl"
 
 
