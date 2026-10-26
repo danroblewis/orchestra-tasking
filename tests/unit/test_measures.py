@@ -49,4 +49,4 @@ def test_agent_turns(store):
     store.set_session("worker-T-1", status="idle")
     store.measure_turn("worker", "worker/1", started=False)
     assert m.latest("tasks_agents_working", {"project": store.project.key, "role": "worker", "machine": "worker"})[1] == 0
-    assert m.latest("tasks_agent_turns_finished_total", {"project": store.project.key, "machine": "worker"})[1] == 1
+    assert m.latest("tasks_agent_turns_finished_total", {"project": store.project.key, "role": "worker", "machine": "worker"})[1] == 1
