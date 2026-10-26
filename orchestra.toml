@@ -1,6 +1,4 @@
-# Orchestra watching this repository's simulated team from outside. The team never talks to
-# Orchestra: it uses its tracker (Beads). Getting the tracker's events and numbers into Orchestra
-# is the open question this project is for.
+# Orchestra watching this repository's task system.
 
 [events]
 url = "redis://127.0.0.1:6379/3"

@@ -1,10 +1,3 @@
-# Beads / Dolt (bd init)
-.dolt/
-*.db
-.beads-credential-key
-.beads/proxieddb/
-*.gate.lock*
-# the simulation
 run/
 .venv/
 __pycache__/
