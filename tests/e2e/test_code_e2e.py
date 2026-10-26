@@ -6,7 +6,7 @@ import threading
 import time
 
 import pytest
-from conftest import git
+from conftest import git, run_scheduler
 from fake_machine import FakeMachine
 
 from tasking import scheduler as scheduler_mod
@@ -28,12 +28,6 @@ def env(project):
     store = LocalStore(project, events)
     ms = store.create_milestone(name="m")
     return project, store, events, ms, repo
-
-
-def run_scheduler(project, store, events, **behaviour):
-    with FakeMachine(events, **behaviour) as m:
-        Scheduler(project, store, events).run(once=True)
-    return m
 
 
 def test_ticket_goes_open_to_done(env):

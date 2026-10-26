@@ -5,16 +5,13 @@ import os
 import time
 
 import pytest
+from conftest import on_bus
 
 from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, WORKING, Follower
 from tasking.events import Events
 from tasking.model import State
 from tasking.scheduler import Scheduler
 from tasking.store import LocalStore
-
-
-def on_bus(events, type_):
-    return [e for e in events.bus.read(0, limit=10000)[0] if e["type"] == type_]
 
 
 def test_a_second_scheduler_on_a_project_a_live_one_holds_does_not_start(project):

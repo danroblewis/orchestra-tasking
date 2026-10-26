@@ -1,12 +1,15 @@
 """What the tests share: a project in a fresh git repository under a temporary home, a free port,
-and what the task system asked a planner to look at."""
+the scheduler run once with a fake machine, what is on the bus, and waiting for something."""
 
 import socket
 import subprocess
+import time
 
 import pytest
+from fake_machine import FakeMachine
 
 from tasking.config import init_project
+from tasking.scheduler import Scheduler
 
 UNIT = "test -f README.md && test ! -f BROKEN"     # the starter unit command: passes unless a worker breaks the tree
 
@@ -48,3 +51,26 @@ def asked(events, to):
     """What the task system asked the planner ``to`` to look at: its attention events on the bus."""
     return [e["data"] for e in events.bus.read(0, limit=100000)[0]
             if e.get("type") == "task.attention_needed" and (e.get("data") or {}).get("to") == to]
+
+
+def on_bus(events, type_, **match):
+    """The events of ``type_`` on the bus whose data has every ``match`` field, in order."""
+    return [e for e in events.bus.read(0, limit=10000)[0]
+            if e["type"] == type_ and all((e["data"] or {}).get(k) == v for k, v in match.items())]
+
+
+def run_scheduler(project, store, events, **behaviour):
+    """The scheduler until nothing is left to do, with a fake machine (tests/fake_machine.py)
+    filling the roles as ``behaviour`` says; the machine, for what it saw."""
+    with FakeMachine(events, **behaviour) as m:
+        Scheduler(project, store, events).run(once=True)
+    return m
+
+
+def wait_for(check, timeout_s=5.0):
+    end = time.time() + timeout_s
+    while time.time() < end:
+        if check():
+            return
+        time.sleep(0.05)
+    raise AssertionError("did not happen in time")

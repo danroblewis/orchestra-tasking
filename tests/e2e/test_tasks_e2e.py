@@ -7,6 +7,7 @@ import subprocess
 import time
 
 import pytest
+from conftest import on_bus, run_scheduler, wait_for
 from fake_machine import FakeMachine
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -27,28 +28,9 @@ def env(project):
     return project, LocalStore(project, events), events, project.repo_root
 
 
-def run_scheduler(project, store, events, **behaviour):
-    with FakeMachine(events, **behaviour) as m:
-        Scheduler(project, store, events).run(once=True)
-    return m
-
-
 def a_ticket(store):
     ms = store.create_milestone(name="m")
     return store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
-
-
-def on_bus(events, type_, **match):
-    return [e for e in events.bus.read(0, limit=10000)[0] if e["type"] == type_ and all((e["data"] or {}).get(k) == v for k, v in match.items())]
-
-
-def wait_for(check, timeout_s=5.0):
-    end = time.time() + timeout_s
-    while time.time() < end:
-        if check():
-            return
-        time.sleep(0.05)
-    raise AssertionError("did not happen in time")
 
 
 def test_a_task_is_done_in_its_folder_and_reviewed_with_nothing_merged(env):

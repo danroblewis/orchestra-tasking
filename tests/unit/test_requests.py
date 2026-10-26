@@ -1,9 +1,7 @@
 """Planners' changes are requests to the task system over the bus (tasking/requests.py)."""
 
-import time
-
 import pytest
-from conftest import asked
+from conftest import asked, wait_for
 
 from tasking.events import Events
 from tasking.model import State
@@ -21,9 +19,15 @@ def env(project):
     desk.stop.set()
 
 
-def refusals(p) -> list[str]:
-    """The errors the desk answered with, in order, as they are on the bus."""
-    return [e["data"]["error"] for e in Events.for_project(p, source="test").bus.read(0, limit=10000)[0] if e["type"] == "request.refused"]
+def answered(p) -> dict[str, dict]:
+    """request id -> its answer (the request.done or request.refused event), in the order the desk
+    answered, as they are on the bus."""
+    return {e["data"]["request"]: e for e in Events.for_project(p, source="test").bus.read(0, limit=10000)[0]
+            if e["type"] in ("request.done", "request.refused")}
+
+
+def kinds(p) -> dict[str, str]:
+    return {r: e["type"] for r, e in answered(p).items()}
 
 
 def test_a_planners_change_is_a_request_the_scheduler_applies_and_answers(env):
@@ -55,6 +59,7 @@ def test_every_operation_is_answered(env):
     p, store = env
     planner = Events.for_project(p, source="planner")
     do = lambda op, args: ask(planner, op, args, "planner")
+    refusal = lambda: list(answered(p).values())[-1]["data"]["error"]   # the last answer's error, on the bus
     m = do("create_milestone", {"name": "M", "description": "d"})["milestone"]
     t = do("create_ticket", {"title": "a", "milestone_id": m["id"]})["ticket"]["id"]
     assert do("add_note", {"id": t, "text": "hi"})["ok"] and store.notes(t)[0] == {**store.notes(t)[0], "author": "planner", "text": "hi"}
@@ -62,20 +67,20 @@ def test_every_operation_is_answered(env):
 
     x = store.get_ticket(t)
     store.transition(t, x.version, State.IN_PROGRESS)
-    assert do("cancel_ticket", {"id": t, "reason": "no"})["ok"] is False and f"{t} is IN_PROGRESS" in refusals(p)[-1]
+    assert do("cancel_ticket", {"id": t, "reason": "no"})["ok"] is False and f"{t} is IN_PROGRESS" in refusal()
     x = store.get_ticket(t)
     store.transition(t, x.version, State.OPEN)
     assert do("cancel_ticket", {"id": t, "reason": "no"})["ticket"]["state"] == "CANCELLED"
 
     u = do("create_ticket", {"title": "b", "milestone_id": m["id"]})["ticket"]["id"]
-    assert do("unblock_ticket", {"id": u, "note": "n"})["ok"] is False and f"{u} is OPEN, not BLOCKED" in refusals(p)[-1]
+    assert do("unblock_ticket", {"id": u, "note": "n"})["ok"] is False and f"{u} is OPEN, not BLOCKED" in refusal()
     x = store.get_ticket(u)
     x = store.transition(u, x.version, State.IN_PROGRESS)
     store.transition(u, x.version, State.BLOCKED, blocked_reason="r")
     assert do("unblock_ticket", {"id": u, "note": "n"})["ticket"]["state"] == "OPEN"
 
     assert do("update_milestone", {"id": m["id"], "name": "N"})["milestone"]["name"] == "N"
-    assert do("close_milestone", {"id": m["id"]})["ok"] is False and f"unfinished tickets {u}" in refusals(p)[-1]
+    assert do("close_milestone", {"id": m["id"]})["ok"] is False and f"unfinished tickets {u}" in refusal()
     do("cancel_ticket", {"id": u})
     assert do("close_milestone", {"id": m["id"]})["milestone"]["status"] == "closed"
 
@@ -89,7 +94,7 @@ def test_every_operation_is_answered(env):
     assert {"tickets", "milestones", "counts", "capacity", "assignments", "gate_runs", "pipeline"} <= set(do("snapshot", {})["snapshot"])
     assert set(do("get_capacity", {})["capacity"]) == {"workers", "reviewers", "max_workers", "max_reviewers", "note"}
     assert do("list_gate_runs", {})["runs"] == []
-    assert do("get_gate_run", {"id": "nope"})["ok"] is False and "no gate run nope" in refusals(p)[-1]
+    assert do("get_gate_run", {"id": "nope"})["ok"] is False and "no gate run nope" in refusal()
     assert set(do("get_staging_status", {})) == {"ok", "staging", "log_tail"}
 
 
@@ -109,22 +114,9 @@ def test_a_query_with_an_unknown_op_is_refused(env):
     p, _store = env
     planner = Events.for_project(p, source="planner")
     planner.publish("task.query_requested", {"request": "x1", "op": "list_ticket", "args": {}, "by": "planner"})
-    wait_for(lambda: any(e["data"]["request"] == "x1" for e in refused_events(p)))
-    answer = next(e["data"] for e in refused_events(p) if e["data"]["request"] == "x1")
-    assert answer["error"].startswith("no query op 'list_ticket'; queries: list_tickets, get_ticket")
-
-
-def refused_events(p) -> list[dict]:
-    return [e for e in Events.for_project(p, source="test").bus.read(0, limit=10000)[0] if e["type"] == "request.refused"]
-
-
-def wait_for(check, timeout_s=5.0):
-    end = time.time() + timeout_s
-    while time.time() < end:
-        if check():
-            return
-        time.sleep(0.05)
-    raise AssertionError("did not happen in time")
+    wait_for(lambda: "x1" in answered(p))
+    answer = answered(p)["x1"]
+    assert answer["type"] == "request.refused" and answer["data"]["error"].startswith("no query op 'list_ticket'; queries: list_tickets, get_ticket")
 
 
 def test_reads_are_queries_the_desk_answers(env):
@@ -134,12 +126,6 @@ def test_reads_are_queries_the_desk_answers(env):
     assert got["ok"] and [m["id"] for m in got["milestones"]] == ["M1"]
     queries = [e for e in Events.for_project(p, source="test").bus.read(0, limit=100)[0] if e["type"] == "task.query_requested"]
     assert [(e["data"]["op"], e["source"]) for e in queries] == [("list_milestones", "coordinator")]
-
-
-def answers(p) -> dict[str, str]:
-    """request id -> the type of its answer, as they are on the bus."""
-    return {e["data"]["request"]: e["type"] for e in Events.for_project(p, source="test").bus.read(0, limit=10000)[0]
-            if e["type"] in ("request.done", "request.refused")}
 
 
 def test_a_request_made_while_no_desk_ran_is_answered_when_one_starts(project):
@@ -166,15 +152,16 @@ def test_a_request_made_while_no_desk_ran_is_answered_when_one_starts(project):
     assert [t.title for t in store.list_tickets()] == []
     second = new_desk()
     second.start()
-    wait_for(lambda: {"fresh", "stale"} <= set(answers(project)))
+    wait_for(lambda: {"fresh", "stale"} <= set(answered(project)))
     second.stop.set()
     second.thread.join()
-    assert answers(project)["fresh"] == "request.done" and answers(project)["stale"] == "request.refused"
-    assert "no scheduler was running when this was asked" in refusals(project)[-1] and "ask again" in refusals(project)[-1]
+    assert kinds(project)["fresh"] == "request.done" and kinds(project)["stale"] == "request.refused"
+    stale = answered(project)["stale"]["data"]["error"]
+    assert "no scheduler was running when this was asked" in stale and "ask again" in stale
     assert [t.title for t in store.list_tickets()] == ["fresh"]
-    before = answers(project)
+    before = kinds(project)
     new_desk().serve()                                      # a third desk: everything before it is answered already
-    assert answers(project) == before
+    assert kinds(project) == before
 
 
 def test_a_desk_that_stops_halfway_through_a_batch_answers_nothing_twice(project, monkeypatch):
@@ -197,9 +184,9 @@ def test_a_desk_that_stops_halfway_through_a_batch_answers_nothing_twice(project
     store.set_desk(0, [])                                   # a desk ran before: read from the start
     with pytest.raises(KeyboardInterrupt):
         Desk(project, store, events, log=lambda m: None).serve()
-    assert answers(project) == {"m": "request.done", "a": "request.done"}
+    assert kinds(project) == {"m": "request.done", "a": "request.done"}
     monkeypatch.setattr(api, "handle", handle)
     Desk(project, store, events, log=lambda m: None).serve()
-    assert answers(project) == {"m": "request.done", "a": "request.done", "b": "request.done"}
+    assert kinds(project) == {"m": "request.done", "a": "request.done", "b": "request.done"}
     assert sorted(t.title for t in store.list_tickets()) == ["a", "b"]   # a was not created twice
     assert store.desk()["answered"] == []
