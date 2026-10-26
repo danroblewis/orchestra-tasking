@@ -26,16 +26,17 @@
 
     function render() {
       if (!D) return;
-      const says = (t) => {
+      const says = (t) => {   // one line: a blocker's first paragraph, without its markdown backticks (the drawer has it whole)
         if (t.assignment) return t.assignment.instance ? `${t.assignment.instance} · since ${ago(t.assignment.since)}` : `offered to a ${t.assignment.role} ${ago(t.assignment.since)} ago`;
-        return t.state === "BLOCKED" ? t.blocked_reason || t.waiting : t.waiting || ""; };
+        return t.state === "BLOCKED" ? (t.blocked_reason || t.waiting || "").split(/\n\s*\n/)[0].replace(/`/g, "") : t.waiting || ""; };
       const q = ORDER.filter((s) => D.counts[s]).map((s) => `<span style="white-space:nowrap"><span class="pill" style="--c:${color(s)}">${esc(s.replace(/_/g, " "))}</span> <b class="num">${D.counts[s]}</b></span>`).join(" ");
       const cards = D.tickets.map((t) => `<div class="work" style="--c:${color(t.state)}" onclick="TasksPanel.ticket('${esc(t.id)}')" title="Open the ticket">
           <div class="top"><span><span class="id">${esc(t.id)}</span> <span class="title">${esc(t.title)}</span></span>
             <span class="right">${turns(t)}<span class="pill">${esc(t.state.replace(/_/g, " "))}</span></span></div>
           <div class="lane"><span class="msg">${esc(says(t))}</span></div></div>`).join("");
-      const open = D.counts.OPEN || 0, done = D.counts.DONE || 0, blocked = D.counts.BLOCKED || 0, held = D.tickets.filter((t) => t.assignment).length;
-      ui.setSub(`${held} being worked · ${blocked} blocked · ${open} waiting to start · ${done} done${D.scheduler ? "" : " · the scheduler is not running"}`);
+      const open = D.counts.OPEN || 0, done = D.counts.DONE || 0, blocked = D.counts.BLOCKED || 0;
+      const held = D.tickets.filter((t) => t.assignment && t.assignment.instance).length, offered = D.tickets.filter((t) => t.assignment && !t.assignment.instance).length;
+      ui.setSub(`${held} being worked${offered ? ` · ${offered} offered` : ""} · ${blocked} blocked · ${open} waiting to start · ${done} done${D.scheduler ? "" : " · the scheduler is not running"}`);
       body.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin-bottom:10px">
           <span style="flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:6px">${q || '<span class="muted">no tickets yet</span>'}</span>
           <span style="display:flex;gap:10px;align-items:center;font-size:11.5px;color:var(--text2)">${taskControls(D, "TasksPanel")}</span></div>

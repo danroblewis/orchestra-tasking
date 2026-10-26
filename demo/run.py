@@ -29,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 PYTHON = sys.executable
 PLAN = {"milestone": {"name": "Demo", "description": "Four tasks done by programs: two succeed, two need a decision."},
         "tickets": [
-            {"title": "Say hello", "description": "Write a greeting into a file and show it.\n\n```sh\necho 'hello from the task system' > hello.txt\ncat hello.txt\n```",
+            {"title": "Say hello", "description": "Write a greeting into a file and show it.\n\n```sh\nsleep 4\necho 'hello from the task system' > hello.txt\ncat hello.txt\n```",
              "acceptance": "- `hello.txt` exists\n- RESULT.md shows \"hello from the task system\""},
             {"title": "Report the Python version", "depends_on": [0], "description": "```sh\npython3 --version\n```",
              "acceptance": "- RESULT.md shows \"Python 3\""},
@@ -137,6 +137,10 @@ def plan(target: Path) -> list[str]:
 
 
 def interrupt(*_) -> None:
+    """A signal stops everything, once: a second one while stopping (a `kill` of the uv chain
+    sends two) changes nothing."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     raise KeyboardInterrupt
 
 
@@ -146,6 +150,7 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8071)
     a = ap.parse_args()
     signal.signal(signal.SIGTERM, interrupt)          # `kill` stops everything, like Ctrl-C
+    signal.signal(signal.SIGINT, interrupt)
     target, url = make_project(a.target.expanduser().resolve()), f"http://127.0.0.1:{a.port}"
     procs = start(target, a.port)
     try:
@@ -159,8 +164,6 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nstopping", flush=True)
     finally:
-        for sig in (signal.SIGTERM, signal.SIGINT):      # a second signal while stopping (a `kill` of the uv chain sends two) changes nothing
-            signal.signal(sig, signal.SIG_IGN)
         stop(procs)
 
 

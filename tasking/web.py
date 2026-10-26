@@ -9,12 +9,11 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from orchestra.plugins import Declared, Page, Plugin
 
 from .config import Project
-from .events import Events
-from .model import State
+from .events import SCHEDULER, Events
 from .procs import alive
 from .store import LocalStore, StoreError
 
@@ -30,13 +29,16 @@ def plugin(orchestra_project) -> Plugin:
 
 
 def declared() -> list[Declared]:
-    """The machines the task system provides, for Orchestra's Machines page before they are seen."""
-    return [Declared("task_scheduler", "program", "Offers ready tickets to workers and reviewers and applies their reports.", "continuous"),
-            Declared(WEB, "program", "The operator's controls in Orchestra's web UI.", "ad hoc")]
+    """The machine the task system provides, for Orchestra's Machines page before it is seen. The
+    operator's controls publish as ``task_web`` and appear there by observation once used."""
+    return [Declared(SCHEDULER, "program", "Offers ready tickets to workers and reviewers and applies their reports.", "continuous")]
 
 
 def router(project: Project) -> APIRouter:
-    r = APIRouter()
+    def fresh() -> None:
+        project.reload_config()                       # orchestra.toml, re-read once per request: the capacity ceiling is live
+
+    r = APIRouter(dependencies=[Depends(fresh)])
     store = LocalStore(project, Events.for_project(project, source=WEB))
 
     def scheduler() -> dict:
@@ -45,10 +47,9 @@ def router(project: Project) -> APIRouter:
 
     @r.get("/state")
     async def state() -> dict:
-        """The Tickets page: the tickets with their readiness and effective priority, the
-        milestones, the counts by state, and whether the scheduler runs."""
-        project.reload_config()
-        return {**store.ticket_views(), "now": time.time(), "scheduler": scheduler()}
+        """The Tickets page: the tickets with their readiness and priority, the milestones, the
+        counts by state, and whether the scheduler runs."""
+        return {**store.ticket_views(), "scheduler": scheduler()}
 
     @r.post("/control")
     async def control(request: Request) -> dict:
@@ -75,10 +76,10 @@ def router(project: Project) -> APIRouter:
                 t = store.get_ticket(tid)
             except StoreError:
                 raise HTTPException(404)
-            if t.state not in (State.IN_PROGRESS, State.IN_REVIEW):
-                raise HTTPException(409, f"{tid} is {t.state}; nothing to stop")
+            if not any(a["ticket"] == tid for a in store.assignments().values()):
+                raise HTTPException(409, f"{tid} is {t.state} and neither held nor offered; nothing to stop")
             store.request_kill(tid, by="operator")
-            return {"ok": True, "ticket": tid, "will_reset_to": "OPEN" if t.state == State.IN_PROGRESS else "READY_FOR_REVIEW"}
+            return {"ok": True, "ticket": tid}
         raise HTTPException(400, "unknown action")
 
     @r.get("/tickets/{ticket_id}")
@@ -87,7 +88,7 @@ def router(project: Project) -> APIRouter:
             t = store.get_ticket(ticket_id)
         except StoreError:
             raise HTTPException(404)
-        return {**t.to_dict(), "notes": store.notes(ticket_id), "worktree": store.worktree(ticket_id)}
+        return {**t.to_dict(), "notes": store.notes(ticket_id)}
 
     @r.get("/attention")
     async def attention() -> dict:
@@ -99,16 +100,17 @@ def router(project: Project) -> APIRouter:
 
     @r.get("/board")
     async def board() -> dict:
-        """The Tasks panel: every ticket in flight (not waiting to start, not finished), with the
-        machine instance it is assigned to now (and since when it holds it, or since when it is
-        offered), newest activity first; and the queue by state, the capacity and the pause."""
+        """The Tasks panel: every ticket in flight (not waiting to start, not finished; an offered
+        one counts), with the machine instance it is assigned to now (and since when it holds it,
+        or since when it is offered), newest activity first; and the queue by state, the capacity
+        and the pause."""
         views = store.ticket_views()
         held = {a["ticket"]: a for a in store.assignments().values()}
         waiting = {"READY_FOR_REVIEW": "waiting for a reviewer", "REJECTED": "rejected: waiting for its worker",
                    "APPROVED": "approved", "BLOCKED": "blocked: waiting for a decision"}
         flight = []
         for t in views["tickets"]:
-            if t["state"] in ("OPEN", "DONE", "CANCELLED"):
+            if t["state"] in ("OPEN", "DONE", "CANCELLED") and t["id"] not in held:
                 continue
             a = held.get(t["id"])
             flight.append({**{k: t.get(k) for k in ("id", "title", "state", "state_since", "worker_turns", "reviewer_rejections",

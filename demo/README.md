@@ -28,7 +28,8 @@ how to write a machine that takes work from the task system.
 ## What you will see
 
 `run.py` creates one milestone and four tickets as a planner would (requests over the bus). The
-whole run takes about fifteen seconds, so what you mostly see is the end state:
+whole run takes about twenty seconds; DEMO-1 sleeps for four of them, so the Tasks panel shows
+`worker/1 · since Ns` and then `reviewer/1 · since Ns` on its card before the end state:
 
 - **DEMO-1 Say hello** and **DEMO-2 Report the Python version** (which depends on DEMO-1) went
   OPEN → IN_PROGRESS → READY_FOR_REVIEW → IN_REVIEW → APPROVED → DONE.
@@ -43,16 +44,37 @@ Where to look, at http://127.0.0.1:8071:
 - **Dashboard**: the Tasks panel (cards for the tickets in flight, which instance holds each or
   what it waits for, the queue by state, the capacity and pause controls); the Machines panel
   lists the scheduler as one line; the Core strip shows the host, bus and metrics store up.
-- **Tickets**: the graph of milestones and tickets; click one for its description, acceptance,
-  notes (the worker's summary, the reviewer's verdict) and the blocker or feedback.
+- **Tickets**: the graph of milestones and tickets; done tickets are hidden, so click the
+  milestone (2/4 done) or tick "show done tickets" to see DEMO-1 and DEMO-2. Click a ticket for
+  its description, acceptance, notes (the worker's summary, the reviewer's verdict) and the
+  blocker or feedback.
 - **Machines**: `task_scheduler` (package tasks, with the task queue card), `worker` and
   `reviewer` as observed from the bus, `planner` (run.py's one-shot requests; it announces
   nothing) and `orchestra-host`; what each publishes and listens for, and the event map between
   them: `task.assigned` from the scheduler, `task.accepted`/`task.reported` from the machines,
-  `task.requested` from the planner, `request.done` back.
-- **Dynamics**: empty at first; it fills in once discovery has run over the metrics (every 5
-  minutes, `[discovery] every` in orchestra.toml).
+  `task.requested` from the planner, `request.done` back. `task_web` appears once an operator
+  control has been pressed.
+- **Dynamics**: empty. Discovery looks at a 60-minute window on a 30-second grid (`[discovery]`
+  in orchestra.toml), and the demo's twenty seconds of ticket changes are far too few for it to
+  find a model; left running, it may show a thin one after a while. A meaningful model is shown
+  on the sample project, not here.
 - **Core**: the event log itself.
 
-Logs: `run/host.log`, `run/web.log`, `run/scheduler.log`, `run/worker.log`, `run/reviewer.log`
-in the target.
+## To go on
+
+The two blocked tickets wait for a planner. DEMO-4 is unblocked by dropping the criterion
+nothing can meet and saying so, from the demo target (or anywhere, with `ORCHESTRA_REPO` set to
+it):
+
+    uv run tasking api --as planner update_ticket --args '{"id": "DEMO-4", "acceptance": "- `today.txt` exists"}'
+    uv run tasking api --as planner unblock_ticket --args '{"id": "DEMO-4", "note": "dropped the impossible criterion"}'
+
+The ticket goes back to OPEN with the planner's note as its feedback, the scheduler offers it to
+the worker again, the worker runs the same commands (the ticket changed, so it does not block),
+the reviewer finds `today.txt`, and DEMO-4 is DONE. DEMO-3 needs commands in its description
+(`update_ticket` with a `description`) before an unblock would get anywhere.
+
+Logs: `run/host.log`, `run/web.log`, `run/scheduler.log` (the scheduler's stdout),
+`run/worker.log`, `run/reviewer.log` in the target; and
+`~/.orchestrator/<name>-<hash>/tasks/logs/scheduler.log`, the scheduler's own log, the one the
+Machines page opens.

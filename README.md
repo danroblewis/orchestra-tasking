@@ -15,17 +15,20 @@ page of Python using only Orchestra's library (`demo/machines/`). `SPEC.md` is t
     uv sync --extra dev
     uv run demo/run.py                 # a fresh demo project at ~/orchestra-tasking-demo, http://127.0.0.1:8071
 
-Four tickets are created and worked by the two programs; in about fifteen seconds two are done
+Four tickets are created and worked by the two programs; in about twenty seconds two are done
 and two are blocked for a planner to decide. `demo/README.md` says what you will see and where.
-Ctrl-C stops everything.
+Ctrl-C stops everything; remove `~/orchestra-tasking-demo` first to run it again.
 
 ## Use it on a repository
 
+The commands run from this repository's environment (`--project <this repo>`), since the target
+repository need not have Orchestra or the task system installed:
+
     cd <repo> && uv run --project <this repo> tasking init     # the task system's sections in orchestra.toml
-    uv run orchestra web                                        # Orchestra's UI with the Tickets page
-    uv run tasking run                                          # the scheduler
-    uv run tasking api --as planner create_milestone --args '{"name": "First"}'
-    uv run tasking api --as planner create_ticket --args '{"title": "…", "milestone_id": "M1", "description": "…", "acceptance": "…"}'
+    uv run --project <this repo> orchestra web                 # Orchestra's UI with the Tickets page
+    uv run --project <this repo> tasking run                   # the scheduler
+    uv run --project <this repo> tasking api --as planner create_milestone --args '{"name": "First"}'
+    uv run --project <this repo> tasking api --as planner create_ticket --args '{"title": "…", "milestone_id": "M1", "description": "…", "acceptance": "…"}'
 
 Then run something that fills the roles (`demo/machines/` as they are, or your own). Settings
 are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
@@ -47,5 +50,6 @@ setup for watching this repository with Orchestra itself: the TOML points the bu
 (`redis://127.0.0.1:6379/3`) and the metrics at a VictoriaMetrics on port 8428, and
 `orchestra-ctl start` runs Orchestra's host, its web UI on port 8060 and `tasking run` from this
 repository's `.venv`, with pids and logs under `run/`. No machine fills the worker and reviewer
-roles there, so tickets created in it are offered and offered again; it is a watching setup, not
-a working one. Nothing else in the repository depends on either file.
+roles there, and the capacity is zero (`[tasks] workers = 0`, `reviewers = 0`), so nothing is
+offered: it is a watching setup, not a working one. Nothing else in the repository depends on
+either file.

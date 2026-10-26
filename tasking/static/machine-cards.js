@@ -14,15 +14,19 @@
     .tkc-more { text-align:right; font-size:10.5px; color:var(--muted); text-decoration:underline dotted; cursor:pointer; margin:6px 2px 0 }
     .tkc-q { display:flex; flex-wrap:wrap; gap:6px; margin:2px 0 6px }
     .tkc-q .pill { cursor:default } .tkc-q b { font-family:var(--mono); font-size:12px; margin-left:4px }
-    .tkc-sub { font-weight:400; text-transform:none; color:var(--muted); margin-left:6px }`;
+    .tkc-ctl { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:11.5px; color:var(--text2); margin:0 0 8px }
+    .tkc-sub { font-weight:400; font-size:12px; color:var(--muted); margin-left:6px }`;
   document.head.appendChild(css);
 
+  // The title as Orchestra's own card draws it: an activity dot and the name in an h3.
+  const title = (m) => `<h3><span class="dot ${m.active ? "" : "off"}" style="--rc:${typeof mcolor === "function" ? mcolor(m.id) : "#22c55e"}"></span>${esc(m.id)}`;
+
   function schedulerCard(m, compact) {
-    if (!D) return `<h2><span>task_scheduler</span></h2><div class="empty">reading…</div>`;
+    if (!D) return `${title(m)}</h3><div class="empty">reading…</div>`;
     const q = ORDER.filter((s) => D.counts[s]).map((s) => `<span><span class="pill" style="--c:${color(s)}">${esc(s.replace(/_/g, " "))}</span><b>${D.counts[s]}</b></span>`).join("")
       || '<span class="muted">no tickets yet</span>';
-    return `<h2><span>task_scheduler<span class="tkc-sub">· the task queue</span>${D.scheduler ? "" : ' <span style="color:#f87171;text-transform:none">· not running</span>'}</span>
-        <span class="hctl">${taskControls(D, "TaskCards")}</span></h2>
+    return `${title(m)}<span class="tkc-sub">· the task queue</span>${D.scheduler ? "" : '<span class="tkc-sub" style="color:#f87171">· not running</span>'}</h3>
+      <div class="tkc-ctl">${taskControls(D, "TaskCards")}</div>
       <div class="tkc-q">${q}</div>${more(m, compact)}`;
   }
 
@@ -32,8 +36,8 @@
     rank: () => 20,
     summary(m) {
       if (m.id !== "task_scheduler" || !D) return null;
-      const c = D.counts;
-      return `${(c.IN_PROGRESS || 0) + (c.IN_REVIEW || 0)} being worked · ${c.BLOCKED || 0} blocked · ${c.OPEN || 0} waiting`;
+      const held = D.tickets.filter((t) => t.assignment && t.assignment.instance).length, offered = D.tickets.filter((t) => t.assignment && !t.assignment.instance).length;
+      return `${held} being worked${offered ? ` · ${offered} offered` : ""} · ${D.counts.BLOCKED || 0} blocked · ${D.counts.OPEN || 0} waiting`;
     },
     card(m, { compact } = {}) { return m.id === "task_scheduler" ? schedulerCard(m, compact) : null; },
     open() { return false; },
@@ -43,7 +47,7 @@
     try {
       const d = await (await fetch(TASKS_API + "/board")).json();
       if (!d.ok) return;
-      const sig = JSON.stringify([d.counts, d.capacity, d.pickup_paused, d.scheduler]);
+      const sig = JSON.stringify([d.counts, d.capacity, d.pickup_paused, d.scheduler, d.tickets.map((t) => t.assignment && t.assignment.instance)]);
       D = d;
       if (force || sig !== last) { last = sig; Orchestra.machineCards.changed(); }
     } catch (e) {}

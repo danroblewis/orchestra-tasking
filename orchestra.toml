@@ -19,8 +19,8 @@ ticket_prefix = "TK"
 push = false
 
 [tasks]
-workers = 1
-reviewers = 1
+workers = 0              # nothing fills the roles here: capacity zero, so no ticket is offered (README)
+reviewers = 0
 
 [gate]
 timeout = "900s"

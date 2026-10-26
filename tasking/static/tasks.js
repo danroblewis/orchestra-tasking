@@ -1,6 +1,7 @@
-// The task system's shared page code: the ticket drawer, priorities, re-engagement, the operator's
-// controls, and its look (tasks.css). Loaded after Orchestra's /static/app.js (esc, md, color,
-// openDrawer are its), by the Tickets page and by tasks-boot.js on every other page.
+// The task system's shared page code: the ticket drawer, priorities, worker turns, the operator's
+// controls, and the look every page needs (tasks.css: the ticket states, the Tasks panel's cards,
+// the drawer). Loaded after Orchestra's /static/app.js (esc, md, color, openDrawer are its), by
+// the Tickets page and by tasks-boot.js on every other page.
 const TASKS_API = "/api/plugins/tasks";
 if (!document.querySelector('link[href^="/plugins/tasks/static/tasks.css"]')) {
   const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "/plugins/tasks/static/tasks.css"; document.head.appendChild(l);

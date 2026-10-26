@@ -7,23 +7,17 @@ Tickets page executed in a headless Chrome when one is at hand."""
 import json
 import os
 import shutil
-import socket
 import subprocess
 import urllib.request
 from pathlib import Path
 
 import pytest
+from conftest import free_port
 
 from demo.run import get, make_project, plan, start, stop, wait_for, wait_until
 
 API = "/api/plugins/tasks"
 CHROME = os.environ.get("CHROME") or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 @pytest.fixture
@@ -78,11 +72,25 @@ const [url, chrome] = process.argv.slice(-2);          // node -e: the arguments
     await p.goto(url + "/tickets", { waitUntil: "networkidle2" });
     await p.waitForFunction(() => document.getElementById("conn").textContent === "live", { timeout: 15000 }).catch(() => {});
     await new Promise((r) => setTimeout(r, 6000));                 // the banner polls every 5 s
-    await p.click("#collapse"); await p.click("#frontier");         // show the done tickets too
+    await p.click("#showdone");                                     // show the done tickets too
     await new Promise((r) => setTimeout(r, 500));
     const got = await p.evaluate(() => ({ conn: document.getElementById("conn").textContent, nodes: document.getElementById("nodes").textContent,
                                           banner: (document.querySelector(".att-bar") || {}).textContent || "" }));
-    console.log(JSON.stringify({ errors, ...got }));
+    // the scheduler's card on the Machines page: its controls row stays inside the card at every width
+    await p.goto(url + "/machines", { waitUntil: "networkidle2" });
+    await p.waitForSelector('.panel[data-id="task_scheduler"] .tkc-ctl', { timeout: 15000 });
+    const overflow = [];
+    for (const width of [1200, 1400, 1600]) {
+      await p.setViewport({ width, height: 800 });
+      await new Promise((r) => setTimeout(r, 300));
+      const box = await p.evaluate(() => {
+        const card = document.querySelector('.panel[data-id="task_scheduler"]'), ctl = card.querySelector(".tkc-ctl");
+        const c = card.getBoundingClientRect(), k = ctl.getBoundingClientRect();
+        return { card: c.right, controls: k.right, inside: k.right <= c.right + 0.5 && k.left >= c.left - 0.5 };
+      });
+      if (!box.inside) overflow.push({ width, ...box });
+    }
+    console.log(JSON.stringify({ errors, overflow, ...got }));
   } finally { await b.close(); }
 })();
 """
@@ -119,8 +127,10 @@ def test_tickets_are_worked_reviewed_and_done_or_blocked_by_programs(demo):
     result = next((target.parent / "home").glob("*/tasks/workspaces/DEMO-1/RESULT.md"), None)
     assert result is not None and result.read_text().splitlines()[0] == "# DEMO-1: Say hello"
     four = get(url + f"{API}/tickets/DEMO-4")
-    assert four["review_rounds"] == 1 and four["worker_turns"] == 2 and "yesterday.txt" in four["blocked_reason"]
+    assert four["review_rounds"] == 1 and four["worker_turns"] == 2 and "> - the file `yesterday.txt` is missing" in four["blocked_reason"]
+    assert four["blocked_reason"].split("\n\n")[0] == "This worker runs the ticket's commands as written and cannot act on review feedback."
     assert four["rejected_by"] == "reviewer" and any(n["kind"] == "review" and n["text"].startswith("REJECTED") for n in four["notes"])
+    assert [e["type"] for e in evs if e["type"] == "task.attention_needed"] == ["task.attention_needed"] * 2   # the two blocked tickets, nothing routine
 
     # blocked tickets wait for a planner: the attention endpoint every page reads
     attention = get(url + f"{API}/attention")
@@ -141,6 +151,7 @@ def test_the_tickets_page_draws_the_tickets_in_a_browser(demo):
     assert page["conn"] == "live"
     assert all(tid in page["nodes"] for tid in ids), page["nodes"]
     assert "2 tickets are blocked" in page["banner"]                  # attention.js, loaded by tasks-boot.js
+    assert page["overflow"] == []                                     # the scheduler card's controls fit the card at 1200, 1400 and 1600 px
 
 
 def test_orchestra_observes_the_scheduler_and_the_machines(demo):

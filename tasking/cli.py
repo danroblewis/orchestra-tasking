@@ -9,11 +9,12 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from .config import ConfigError, Project, init_project, load_project
 from .events import SCHEDULER, Events
-from .requests import ask
+from .requests import QUERIES, REQUESTS, ask
 from .store import LocalStore, StoreError
 
 CLI = "task_cli"
@@ -92,7 +93,10 @@ def cmd_milestone(args) -> int:
 
 def cmd_api(args) -> int:
     """One request to the task system over the bus, as the planner ``--as`` names, answered by
-    the running scheduler's desk (tasking/requests.py)."""
+    the running scheduler's desk (tasking/requests.py). With no operation, the operations."""
+    if not args.command:
+        print(f"changes: {', '.join(REQUESTS)}\nqueries: {', '.join(QUERIES)}")
+        return 0
     project = _project(args)
     try:
         payload = json.loads(args.args) if args.args else {}
@@ -131,8 +135,6 @@ def cmd_staging(args) -> int:
             print(f"local:  {st.local_url()}" + (f"\npublic: {st.public_url()}" if st.public_url() else ""))
     elif args.action == "deploy":
         # build the current base branch head with the [build] stage (the gate's) and promote it
-        import uuid
-
         cfg = project.config
         if not (cfg.build_command and cfg.build_artifact):
             sys.exit("tasking: [build] command and artifact are required to deploy")
@@ -208,7 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_milestone)
 
     s = sub.add_parser("api", help="ask the running scheduler for one operation (create_ticket, list_tickets, …) as a planner; JSON out")
-    s.add_argument("command", help="the operation (tasking/requests.py: REQUESTS and QUERIES)")
+    s.add_argument("command", nargs="?", help=f"the operation. changes: {', '.join(REQUESTS)}; queries: {', '.join(QUERIES)}")
     s.add_argument("--args", default="{}", help="JSON object of arguments")
     s.add_argument("--as", dest="by", default="planner", help="the role asking (the event's source and its `by`); default planner")
     s.add_argument("--compact", action="store_true", help="JSON on one line")

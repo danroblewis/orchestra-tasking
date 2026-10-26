@@ -1,0 +1,34 @@
+/* The ticket graph (the Tickets page only): the ticket and milestone nodes, the edges, the
+   toolbar. tasks.css has what every page needs. */
+.toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:8px 10px; border-bottom:1px solid var(--border); background:var(--panel) }
+.toolbar label { font-size:12px; color:var(--muted); display:flex; gap:6px; align-items:center }
+.toolbar button { background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px 10px; cursor:pointer; font-size:12px }
+.toolbar .filter { margin:0; width:240px }
+.chips { display:flex; gap:6px; flex-wrap:wrap } .chips .ms-chip { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--accent); color:var(--accent); cursor:pointer }
+#stage { height:calc(100vh - 44px - 43px); overflow:hidden; cursor:grab; background:var(--bg); user-select:none; -webkit-user-select:none; touch-action:none } #stage.dragging { cursor:grabbing }
+#stage svg { width:100%; height:100%; min-height:0; display:block }
+.ms { cursor:pointer } .ms rect { fill:#161b26; stroke:var(--accent); stroke-width:1.6; rx:23 }
+.ms.msdone rect { stroke:#2f5d4e; stroke-dasharray:5 3; fill:#111c18 } .ms.msnext rect { stroke:var(--muted); stroke-dasharray:3 3 }
+.ms.msopen rect { fill:#1b2233; stroke-width:2.4 }
+.ms text { fill:var(--text); font-size:12px; pointer-events:none; text-anchor:middle } .ms .sub { fill:var(--muted); font-size:10.5px }
+.node { cursor:pointer }
+.node .card-bg { fill:#1b1f2a; stroke:#2a2f3d; stroke-width:1.2; rx:7 } .node .bar { rx:7 } .node .pill { font-size:10px; font-weight:700; letter-spacing:.03em }
+.node.done .card-bg { fill:#161b1f; opacity:.85 } .node.done text.title { fill:#9aa4b2 }
+.node.waiting .card-bg { stroke-dasharray:5 3 } .node.waiting text.title { fill:#9aa4b2 }
+@keyframes glow { 0%,100% { stroke-opacity:.35; stroke-width:1.5 } 50% { stroke-opacity:1; stroke-width:3 } }
+@keyframes march { to { stroke-dashoffset:-20 } }
+.node.active .card-bg { stroke:var(--c); animation:glow 2.2s ease-in-out infinite }
+.node.queued .card-bg { stroke:var(--c); stroke-dasharray:6 4; animation:march 1.6s linear infinite }
+.edge { fill:none; stroke:#4b5368; stroke-width:1.5; marker-end:url(#arrow) }
+.edge.into-active { stroke:#4b6ea8; stroke-dasharray:6 4; animation:march 1.2s linear infinite }
+.edge.member { stroke:#2f3645; stroke-dasharray:2 4; marker-end:none; stroke-width:1.2 }
+.edge.chain { stroke:#7c86a0; stroke-width:2.4; marker-end:url(#arrow-m) }
+.edge.via { stroke:#6ea8fe; stroke-dasharray:7 4; marker-end:url(#arrow-c) }
+.edge-label { fill:#6ea8fe; font-size:10px; font-family:var(--mono) }
+.filter { width:100%; max-width:480px; background:var(--panel); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; margin-bottom:8px }
+.badge { display:inline-block; padding:1px 6px; border-radius:10px; font-size:11px; color:#000; font-weight:600 }
+@media (prefers-reduced-motion: reduce) { .node.active .card-bg, .node.queued .card-bg, .edge.into-active { animation:none } }
+@media (max-width: 900px) {
+  .toolbar { gap:8px } .toolbar .filter { width:100% } .toolbar .hint { display:none }
+  #stage { height:calc(100vh - 120px); touch-action:none }
+}

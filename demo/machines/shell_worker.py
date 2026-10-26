@@ -92,10 +92,10 @@ class Job:
                     "blocked_reason": "This worker runs the `sh` code blocks of a ticket's description, and this ticket has none. "
                                       "Add the commands, or give the ticket to a worker that can do it."}
         if brief.get("rejected_by") and ran_before.exists() and ran_before.read_text() == "\n".join(commands):
+            quoted = "\n".join(f"> {line}" for line in (brief.get("feedback") or "")[:600].splitlines())
             return {"state": "BLOCKED", "summary": "rejected, and the same commands would give the same result",
-                    "blocked_reason": f"This worker runs the ticket's commands as written and cannot act on review feedback. "
-                                      f"The reviewer said: {(brief.get('feedback') or '')[:600]}  To go on, change the commands or "
-                                      "the acceptance criteria, then unblock the ticket."}
+                    "blocked_reason": "This worker runs the ticket's commands as written and cannot act on review feedback.\n\n"
+                                      f"{quoted}\n\nTo go on, change the commands or the acceptance criteria, then unblock the ticket."}
         lines, codes, last = [f"# {tid}: {brief.get('title', '')}", ""], [], ""
         for c in commands:
             self.proc = subprocess.Popen(["bash", "-c", c], cwd=self.folder, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

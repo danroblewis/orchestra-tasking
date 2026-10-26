@@ -14,8 +14,17 @@ def test_orchestra_serves_the_task_pages_and_api(project):
     for f in ("tasks-boot.js", "tasks.js", "attention.js", "machine-cards.js", "tasks-panel.js", "tasks.css"):
         assert c.get(f"/plugins/tasks/static/{f}").status_code == 200
     state = c.get("/api/plugins/tasks/state").json()
-    assert set(state) == {"tickets", "milestones", "counts", "now", "scheduler"} and state["tickets"] == []
+    assert set(state) == {"tickets", "milestones", "counts", "scheduler"} and state["tickets"] == []
     assert c.get("/api/plugins/tasks/board").json()["tickets"] == []
     assert c.get("/api/plugins/tasks/attention").json() == {"ok": True, "blocked": [], "count": 0}
     machines = {m["id"]: m for m in c.get("/api/machines").json()["machines"]}
-    assert machines["task_scheduler"]["package"] == "tasks" and machines["task_web"]["package"] == "tasks"
+    assert machines["task_scheduler"]["package"] == "tasks" and "task_web" not in machines     # declared: the scheduler only
+
+
+def test_the_capacity_ceiling_follows_orchestra_toml(project):
+    """Every request re-reads the task system's config, so an edit to [tasks] is live on the Dashboard."""
+    c = TestClient(create_app(load_orchestra_project(project.repo_root)))
+    assert c.get("/api/plugins/tasks/board").json()["capacity"]["max_workers"] == 2
+    toml = project.repo_root / "orchestra.toml"
+    toml.write_text(toml.read_text().replace("workers = 2", "workers = 5"))
+    assert c.get("/api/plugins/tasks/board").json()["capacity"]["max_workers"] == 5

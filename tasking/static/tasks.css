@@ -1,11 +1,11 @@
-/* The task system's look: its ticket states, the ticket cards of the Tasks panel, the ticket
-   drawer, the ticket graph. Loaded by the Tickets page and by tasks.js on Orchestra's other pages
-   (Orchestra's style.css has the frame: panels, drawers, .kv, .note, .empty). */
+/* The task system's look on every page: its ticket states, the ticket cards of the Tasks panel
+   and the ticket drawer. Loaded by the Tickets page (which adds tickets.css for its graph) and
+   by tasks.js on Orchestra's other pages (Orchestra's style.css has the frame: panels, drawers,
+   .kv, .note, .empty). */
 :root {
   --OPEN:#6b7280; --BLOCKED:#f0883e; --IN_PROGRESS:#3b82f6; --READY_FOR_REVIEW:#7c3aed; --IN_REVIEW:#a855f7; --REJECTED:#ef4444;
   --APPROVED:#d97706; --MERGING:#f59e0b; --DONE:#16a34a; --CANCELLED:#374151;
 }
-/* ---- ticket cards (the Tasks panel) ---- */
 .work { background:var(--panel2); border:1px solid var(--border); border-left:4px solid var(--c); border-radius:10px; padding:10px 12px; margin-bottom:8px; cursor:pointer }
 .work:hover { background:var(--panel3) } .work .top { display:flex; justify-content:space-between; gap:8px; align-items:center; min-width:0 }
 .work .top > span:first-child { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
@@ -15,23 +15,6 @@
 .work .lane { margin-top:6px; font-size:12px; color:var(--text2) } .work .lane .msg { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
 .work, .work > *, .work .lane > * { min-width:0 }
 .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:10.5px; font-weight:700; letter-spacing:.04em; color:#0b0d12; background:var(--c); white-space:nowrap }
-/* ---- the ticket drawer ---- */
 .alert { border-radius:10px; padding:12px 14px; margin:0 0 14px; border:1px solid } .alert h4 { margin:0 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.08em }
 .alert.blocked { background:#2a1a0e; border-color:#c2410c; color:#fed7aa } .alert.rejected { background:#2a1215; border-color:#b91c1c; color:#fecaca }
 .alert.waiting { background:#141a26; border-color:#1e3a8a; color:#bfdbfe } .alert .md { color:inherit }
-/* ---- ticket graph ---- */
-#stage > svg { width:100%; height:100%; min-height:600px } .node { cursor:pointer }
-.node .card-bg { fill:#1b1f2a; stroke:#2a2f3d; stroke-width:1.2; rx:7 } .node .bar { rx:7 } .node .pill { font-size:10px; font-weight:700; letter-spacing:.03em }
-.node.done .card-bg { fill:#161b1f; opacity:.85 } .node.done text.title { fill:#9aa4b2 }
-.node.waiting .card-bg { stroke-dasharray:5 3 } .node.waiting text.title { fill:#9aa4b2 }
-@keyframes glow { 0%,100% { stroke-opacity:.35; stroke-width:1.5 } 50% { stroke-opacity:1; stroke-width:3 } }
-@keyframes march { to { stroke-dashoffset:-20 } }
-.node.active .card-bg { stroke:var(--c); animation:glow 2.2s ease-in-out infinite }
-.node.queued .card-bg { stroke:var(--c); stroke-dasharray:6 4; animation:march 1.6s linear infinite }
-.edge { fill:none; stroke:#4b5368; stroke-width:1.4; marker-end:url(#arrow) } .edge.into-active { stroke:#4b6ea8; stroke-dasharray:6 4; animation:march 1.2s linear infinite }
-.filter { width:100%; max-width:480px; background:var(--panel); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; margin-bottom:8px }
-.badge { display:inline-block; padding:1px 6px; border-radius:10px; font-size:11px; color:#000; font-weight:600 }
-@media (max-width: 900px) {
-  .toolbar { gap:8px } .toolbar .filter { width:100% } .toolbar .hint { display:none }
-  #stage { height:calc(100vh - 120px); touch-action:none }
-}
