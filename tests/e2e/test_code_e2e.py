@@ -24,7 +24,7 @@ def env(project):
     project.reload_config()
     git("add", "-A", cwd=repo)
     git("commit", "-qm", "code mode", cwd=repo)
-    events = Events(project.events_file, source="task_scheduler")
+    events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
     ms = store.create_milestone(name="m")
     return project, store, events, ms, repo
@@ -52,6 +52,19 @@ def test_ticket_goes_open_to_done(env):
     assert work["unit_command"].startswith("test -f README.md") and work["brief"]["id"] == t.id and work["brief"]["title"] == "Do the thing"
     r = review["review"]                                     # what the reviewer is handed: the scheduler verified it
     assert r["summary"] == "added WORK.md line" and len(r["commit"]) == 40 and "[passed]" in r["test_output"]
+
+
+def test_the_gate_lands_what_the_scheduler_recorded_as_reviewed(env):
+    """A reviewer that omits the commit from its report changes nothing: the commit under
+    review is the one the scheduler took from the worker's branch, and the gate lands that."""
+    project, store, events, ms, repo = env
+    t = store.create_ticket(title="Reviewed as recorded", milestone_id=ms.id)
+    m = run_scheduler(project, store, events, echo_commit=False)
+    reviewed = next(o for o in m.offers if o["role"] == "reviewer")["review"]["commit"]
+    t = store.get_ticket(t.id)
+    assert t.state == State.DONE and t.reviewed_commit == reviewed and len(reviewed) == 40
+    assert git("rev-parse", "main^2", cwd=repo).strip() == reviewed            # the merge's second parent: what was reviewed
+    assert store.gate_runs()[-1]["status"] == "landed"
 
 
 def test_rejection_loops_back_to_worker(env):

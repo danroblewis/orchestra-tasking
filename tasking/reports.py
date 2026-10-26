@@ -57,7 +57,7 @@ class Reports:
         if a["role"] == "worker":
             self._worker(a["ticket"], report, text, failed, Path(a["workspace"]) if a.get("workspace") else None, a.get("branch"))
         else:
-            self._review(a["ticket"], report, text, failed, commit)
+            self._review(a["ticket"], report, text, commit)
 
     def stopped(self, a: dict) -> None:
         """The operator stopped the machine holding the ticket: it goes back to waiting without
@@ -133,12 +133,15 @@ class Reports:
         self.events.attention(COORDINATOR, f"{t.id} BLOCKED: {reason[:200]}", ticket=t.id)
         self.log(f"{t.id}: BLOCKED ({reason[:80]})")
 
-    def _review(self, tid: str, report: dict | None, text: str, failed: bool, commit: str | None) -> None:
+    def _review(self, tid: str, report: dict | None, text: str, commit: str | None) -> None:
         """A reviewer's report: its verdict, or (none came) the review is redone, up to
-        NO_VERDICT_BUDGET times in a row, before the ticket goes back to its worker."""
+        NO_VERDICT_BUDGET times in a row, before the ticket goes back to its worker. A report
+        about another commit than the one offered for review is no verdict on this one."""
         t = self.store.get_ticket(tid)
         if t.state != State.IN_REVIEW:
             return
+        if commit and t.reviewed_commit and commit != t.reviewed_commit:
+            report, text = None, f"the report names commit {commit[:10]}, not the reviewed {t.reviewed_commit[:10]}"
         if report is None:
             # no verdict is not a rejection: the worker has nothing to fix. The send-back after the
             # budget is the task system's, never counted as a reviewer's verdict
@@ -149,12 +152,12 @@ class Reports:
                 self.store.transition(tid, t.version, State.READY_FOR_REVIEW)
                 self.log(f"{tid}: the reviewer ended without a verdict; the review will be redone ({tries})")
                 return
-            self.reject(tid, SCHEDULER, f"{NO_VERDICT_BUDGET} reviews in a row ended without a verdict; the work may be too large for a review to finish")
+            self.reject(tid, SCHEDULER, f"{tries} reviews in a row ended without a verdict; the work may be too large for a review to finish")
             return
         self.store.add_note(tid, Note(author="reviewer", kind="review",
                                       text=f"{report['verdict']}: {report.get('summary', '')}\n{report.get('feedback') or ''}"))
         if report["verdict"] == "APPROVED":
-            t = self.store.transition(tid, t.version, State.APPROVED, reviewed_commit=commit, feedback=None, rejected_by=None)
+            t = self.store.transition(tid, t.version, State.APPROVED, feedback=None, rejected_by=None)   # the gate lands reviewed_commit as recorded from the worker's report
             self.log(f"{tid}: APPROVED")
             if self.cfg.work != "code":                       # nothing to merge: approved is done
                 self.store.transition(tid, t.version, State.DONE)

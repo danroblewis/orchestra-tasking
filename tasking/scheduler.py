@@ -25,12 +25,13 @@ from .assignments import (
     new_id,
 )
 from .config import Project
-from .events import COORDINATOR, SCHEDULER, SUPERVISOR, Events
+from .events import SCHEDULER, SUPERVISOR, Events
 from .gate import run_gate
 from .gate.runner import run_specs
 from .git import Git, GitError
 from .model import ACTIVE, State, Ticket, TransitionError, effective_priorities, is_ready, now
 from .probes import Prober, config_probes
+from .procs import alive
 from .reports import Reports
 from .requests import QUERY, REQUESTS, Desk
 from .staging import Staging
@@ -71,6 +72,7 @@ class Scheduler:
         self.prober = Prober(project, store, events)
         self.reports = Reports(project, store, events, self.git, log)
         self.follow = Follower(events)               # what the assignees say back (tasking/assignments.py)
+        self.unanswered: dict[tuple[str, str], float] = {}   # (ticket, role) -> when an offer nobody has answered yet was first made
 
     def recover(self) -> None:
         """What the previous scheduler left: whoever still holds work is told to stop and every
@@ -112,6 +114,11 @@ class Scheduler:
             self.store.drop_assignment(a["id"])
 
     def run(self, once: bool = False) -> None:
+        rec = self.store.scheduler() or {}
+        if rec.get("pid") and rec["pid"] != os.getpid() and alive(rec["pid"]):     # one process per project
+            log(f"a scheduler (pid {rec['pid']}) already runs {self.project.key}; not starting")
+            raise SystemExit(1)
+
         def _stop(_sig, _frame):
             self.stop.set()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -271,7 +278,8 @@ class Scheduler:
         if role == "worker" and not tasks and self.cfg.unit:
             offer["unit_command"] = self.cfg.unit[0].command
         record = {"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch,
-                  "assigned_at": time.time(), "lease_until": time.time() + LEASE_S, "instance": None, "accepted_at": None}
+                  "assigned_at": time.time(), "lease_until": time.time() + LEASE_S, "instance": None, "accepted_at": None,
+                  "offered_since": self.unanswered.get((t.id, role), time.time())}   # the first of the offers nobody answered
         if role == "reviewer" and not tasks:
             # verifying is the task system's: the unit tests run on the branch before the review is
             # offered, so the lease starts when the offer goes out; until then the record is held
@@ -282,8 +290,8 @@ class Scheduler:
             self.preparing[aid] = th
             th.start()
             return True
-        if role == "reviewer":
-            offer["review"] = {"summary": self._worker_summary(t.id)}
+        if role == "reviewer":                       # a task: nothing to verify before the review
+            offer["review"] = {"summary": self._worker_summary(t.id), "commit": None, "test_output": None}
         self.store.put_assignment(record)
         self.events.publish(ASSIGNED, offer, subject=t.id)
         log(f"{t.id}: assigned to a {role} ({aid})")
@@ -321,27 +329,30 @@ class Scheduler:
         nobody took is dropped and offered again."""
         out = self.store.assignments()
         for ev in self.follow.new():
-            aid = ev.get("assignment")
-            if ev.get("type") not in (ACCEPTED, WORKING, REPORTED) or aid not in out:
-                continue
-            a = out[aid]
-            if ev["type"] == ACCEPTED:
-                if a.get("instance") is None:
-                    if self._accept(a, ev):
-                        out[aid] = self.store.assignments().get(aid, a)
-                    else:
-                        out.pop(aid, None)
-                elif a["instance"] != ev["source"]:
-                    # two machines answered: the first keeps it, the other is told to stop
-                    self._release(a, f"already taken by {a['instance']}", instance=ev["source"])
-                continue
-            if ev.get("source") != a.get("instance"):
-                continue
-            if ev["type"] == WORKING:
-                self.store.update_assignment(aid, lease_until=time.time() + LEASE_S)
-            else:
-                out.pop(aid)
-                self._settle(a, lambda a=a, ev=ev: self.reports.apply(a, ev.get("report"), ev.get("text") or "", bool(ev.get("failed")), ev.get("commit")))
+            try:
+                aid = ev.get("assignment")
+                if ev.get("type") not in (ACCEPTED, WORKING, REPORTED) or aid not in out:
+                    continue
+                a = out[aid]
+                if ev["type"] == ACCEPTED:
+                    if a.get("instance") is None:
+                        if self._accept(a, ev):
+                            out[aid] = self.store.assignments().get(aid, a)
+                        else:
+                            out.pop(aid, None)
+                    elif a["instance"] != ev["source"]:
+                        # two machines answered: the first keeps it, the other is told to stop
+                        self._release(a, f"already taken by {a['instance']}", instance=ev["source"])
+                    continue
+                if ev.get("source") != a.get("instance"):
+                    continue
+                if ev["type"] == WORKING:
+                    self.store.update_assignment(aid, lease_until=time.time() + LEASE_S)
+                else:
+                    out.pop(aid)
+                    self._settle(a, lambda a=a, ev=ev: self.reports.apply(a, ev.get("report"), ev.get("text") or "", bool(ev.get("failed")), ev.get("commit")))
+            except Exception as e:  # noqa: BLE001 - one bad event never loses the others
+                log(f"{ev.get('ticket')}: cannot apply {ev.get('type')} from {ev.get('source')}: {e!r}")
         now_t = time.time()
         for aid, a in self.store.assignments().items():
             if a.get("instance") is None:
@@ -349,9 +360,14 @@ class Scheduler:
                 if a["lease_until"] < now_t:
                     reason = f"nobody filled the role {a['role']} within {int(LEASE_S)} s"
                     self._release(a, reason)
-                    log(f"{a['ticket']}: assignment {aid} released: {reason}")
+                    # re-offered every lease: the age shown stays that of the first offer, and the
+                    # release is logged once, since the later ones are the same fact
+                    if (a["ticket"], a["role"]) not in self.unanswered:
+                        self.unanswered[(a["ticket"], a["role"])] = a["assigned_at"]
+                        log(f"{a['ticket']}: assignment {aid} released: {reason}")
                 elif state not in OFFERED_FROM[a["role"]]:                                # cancelled meanwhile
                     self._release(a, f"the ticket is {state}")
+                    self.unanswered.pop((a["ticket"], a["role"]), None)
             elif a["lease_until"] < now_t:
                 self._release(a, f"no word from {a['instance']} for {int(LEASE_S)} s")
                 log(f"{a['ticket']}: {a['role']} assignment {aid} released: the lease ran out")
@@ -377,6 +393,7 @@ class Scheduler:
             log(f"{t.id}: {holder} accepted {a['id']} but {e}; released")
             return False
         self.store.update_assignment(a["id"], instance=holder, accepted_at=time.time(), lease_until=time.time() + LEASE_S)
+        self.unanswered.pop((a["ticket"], a["role"]), None)
         log(f"{t.id}: held by {holder}")
         return True
 
@@ -399,8 +416,6 @@ class Scheduler:
             log(f"gate: {ticket_id}")
             run = run_gate(self.project, self.store, self.events, ticket_id)
             log(f"gate {run['id']}: {run['status']} {run.get('summary', '')}")
-            if run["status"] == "landed":
-                self.events.attention(COORDINATOR, f"landed {ticket_id} on {self.cfg.base_branch}", ticket=ticket_id)
         except (Conflict, StoreError, TransitionError) as e:
             log(f"gate: {e}")
 

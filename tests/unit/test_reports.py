@@ -6,14 +6,14 @@ import pytest
 from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, Follower
 from tasking.events import Events
 from tasking.model import State
-from tasking.reports import unusable
+from tasking.reports import NO_VERDICT_BUDGET, unusable
 from tasking.scheduler import Scheduler
 from tasking.store import LocalStore
 
 
 @pytest.fixture
 def env(project):
-    events = Events(project.events_file, source="task_scheduler")
+    events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
     sched = Scheduler(project, store, events)
     sched.recover()
@@ -81,6 +81,12 @@ def test_a_reviewers_unusable_report_redoes_the_review(env):
     assert store.get_ticket(t.id).state == State.READY_FOR_REVIEW and a["assignment"] not in store.assignments()
     assert [x["role"] for x in store.assignments().values()] == ["reviewer"]   # offered again
     assert store.get_ticket(t.id).review_rounds == 0               # not a rejection
+    for _ in range(NO_VERDICT_BUDGET):                             # the budget's reviews are redone; the one after sends it back
+        answer(events, offer(events, follow), None, failed=True)
+        sched.tick()
+    t = store.get_ticket(t.id)
+    assert t.state == State.REJECTED and t.rejected_by == "task_scheduler" and t.reviewer_rejections == 0
+    assert f"{NO_VERDICT_BUDGET + 1} reviews in a row ended without a verdict" in t.feedback
 
 
 def test_a_report_the_store_refuses_still_frees_the_ticket(env, monkeypatch):

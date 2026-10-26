@@ -20,7 +20,7 @@ from tasking.store import LocalStore
 
 @pytest.fixture
 def env(project):
-    events = Events(project.events_file, source="task_scheduler")
+    events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
     ms = store.create_milestone(name="m")
     return project, store, events, ms, project.repo_root
@@ -108,6 +108,20 @@ def test_broken_base_pauses_pipeline_and_keeps_ticket_approved(env):
     assert wake and "broken" in wake[0]["reason"]
     assert "gate.base_broken" in event_types(events)
     assert not (project.gate_dir / f"{run['id']}-base").exists()
+
+
+def test_an_unexpected_error_pauses_the_pipeline_and_keeps_the_ticket_approved(env, monkeypatch):
+    """Whatever fails inside a run, the ticket never stays MERGING with no holder."""
+    from tasking.gate import runner
+    project, store, events, ms, repo = env
+    monkeypatch.setattr(runner, "run_specs", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    t = merging_ticket(store, ms, repo, "unlucky", lambda wt: (wt / "NEW.md").write_text("ok\n"))
+    run = run_gate(project, store, events, t.id)
+    assert run["status"] == "error" and "boom" in run["summary"] and run["finished_at"]
+    assert store.get_ticket(t.id).state == State.APPROVED
+    assert store.pipeline()["paused"] and run["id"] in store.pipeline()["reason"]
+    assert "gate.error" in event_types(events) and asked(events, "supervisor")
+    assert not (project.gate_dir / run["id"]).exists()
 
 
 def test_conflict_goes_back_to_worker_without_a_review_round(env):

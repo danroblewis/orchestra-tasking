@@ -8,7 +8,8 @@ work, and reports. What the scheduler does with the answers is under test, not w
   ``break_first`` also deletes README.md on the first attempt (the unit command checks for it)
   and restores it on the next.
 - reviewer: APPROVED, or REJECTED the first time when ``reject_first``, or every time when
-  ``always_reject``.
+  ``always_reject``; it names the offer's ``review.commit`` in its report unless ``echo_commit``
+  is false (a reviewer that omits the commit).
 - ``instance`` names it (``worker/<instance>``); ``claims`` is what it says its instance is in
   task.accepted when that should differ from its source. With ``heartbeat`` set it works
   slowly: after accepting it publishes task.working every that many seconds and reports only
@@ -26,10 +27,11 @@ from tasking.assignments import ACCEPTED, ASSIGNED, RELEASED, REPORTED, WORKING,
 
 class FakeMachine:
     def __init__(self, events, roles=("worker", "reviewer"), *, instance="1", claims: str | None = None, block=False,
-                 block_on_rejection=False, break_first=False, reject_first=False, always_reject=False, heartbeat: float | None = None):
+                 block_on_rejection=False, break_first=False, reject_first=False, always_reject=False, heartbeat: float | None = None,
+                 echo_commit=True):
         self.events, self.roles, self.instance, self.claims = events, tuple(roles), instance, claims
         self.block, self.block_on_rejection, self.break_first = block, block_on_rejection, break_first
-        self.reject_first, self.always_reject, self.heartbeat = reject_first, always_reject, heartbeat
+        self.reject_first, self.always_reject, self.heartbeat, self.echo_commit = reject_first, always_reject, heartbeat, echo_commit
         self.offers: list[dict] = []
         self.finish = threading.Event()
         self._broke: set[str] = set()
@@ -96,7 +98,7 @@ class FakeMachine:
         return {"state": "READY_FOR_REVIEW", "summary": "added WORK.md line"}, None
 
     def _review(self, a: dict, cwd: Path):
-        commit = (a.get("review") or {}).get("commit")
+        commit = (a.get("review") or {}).get("commit") if self.echo_commit else None
         if self.always_reject or (self.reject_first and a["ticket"] not in self._rejected):
             self._rejected.add(a["ticket"])
             return {"verdict": "REJECTED", "summary": "needs work", "feedback": "1. add more"}, commit

@@ -23,7 +23,7 @@ from tasking.web import router
 @pytest.fixture
 def env(project):
     assert project.config.work == "tasks"
-    events = Events(project.events_file, source="task_scheduler")
+    events = Events.for_project(project, source="task_scheduler")
     return project, LocalStore(project, events), events, project.repo_root
 
 
@@ -61,7 +61,7 @@ def test_a_task_is_done_in_its_folder_and_reviewed_with_nothing_merged(env):
     assert not subprocess.run(["git", "branch", "--list"], cwd=repo, capture_output=True, text=True, check=False).stdout.strip("* main\n")
     assert store.gate_runs() == []
     review = next(o for o in m.offers if o["role"] == "reviewer")
-    assert review["review"] == {"summary": "wrote RESULT.md"} and review["branch"] is None
+    assert review["review"] == {"summary": "wrote RESULT.md", "commit": None, "test_output": None} and review["branch"] is None
 
 
 def test_the_scheduler_is_a_program_and_starts_no_machine(env):

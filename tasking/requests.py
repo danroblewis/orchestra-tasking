@@ -80,11 +80,14 @@ class Desk:
 
     def serve(self) -> None:
         for ev in self.follow.new():
-            op = OP_OF.get(ev.get("type") or "") or (ev.get("op") if ev.get("type") == QUERY and ev.get("op") in QUERIES else None)
-            if not op:
+            query = ev.get("type") == QUERY
+            op = ev.get("op") if query else OP_OF.get(ev.get("type") or "")
+            if not query and not op:
                 continue
             args, by = dict(ev.get("args") or {}), ev.get("by") or ""
-            if op in REQUESTS and not by:
+            if query and op not in QUERIES:
+                result = {"ok": False, "error": f"no query op {op!r}; queries: {', '.join(QUERIES)}"}
+            elif op in REQUESTS and not by:
                 result = {"ok": False, "error": "a request names who asks (by)"}
             else:
                 try:

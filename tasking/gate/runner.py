@@ -124,6 +124,7 @@ def _stages(project: Project, cwd: Path, log_dir: Path, run: dict) -> bool:
     """Run build, unit, start+acceptance in cwd. Appends stage results to run['stages']."""
     cfg = project.config
     artifact = None
+    log_dir.mkdir(parents=True, exist_ok=True)       # the target's log goes here even when no spec ran before it
     if cfg.build_command:
         res, artifact = build(project, cwd, log_dir, run["id"])
         run["stages"] += res
@@ -175,6 +176,20 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
         store.transition(ticket_id, t.version, State.REJECTED, rejected_by="merge_gate", feedback=reason[-8000:],
                          review_rounds=rounds, gate_rejections=t.gate_rejections + 1)
         run["conflict"] = conflict
+
+    def error(what: str) -> dict:
+        """The run could not finish: nothing is attributed to the ticket, which waits for the
+        gate again once the pipeline resumes; the supervisor role is told."""
+        run["status"] = "error"
+        run["summary"] = what
+        t = store.get_ticket(ticket_id)
+        if t.state == State.MERGING:
+            store.transition(ticket_id, t.version, State.APPROVED)
+        store.set_pipeline(True, f"gate run {run_id} error: {what}")
+        events.attention(SUPERVISOR, f"gate run {run_id} hit an error and the pipeline is paused: {what}; "
+                         "it resumes on pipeline.resume_requested")
+        events.emit("gate.error", gate_run=run_id, error=what)
+        return run
 
     try:
         base_commit = git.rev_parse(base)
@@ -246,16 +261,9 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
         events.emit("gate.rejected", gate_run=run_id, ticket=ticket_id)
         return run
     except GitError as e:
-        run["status"] = "error"
-        run["summary"] = str(e)
-        t = store.get_ticket(ticket_id)
-        if t.state == State.MERGING:
-            store.transition(ticket_id, t.version, State.APPROVED)
-        store.set_pipeline(True, f"gate run {run_id} git error: {e}")
-        events.attention(SUPERVISOR, f"gate run {run_id} hit a git error and the pipeline is paused: {e}; "
-                         "it resumes on pipeline.resume_requested")
-        events.emit("gate.error", gate_run=run_id, error=str(e))
-        return run
+        return error(str(e))
+    except Exception as e:  # noqa: BLE001 - whatever failed, the ticket must not stay MERGING
+        return error(repr(e))
     finally:
         git.worktree_remove(path)
         git.branch_delete(gate_branch)

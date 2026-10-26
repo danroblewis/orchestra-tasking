@@ -93,8 +93,7 @@ class Tickets:
             d["updated_at"] = now()
             write(self.project.tickets_file, data)
             t = Ticket.from_dict(d)
-        self.events.emit("ticket.updated", ticket=ticket_id, fields=sorted(changes),
-                         **({"owner": changes["owner"]} if "owner" in changes else {}))
+        self.events.emit("ticket.updated", ticket=ticket_id, fields=sorted(changes))
         return t
 
     def transition(self, ticket_id: str, expected_version: int | None, to_state: State, **fields: Any) -> Ticket:

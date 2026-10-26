@@ -35,7 +35,7 @@ def flat(ev: dict) -> dict:
 class Events(OrchestraEvents):
     @classmethod
     def for_project(cls, project: Project, source: str) -> Events:
-        return cls(bus=OrchestraEvents.for_project(project.orchestra, source=source).bus, source=source)
+        return super().for_project(project.orchestra, source=source)
 
     def emit(self, type: str, **data: Any) -> dict:
         subject = data.get("ticket") or data.get("milestone")
@@ -43,8 +43,8 @@ class Events(OrchestraEvents):
 
     def attention(self, to: str, reason: str, ticket: str | None = None) -> dict:
         """The task system needs a planner's decision: a ticket blocked, rejected at every
-        multiple of the threshold, code landed, the base branch broken, a gate error, the
-        pipeline still paused after a restart, a staging deploy failed. An event for whatever
+        multiple of the threshold, the base branch broken, a gate error, the pipeline still
+        paused after a restart, a staging deploy failed. An event for whatever
         machine fills the planner role ``to`` (coordinator, supervisor) to listen for, not a write
         into its queue; routine creations and completions are in ``ticket.*`` and ``milestone.*``."""
         return self.emit(ATTENTION, to=to, reason=reason, **({"ticket": ticket} if ticket else {}))
