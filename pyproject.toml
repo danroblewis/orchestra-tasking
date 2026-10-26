@@ -26,7 +26,7 @@ packages = ["tasking"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/e2e"]
-pythonpath = ["tests"]
+pythonpath = ["tests", "."]          # tests import fake_machine, and the e2e demo test imports demo.run
 
 [tool.ruff]
 line-length = 100

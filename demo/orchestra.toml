@@ -1,0 +1,25 @@
+# The task system's demo project: Orchestra, the task system, and two programs that fill the
+# worker and reviewer roles (machines/). demo/run.py copies this folder to a fresh git repository
+# and starts everything; see README.md.
+
+[events]
+url = "file"             # Orchestra's bus: a JSONL file in ~/.orchestrator/<key>/
+
+[metrics]
+url = "file"
+
+[discovery]
+window = "60m"
+step = "30s"
+every = "5m"
+
+# ---- the task system (sections Orchestra itself ignores) ----
+
+[project]
+base_branch = "main"
+ticket_prefix = "DEMO"
+work = "tasks"           # a scratch folder per ticket, reviewed, nothing merged
+
+[tasks]
+workers = 2              # tickets offered to workers at once
+reviewers = 1
