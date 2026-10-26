@@ -1,10 +1,23 @@
 // The task system's shared page code: the ticket drawer, priorities, worker turns, the operator's
 // controls, and the look every page needs (tasks.css: the ticket states, the Tasks panel's cards,
-// the drawer). Loaded after Orchestra's /static/app.js (esc, md, color, openDrawer are its), by
+// the drawer). Loaded after Orchestra's /static/app.js (esc, color, openDrawer are its), by
 // the Tickets page and by tasks-boot.js on every other page.
 const TASKS_API = "/api/plugins/tasks";
 if (!document.querySelector('link[href^="/plugins/tasks/static/tasks.css"]')) {
   const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "/plugins/tasks/static/tasks.css"; document.head.appendChild(l);
+}
+
+// A ticket's text is markdown, written by whoever made the ticket: rendered and then sanitised
+// (marked, DOMPurify, loaded once from cdnjs unless the page has them), and shown as escaped text
+// until both have arrived.
+for (const [lib, path] of [["marked", "marked/12.0.2/marked.min.js"], ["DOMPurify", "dompurify/3.1.6/purify.min.js"]]) {
+  if (window[lib] || document.querySelector(`script[src$="${path}"]`)) continue;
+  const s = document.createElement("script"); s.src = `https://cdnjs.cloudflare.com/ajax/libs/${path}`; document.head.appendChild(s);
+}
+function tasksMd(text) {
+  if (!text) return "";
+  if (!(window.marked && window.DOMPurify)) return `<pre>${esc(text)}</pre>`;
+  return `<div class="md">${DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }))}</div>`;
 }
 
 // Worker turns: how many times a worker took the ticket, and why it took it again.
@@ -53,8 +66,8 @@ async function openTicket(id) {
   const live = (window.STATE && STATE.tickets || []).find((x) => x.id === id);
   // What needs attention comes first, before the title: a blocker, a rejection, or why it waits.
   let alerts = "";
-  if (t.state === "BLOCKED") alerts += `<div class="alert blocked"><h4>Blocked · needs a decision</h4>${md(t.blocked_reason || "(no reason recorded)")}</div>`;
-  if (t.state === "REJECTED" && t.feedback) alerts += `<div class="alert rejected"><h4>Rejected by ${esc(t.rejected_by || "the reviewer")} · round ${t.review_rounds}</h4>${md(t.feedback)}</div>`;
+  if (t.state === "BLOCKED") alerts += `<div class="alert blocked"><h4>Blocked · needs a decision</h4>${tasksMd(t.blocked_reason || "(no reason recorded)")}</div>`;
+  if (t.state === "REJECTED" && t.feedback) alerts += `<div class="alert rejected"><h4>Rejected by ${esc(t.rejected_by || "the reviewer")} · round ${t.review_rounds}</h4>${tasksMd(t.feedback)}</div>`;
   if (live && live.state === "OPEN" && !live.ready) alerts += `<div class="alert waiting"><h4>Waiting</h4>${esc(live.why_waiting)}</div>`;
   const stateColor = color(t.state);
   const row = (k, v) => (v ? `<div>${k}</div><div class="num">${esc(v)}</div>` : "");
@@ -62,11 +75,11 @@ async function openTicket(id) {
     <div class="kv"><div>milestone</div><div>${esc(t.milestone_id)}</div><div>priority</div><div>${priorityText(t, live)}</div><div>depends on</div><div>${t.depends_on.join(", ") || "—"}</div>
     ${row("held by", t.owner)}${row("branch", t.branch)}${row("reviewed commit", (t.reviewed_commit || "").slice(0, 10))}<div>worker turns</div><div>${turnsText(t)}</div>
     ${live && live.state === "OPEN" && live.ready ? `<div>waiting</div><div>${esc(live.why_waiting)}</div>` : ""}</div>
-    ${t.objective ? `<h2>Objective</h2>${md(t.objective)}` : ""}
-    <h2>Description</h2>${md(t.description) || '<div class="empty">none</div>'}<h2>Acceptance</h2>${md(t.acceptance) || '<div class="empty">none</div>'}
-    ${t.verification ? `<h2>Verification</h2>${md(t.verification)}` : ""}
-    ${t.state !== "REJECTED" && t.feedback ? `<h2>${t.rejected_by ? "Last feedback from " + esc(t.rejected_by) : "Note for the worker"}</h2>${md(t.feedback)}` : ""}
-    <h2>Notes</h2>${t.notes.slice().reverse().map((n) => `<div class="note"><b>${esc(n.author)} · ${esc(n.kind)} · ${esc(n.created_at)}</b>${md(n.text)}</div>`).join("") || '<div class="empty">none</div>'}`);
+    ${t.objective ? `<h2>Objective</h2>${tasksMd(t.objective)}` : ""}
+    <h2>Description</h2>${tasksMd(t.description) || '<div class="empty">none</div>'}<h2>Acceptance</h2>${tasksMd(t.acceptance) || '<div class="empty">none</div>'}
+    ${t.verification ? `<h2>Verification</h2>${tasksMd(t.verification)}` : ""}
+    ${t.state !== "REJECTED" && t.feedback ? `<h2>${t.rejected_by ? "Last feedback from " + esc(t.rejected_by) : "Note for the worker"}</h2>${tasksMd(t.feedback)}` : ""}
+    <h2>Notes</h2>${t.notes.slice().reverse().map((n) => `<div class="note"><b>${esc(n.author)} · ${esc(n.kind)} · ${esc(n.created_at)}</b>${tasksMd(n.text)}</div>`).join("") || '<div class="empty">none</div>'}`);
 }
 
 function priorityText(t, live) {
