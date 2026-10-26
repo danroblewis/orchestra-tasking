@@ -601,14 +601,16 @@ class Loop:
         sid = f"worker-{t.id}"
         tasks = self.cfg.work != "code"
         try:
+            owner = self._instance(sid, "worker", t.id)                # the scheduler assigns it: this worker owns it
             if tasks:
                 path, branch = self._workspace(t), None
-                t = self.store.transition(t.id, t.version, State.IN_PROGRESS, worker_session=sid, worker_turns=t.worker_turns + 1)
+                t = self.store.transition(t.id, t.version, State.IN_PROGRESS, worker_session=sid, worker_turns=t.worker_turns + 1, owner=owner)
             else:
                 path, branch = self._worktree(t)
                 t = self.store.transition(t.id, t.version, State.IN_PROGRESS, branch=branch, worker_session=sid,
-                                          worker_turns=t.worker_turns + 1)
+                                          worker_turns=t.worker_turns + 1, owner=owner)
         except (Conflict, StoreError, GitError) as e:
+            self._release(sid)
             log(f"{t.id}: cannot start worker: {e}")
             return
         log(f"{t.id}: worker starting in {path}" if tasks else f"{t.id}: worker starting on {branch}")
@@ -706,8 +708,9 @@ class Loop:
             return
         path = Path(wt["path"])
         try:
-            t = self.store.transition(t.id, t.version, State.IN_REVIEW, reviewer_session=sid)
+            t = self.store.transition(t.id, t.version, State.IN_REVIEW, reviewer_session=sid, owner=self._instance(sid, "reviewer", t.id))
         except (Conflict, StoreError) as e:
+            self._release(sid)
             log(f"{t.id}: cannot start review: {e}")
             return
         log(f"{t.id}: review starting")
@@ -767,8 +770,9 @@ class Loop:
         sid = f"reviewer-{t.id}"
         path = self.project.workspaces_dir / t.id
         try:
-            t = self.store.transition(t.id, t.version, State.IN_REVIEW, reviewer_session=sid)
+            t = self.store.transition(t.id, t.version, State.IN_REVIEW, reviewer_session=sid, owner=self._instance(sid, "reviewer", t.id))
         except (Conflict, StoreError) as e:
+            self._release(sid)
             log(f"{t.id}: cannot start review: {e}")
             return
         if not path.is_dir():

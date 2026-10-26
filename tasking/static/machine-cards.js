@@ -1,5 +1,6 @@
 // The task system's machines on Orchestra's pages (a plugin script; Orchestra.machineCards in
-// Orchestra's app.js), drawn as the old Agents column drew them:
+// Orchestra's app.js), inside Orchestra's machine-card frame, drawn as the old Agents column drew
+// them (the tickets themselves are the Tasks panel's, tasks-panel.js):
 // - a resident agent (the Supervisor, the Coordinator) is a row: its letter in its role's colour,
 //   what it last said, and its session chip (resident, working, waiting);
 // - workers and reviewers are their tickets: a card per ticket an instance is on, in the ticket's
@@ -11,9 +12,12 @@
 (async function () {
   if (!window.Orchestra || !Orchestra.machineCards) return;
   const API = "/api/plugins/tasks";
-  if (typeof window.sessionChip !== "function") {          // the transcript drawer, the chat, the session chips
-    await new Promise((ok) => { const s = document.createElement("script"); s.src = "/plugins/tasks/static/tasks.js"; s.onload = ok; s.onerror = ok; document.head.appendChild(s); });
+  if (!document.querySelector('link[href^="/plugins/tasks/static/tasks.css"]')) {        // the task system's look
+    const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "/plugins/tasks/static/tasks.css"; document.head.appendChild(l);
   }
+  window.__tasksJs = window.__tasksJs || (typeof window.sessionChip === "function" ? Promise.resolve()   // drawers, chat, chips
+    : new Promise((ok) => { const s = document.createElement("script"); s.src = "/plugins/tasks/static/tasks.js"; s.onload = ok; s.onerror = ok; document.head.appendChild(s); }));
+  await window.__tasksJs;
   let D = null, last = "";
   const e_ = (s) => esc(s);
   const ROLE_C = { supervisor: "var(--r-supervisor)", coordinator: "var(--r-coordinator)", worker: "var(--r-worker)", reviewer: "var(--r-reviewer)" };
@@ -26,11 +30,10 @@
 
   const css = document.createElement("style");
   css.textContent = `
-    .claimed .tkc-more { text-align:right; font-size:10.5px; color:var(--muted); text-decoration:underline dotted; cursor:pointer; margin:-2px 2px 4px }
-    .claimed h2 { margin-top:10px }
-    .claimed .tkc-q { display:flex; flex-wrap:wrap; gap:6px; margin:2px 0 6px }
-    .claimed .tkc-q .pill { cursor:default } .claimed .tkc-q b { font-family:var(--mono); font-size:12px; margin-left:4px }
-    .claimed .agent.unseen-agent { opacity:.6; border-style:dashed }`;
+    .tkc-more { text-align:right; font-size:10.5px; color:var(--muted); text-decoration:underline dotted; cursor:pointer; margin:6px 2px 0 }
+    .tkc-q { display:flex; flex-wrap:wrap; gap:6px; margin:2px 0 6px }
+    .tkc-q .pill { cursor:default } .tkc-q b { font-family:var(--mono); font-size:12px; margin-left:4px }
+    .agent.unseen-agent { opacity:.6; border-style:dashed }`;
   document.head.appendChild(css);
 
   // how many times the worker has been re-engaged on a ticket, and why (as the old Dashboard)
@@ -99,8 +102,16 @@
   };
 
   Orchestra.machineCards.register("tasks", {
-    bare: true,
     rank: (m) => RANK[roleOf(m)] ?? (kindOf(m) === "agent" ? 12 : 25),
+    // a few words for the Dashboard's machine list: what the machine is on now
+    summary(m) {
+      if (m.id === "task_scheduler") return D ? `${(D.tickets.IN_PROGRESS || 0) + (D.tickets.IN_REVIEW || 0)} being worked · ${D.tickets.OPEN || 0} waiting` : null;
+      if (kindOf(m) !== "agent") return null;
+      const live = sessionsOf(m).filter((s) => s.status === "running");
+      if (live.length) return live.map((s) => `${e_(s.instance || roleOf(m))} on ${e_((s.ticket || {}).id || "a turn")}`).join(" · ") + " " + chip(live[0]);
+      const s = sessionsOf(m)[0];
+      return s ? chip(s) : null;
+    },
     card(m, { compact } = {}) {
       if (m.id === "task_scheduler") return schedulerCard(m, compact);
       if (kindOf(m) !== "agent") return null;

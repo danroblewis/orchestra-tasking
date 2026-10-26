@@ -41,7 +41,7 @@ def plugin(orchestra_project) -> Plugin:
     """The plugin for the repository Orchestra serves (its entry point, in pyproject.toml)."""
     project = load_project(orchestra_project.repo_root)
     return Plugin("tasks", [Page("/tickets", "Tickets", STATIC / "tickets.html"), Page("/agents", "Agents", STATIC / "agents.html")],
-                  STATIC, router(project), scripts=["attention.js", "machine-cards.js"], machines=declared(project))
+                  STATIC, router(project), scripts=["attention.js", "machine-cards.js", "tasks-panel.js"], machines=declared(project))
 
 
 def declared(project) -> list[Declared]:
@@ -343,6 +343,33 @@ def router(project) -> APIRouter:
         now_t = time.time()
         store._mutate_runtime(lambda d: d.__setitem__("supervisor_seen_at", now_t))
         return {"ok": True, "seen_at": now_t}
+
+    @r.get("/board")
+    async def board() -> dict:
+        """The Tasks panel: every ticket in flight (not waiting to start, not finished), with the
+        machine instance that owns it now and that instance's session, newest activity first; and
+        the queue by state, the capacity and the pause."""
+        snap = store.snapshot()
+        running = {s.get("ticket_id"): s for s in snap["sessions"] if s.get("status") == "running" and s.get("ticket_id")}
+        waiting = {"READY_FOR_REVIEW": "waiting for a reviewer", "REJECTED": "rejected: waiting for its worker",
+                   "APPROVED": "approved", "BLOCKED": "blocked: waiting for a decision"}
+        flight = []
+        for t in snap["tickets"]:
+            if t["state"] in ("OPEN", "DONE", "CANCELLED"):
+                continue
+            s = running.get(t["id"])
+            flight.append({**{k: t.get(k) for k in ("id", "title", "state", "owner", "state_since", "worker_turns", "reviewer_rejections",
+                                                       "gate_rejections", "blocked_reason", "milestone_id")},
+                           "waiting": None if s else waiting.get(t["state"], ""),
+                           "session": ({**{k: v for k, v in s.items() if k not in ("partial_text", "last_text")}, "alive": _alive(s.get("pid")),
+                                        "text": (s.get("partial_text") or s.get("last_text") or "")[-300:]} if s else None)})
+        flight.sort(key=lambda x: (x["session"] is None, x["state_since"] or ""), reverse=False)
+        counts: dict[str, int] = {}
+        for t in snap["tickets"]:
+            counts[t["state"]] = counts.get(t["state"], 0) + 1
+        loop = store.runtime().get("control") or {}
+        return {"ok": True, "now": time.time(), "tickets": flight, "counts": counts, "capacity": store.capacity(),
+                "pickup_paused": store.pickup_paused(), "scheduler": _alive(loop.get("pid"))}
 
     @r.get("/agents")
     async def agents_view() -> dict:

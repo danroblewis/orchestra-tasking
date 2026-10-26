@@ -118,6 +118,7 @@ class Ticket:
     depends_on: list[str] = field(default_factory=list)
     branch: str | None = None
     worker_session: str | None = None
+    owner: str | None = None        # the machine instance working it now (worker/1, reviewer/2); set by the scheduler
     reviewer_session: str | None = None
     reviewed_commit: str | None = None
     blocked_reason: str | None = None

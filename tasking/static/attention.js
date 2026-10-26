@@ -14,7 +14,8 @@
   async function ready() {
     if (!window.marked) await load("https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js").catch(() => {});
     if (!window.DOMPurify) await load("https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js").catch(() => {});
-    if (typeof window.openTranscript !== "function") await load("/plugins/tasks/static/tasks.js");
+    window.__tasksJs = window.__tasksJs || (typeof window.openTranscript === "function" ? Promise.resolve() : load("/plugins/tasks/static/tasks.js").catch(() => {}));
+    await window.__tasksJs;                          // loaded once, whichever of the task system's scripts asks first
   }
 
   const css = document.createElement("style");

@@ -150,6 +150,8 @@ class LocalStore:
             for k, v in fields.items():
                 if k in Ticket.__dataclass_fields__:
                     d[k] = v
+            if to_state not in ACTIVE:                       # back to waiting: nobody owns it
+                d["owner"] = fields.get("owner")
             d["state"] = to_state.value
             d["state_since"] = now()
             d["updated_at"] = d["state_since"]
@@ -159,7 +161,7 @@ class LocalStore:
             _write(self.project.tickets_file, data)
             t = Ticket.from_dict(d)
         self.measures.write(points)
-        self.events.emit("ticket_transition", ticket=ticket_id, **{"from": src.value, "to": to_state.value})
+        self.events.emit("ticket_transition", ticket=ticket_id, owner=t.owner, **{"from": src.value, "to": to_state.value})
         return t
 
     def add_note(self, ticket_id: str, note: Note) -> None:

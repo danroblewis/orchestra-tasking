@@ -67,3 +67,14 @@ def test_every_agent_is_its_own_machine(env):
     assert turns and all(e["source"] == "worker/1" for e in turns)
     reports = [e for e in evs if e["type"] == "ticket_transition" and (e["data"] or {}).get("to") == "READY_FOR_REVIEW"]
     assert reports and reports[0]["source"] in ("worker/1", "task_scheduler")
+
+
+def test_the_scheduler_assigns_ownership_and_clears_it(env):
+    project, store, events, repo = env
+    ms = store.create_milestone(name="m")
+    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    Loop(project, store, events).run(once=True)
+    owners = [(e["data"]["to"], e["data"].get("owner")) for e in events.bus.read(0, limit=10000)[0]
+              if e["type"] == "ticket_transition" and e.get("subject") == t.id]
+    assert ("IN_PROGRESS", "worker/1") in owners and ("IN_REVIEW", "reviewer/1") in owners
+    assert ("READY_FOR_REVIEW", None) in owners and store.get_ticket(t.id).owner is None   # DONE: nobody owns it
