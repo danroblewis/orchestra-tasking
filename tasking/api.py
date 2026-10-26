@@ -31,9 +31,14 @@ def _ticket_view(store: LocalStore, ticket_id: str) -> dict:
 
 
 def handle(project: Project, store: LocalStore, command: str, args: dict[str, Any],
-           role: str = "", ticket_env: str = "") -> dict:
+           role: str = "", ticket_env: str = "", direct: bool = False) -> dict:
     a = args or {}
     author = role or "orchestra"
+    # An agent's change to tickets or milestones is a request to the task system, over the bus
+    # (tasking/requests.py); the scheduler's desk applies it here, with direct=True.
+    from . import requests
+    if not direct and command in requests.REQUESTS and requests.via_bus():
+        return requests.ask(project, command, a, role)
 
     if command == "project_status":
         snap = store.snapshot()

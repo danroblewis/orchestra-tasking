@@ -43,6 +43,7 @@ class Config:
     model: str | None = None
     thinking: str | None = None
     workers: int = 1
+    agents_serve: list[str] = field(default_factory=lambda: ["worker", "reviewer"])   # roles the AI agents answer
     reviewers: int = 1
     turn_timeout: float = 0.0          # hard cap per turn; 0 = none
     silence_timeout: float = 1200.0    # end a turn after this long with nothing from the harness
@@ -104,6 +105,7 @@ class Config:
             model=a.get("model") or None,
             thinking=a.get("thinking"),
             workers=int(a.get("workers", 1)),
+            agents_serve=list(a.get("serves", ["worker", "reviewer"])),
             reviewers=int(a.get("reviewers", 1)),
             turn_timeout=parse_duration(a.get("turn_timeout"), 0.0),
             silence_timeout=parse_duration(a.get("silence_timeout"), 1200.0),

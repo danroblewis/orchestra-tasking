@@ -26,6 +26,7 @@ class AgentRunner:
         self.follow = Follower(loop.events)
         self.threads: dict[str, threading.Thread] = {}      # assignment -> the thread running it
         self.sessions: dict[str, str] = {}                   # assignment -> its session id
+        self.instances: dict[str, str] = {}                  # assignment -> the instance it runs as
 
     def busy(self) -> bool:
         return any(th.is_alive() for th in self.threads.values())
@@ -34,11 +35,13 @@ class AgentRunner:
         for aid in [a for a, th in self.threads.items() if not th.is_alive()]:
             self.threads.pop(aid)
         for ev in self.follow.new():
-            if ev.get("type") == ASSIGNED and ev.get("role") in self.ROLES and ev.get("assignment") not in self.threads:
+            serves = [r for r in self.ROLES if r in (self.loop.cfg.agents_serve or [])]   # [agents] serves: another machine may take a role
+            if ev.get("type") == ASSIGNED and ev.get("role") in serves and ev.get("assignment") not in self.threads:
                 th = threading.Thread(target=self._run, args=(ev,), daemon=True, name=ev["assignment"])
                 self.threads[ev["assignment"]] = th
                 th.start()
-            elif ev.get("type") == RELEASED and ev.get("assignment") in self.sessions:
+            elif ev.get("type") == RELEASED and ev.get("assignment") in self.sessions \
+                    and ev.get("instance") in (None, self.instances.get(ev["assignment"])):     # a release for another machine is not ours
                 proc = self.loop.live_procs.get(self.sessions[ev["assignment"]])
                 if proc is not None:
                     try:
@@ -54,7 +57,7 @@ class AgentRunner:
         path = Path(a["workspace"])
         sid = f"{role}-{tid}"
         instance = loop._instance(sid, role, tid)
-        self.sessions[aid] = sid
+        self.sessions[aid], self.instances[aid] = sid, instance
         say = lambda kind, **data: self.events.publish(kind, {"assignment": aid, "ticket": tid, "role": role, **data},
                                                        source=instance, subject=tid)
         say(ACCEPTED, instance=instance, session=sid)
@@ -86,6 +89,7 @@ class AgentRunner:
         finally:
             done.set()
             self.sessions.pop(aid, None)
+            self.instances.pop(aid, None)
             say(REPORTED, report=report, failed=failed, text=(text or "")[-2000:], commit=commit)
 
     def _work_task(self, t, a: dict) -> tuple[str, str]:

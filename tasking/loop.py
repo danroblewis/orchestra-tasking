@@ -128,8 +128,13 @@ class Loop:
             except ValueError:  # not the main thread (tests)
                 pass
         self.recover()
+        from .requests import Desk
+        self.desk = Desk(self.project, self.store, self.events, log)   # planners' requests (tasking/requests.py)
+        self.desk.start()
         self.events.emit("loop_started")
-        self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "listens_for": [], "kind": "program",
+        from .requests import REQUESTS
+        self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
+                                                          "listens_for": sorted({*REQUESTS.values(), ACCEPTED, WORKING, REPORTED}),
                                                           "does": "assigns ready tickets to workers and reviewers; starts the agents"})
         log(f"project {self.project.key} on {self.project.repo_root}; workers={self.cfg.workers} reviewers={self.cfg.reviewers}")
         self._start_project_agents()
@@ -151,6 +156,8 @@ class Loop:
                     break
                 time.sleep(3)
         finally:
+            if getattr(self, "desk", None):
+                self.desk.stop.set()
             if self.control:
                 self.control.stop()
             self._shutdown_markers()
@@ -330,7 +337,7 @@ class Loop:
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
         prompt_file.write_text(system_prompt, encoding="utf-8")
         source = self._instance(session_id, role, ticket_id)
-        extra_env = {**(extra_env or {}), "ORCHESTRA_SOURCE": source}
+        extra_env = {**(extra_env or {}), "ORCHESTRA_SOURCE": source, "TASKING_REQUESTS": "bus"}   # its changes are requests
         self._announce(source, role)
         return self.harness.start(SessionSpec(
             session_id=session_id, session_dir=self.project.sessions_dir, cwd=cwd,
@@ -653,13 +660,22 @@ class Loop:
             if ev.get("type") not in (ACCEPTED, WORKING, REPORTED) or aid not in out:
                 continue
             a = out[aid]
+            if ev["type"] == ACCEPTED and a.get("instance") and a["instance"] != ev.get("instance"):
+                # two machines answered: the first keeps it, the other is told to stop
+                self.events.publish(RELEASED, {"assignment": aid, "ticket": a["ticket"], "role": a["role"], "instance": ev.get("instance"),
+                                               "reason": f"already taken by {a['instance']}"}, subject=a["ticket"])
+                continue
             if ev["type"] == ACCEPTED:
                 a = self.store.update_assignment(aid, instance=ev.get("instance"), lease_until=time.time() + LEASE_S) or a
                 t = self.store.get_ticket(a["ticket"])
                 if t.state in ACTIVE:
                     self.store.update_ticket(t.id, None, owner=ev.get("instance"))
-            elif ev["type"] == WORKING:
+            elif ev["type"] == WORKING and ev.get("source") in (a.get("instance"), None):
                 self.store.update_assignment(aid, lease_until=time.time() + LEASE_S)
+            elif ev["type"] == WORKING:
+                continue
+            elif a.get("instance") and ev.get("source") not in (a["instance"],):
+                continue                                                  # a report from a machine that does not hold it
             else:
                 self.store.drop_assignment(aid)
                 out.pop(aid, None)

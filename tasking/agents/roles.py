@@ -63,12 +63,12 @@ register(Role(
 ))
 # Per-ticket roles are not resident; the loop starts them on demand.
 register(Role(name="worker", session_id="worker-{ticket}", prompt="worker", tools=("report_ticket",), resident=False,
-              wake_on=("ticket_transition:IN_PROGRESS", "ticket_transition:REJECTED"),
+              wake_on=("task.assigned", "task.released"),
               triggers=("an OPEN ticket whose dependencies are DONE and whose milestone is open", "a free worker slot"),
               emits=("ticket_transition:READY_FOR_REVIEW", "ticket_transition:BLOCKED"),
               description="Implements one ticket on its own branch and reports READY_FOR_REVIEW or BLOCKED."))
 register(Role(name="reviewer", session_id="reviewer-{ticket}", prompt="reviewer", tools=("report_review",), resident=False,
-              wake_on=("ticket_transition:READY_FOR_REVIEW",), triggers=("a free reviewer slot",),
+              wake_on=("task.assigned", "task.released"), triggers=("a free reviewer slot",),
               emits=("ticket_transition:APPROVED", "ticket_transition:REJECTED"),
               description="Reviews one ticket's diff like a pull request and reports APPROVED or REJECTED."))
 
