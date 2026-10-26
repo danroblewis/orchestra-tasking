@@ -7,6 +7,8 @@ import threading
 import time
 from pathlib import Path
 
+import psutil
+
 from . import agents
 from .agents.roles import ROLES, resident_roles
 from .config import Project
@@ -86,6 +88,8 @@ class Loop:
                 self.store.transition(t.id, t.version, RECOVERY[t.state])
                 log(f"recovered {t.id}: {t.state} -> {RECOVERY[t.state]}")
         for s in self.store.sessions():
+            if s.get("status") == "running" and s.get("pid"):
+                self._kill_orphan(int(s["pid"]), s["id"])
             if s.get("status") == "running":
                 # The previous loop died without closing this turn (crash or kill -9).
                 self.events.emit("turn_interrupted", session=s["id"], agent=s.get("kind"), ticket=s.get("ticket_id") or None,
@@ -119,7 +123,7 @@ class Loop:
                 pass
         self.recover()
         self.events.emit("loop_started")
-        self.events.publish("orchestra.machine.started", {"mode": "continuous", "listens_for": [], "kind": "program",
+        self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "listens_for": [], "kind": "program",
                                                           "does": "assigns ready tickets to workers and reviewers; starts the agents"})
         log(f"project {self.project.key} on {self.project.repo_root}; workers={self.cfg.workers} reviewers={self.cfg.reviewers}")
         self._start_project_agents()
@@ -144,6 +148,11 @@ class Loop:
             if self.control:
                 self.control.stop()
             self._shutdown_markers()
+            for p in list(self.live_procs.values()):          # a worker or reviewer mid-turn: no orphans (AGENTS.md rule 2)
+                try:
+                    p.close()
+                except Exception as e:  # noqa: BLE001 - shut the rest down regardless
+                    log(f"closing a running session: {e!r}")
             for name, p in self.agent_procs.items():
                 p.close()
                 self.store.set_session(self.agents[name].session_id if name in self.agents else name.replace("_", "-"),
@@ -153,6 +162,19 @@ class Loop:
             self.store._mutate_runtime(lambda d: d.pop("control", None)
                                        if (d.get("control") or {}).get("pid") == os.getpid() else None)
             self.events.emit("loop_stopped")
+
+    @staticmethod
+    def _kill_orphan(pid: int, session_id: str) -> None:
+        """A turn's process outlived the loop that started it (the loop was killed): stop it, so
+        it neither keeps working unseen nor holds its session against the retry."""
+        import signal
+        try:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                return
+            os.killpg(pid, signal.SIGTERM)                # each turn runs in a process group of its own
+            log(f"{session_id}: stopped its orphaned process {pid}")
+        except (psutil.NoSuchProcess, ProcessLookupError, PermissionError, OSError):
+            pass
 
     def _shutdown_markers(self) -> None:
         """Every turn still running is about to be cut off by this shutdown. Say so in the
@@ -330,7 +352,7 @@ class Loop:
         agent = self.agents.get(role) or all_agents(self.project).get(role)
         mode = {"continuous": "continuous", "scheduled": "scheduled", "ad_hoc": "ad hoc"}.get(getattr(agent, "kind", ""), "ad hoc")
         listens = sorted({w.split(":")[0] for w in (getattr(agent, "wake_on", None) or [])})
-        self.events.publish("orchestra.machine.started", {"mode": mode, "listens_for": listens, "kind": "agent", "role": role,
+        self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": mode, "listens_for": listens, "kind": "agent", "role": role,
                                                           "harness": self.harness.name, "model": self.cfg.model},
                             source=source)
 
@@ -455,7 +477,7 @@ class Loop:
             proc.open()
         except Exception:
             pass
-        self.store.set_session(sid, kind=role, status="running", ticket_id=ticket_id, pid=self._pid(proc),
+        self.store.set_session(sid, kind=role, status="running", ticket_id=ticket_id, pid=self._pid(proc), instance=self._slots.get(sid, role),
                                session_file=proc.session_file, harness=proc.harness_name, started_at=time.time(), last_text="",
                                partial_text="", thinking_chars=0,
                                last_output_at=None, phase="prompting", phase_since=time.time(),

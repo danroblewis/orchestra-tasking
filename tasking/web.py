@@ -16,7 +16,7 @@ from pathlib import Path
 import psutil
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from orchestra.plugins import Page, Plugin
+from orchestra.plugins import Declared, Page, Plugin
 
 from .config import load_project
 from .events import Events
@@ -41,7 +41,18 @@ def plugin(orchestra_project) -> Plugin:
     """The plugin for the repository Orchestra serves (its entry point, in pyproject.toml)."""
     project = load_project(orchestra_project.repo_root)
     return Plugin("tasks", [Page("/tickets", "Tickets", STATIC / "tickets.html"), Page("/agents", "Agents", STATIC / "agents.html")],
-                  STATIC, router(project), scripts=["attention.js"])
+                  STATIC, router(project), scripts=["attention.js", "machine-cards.js"], machines=declared(project))
+
+
+def declared(project) -> list[Declared]:
+    """The machines the task system provides, for Orchestra's Machines page before they run: the
+    scheduler (a program) and every agent (an AI agent each)."""
+    from .org import all_agents
+    out = [Declared("task_scheduler", "program", "Assigns ready tickets to workers and reviewers, and starts the agents.", "continuous")]
+    for a in all_agents(project).values():
+        mode = {"continuous": "continuous", "scheduled": "scheduled", "ad_hoc": "ad hoc"}.get(a.kind, "ad hoc")
+        out.append(Declared(a.name, "agent", a.description, mode, sorted({w.split(":")[0] for w in a.wake_on})))
+    return out
 
 
 def router(project) -> APIRouter:
@@ -348,6 +359,21 @@ def router(project) -> APIRouter:
                         "resident": a.resident, "paused": bool(store.agent_state(a.name).get("paused")),
                         "status": "working" if jobs else ("waiting" if alive else "not running"), "jobs": jobs})
         loop = store.runtime().get("control") or {}
-        return {"ok": True, "loop": {**loop, "alive": _alive(loop.get("pid"))}, "agents": out}
+        # every agent session as the machine instance it runs (or last ran) as, with its ticket
+        tickets = {t["id"]: t for t in snap["tickets"]}
+        insts = []
+        for s in snap["sessions"]:
+            t = tickets.get(s.get("ticket_id") or "")
+            insts.append({"session": s["id"], "instance": s.get("instance") or s.get("kind"), "role": s.get("kind"),
+                          "status": s.get("status"), "alive": _alive(s.get("pid")), "phase": s.get("phase"),
+                          "phase_since": s.get("phase_since"), "tool": s.get("tool_name"), "started_at": s.get("started_at"),
+                          "settled_at": s.get("settled_at"), "last_text": (s.get("partial_text") or s.get("last_text") or "")[-300:],
+                          "ticket": {"id": t["id"], "title": t["title"], "state": t["state"]} if t else None})
+        counts = {}
+        for t in snap["tickets"]:
+            counts[t["state"]] = counts.get(t["state"], 0) + 1
+        return {"ok": True, "loop": {**loop, "alive": _alive(loop.get("pid"))}, "agents": out, "sessions": insts,
+                "tickets": counts, "capacity": store.capacity(), "pickup_paused": store.pickup_paused(),
+                "harness": project.config.harness, "model": project.config.model}
 
     return r
