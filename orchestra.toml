@@ -11,3 +11,25 @@ strategy = "conservation"
 window = "60m"
 step = "30s"
 every = "5m"
+
+# ---- the task system (tasking): sections Orchestra itself ignores ----
+
+[project]
+base_branch = "main"
+ticket_prefix = "TK"
+push = false
+
+[agents]
+harness = "pi"           # pi | claude_code | codex: the product that runs the agents
+thinking = "medium"
+workers = 1
+reviewers = 1
+silence_timeout = "20m"
+
+[gate]
+batch_size = 1
+timeout = "900s"
+
+[[gate.unit]]
+name = "unit"
+command = "uv run python -m pytest -q tests/unit"

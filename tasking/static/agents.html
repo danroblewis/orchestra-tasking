@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents · tasks</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<link rel="stylesheet" href="/static/style.css?v={{v}}">
+</head>
+<body>
+<nav id="nav"><a href="/">Dashboard</a><a href="/machines">Machines</a><a href="/dynamics">Dynamics</a><a href="/core">Core</a><span class="muted" id="proj"></span><span class="muted" id="conn" style="margin-left:auto"></span></nav>
+<div class="layout two">
+  <div class="col on">
+    <div class="col-head"><h1>Agents</h1><span class="sub" id="agents-sub"></span></div>
+    <div id="loop" class="panel"></div>
+    <div id="agents"></div>
+  </div>
+  <div class="col on">
+    <div class="col-head"><h1>Staging environment</h1></div>
+    <div class="panel env" id="staging-head"></div>
+    <div class="term" id="staging"></div>
+  </div>
+</div>
+<div id="tip" class="tip" hidden></div>
+<div id="overlay" class="overlay" onclick="if(event.target===this)closeDrawer()"><div id="drawer" class="drawer"></div></div>
+<script src="/static/app.js?v={{v}}"></script>
+<script src="/plugins/tasks/static/tasks.js?v={{v}}"></script>
+<script>
+// The task system's agents (the Supervisor, the Coordinator, workers and reviewers per ticket, …)
+// and what each is doing now; the operator's controls for new work. Lifted from Orchestra's
+// Dashboard as it was before the task system was removed.
+let STATE = null, AGENTS = null;
+
+async function refresh() {
+  try {
+    const [st, ag] = await Promise.all([fetch(API + "/state").then((r) => r.json()), fetch(API + "/agents").then((r) => r.json())]);
+    STATE = st; AGENTS = ag; $("conn").textContent = "live";
+    render();
+  } catch (e) { $("conn").textContent = "disconnected"; }
+}
+
+function render() {
+  const loop = AGENTS.loop || {};
+  $("loop").innerHTML = loop.alive
+    ? `<b>The loop is running</b> <span class="muted">pid ${esc(loop.pid)}</span><div class="mctl" style="margin-top:6px">${capacityCtl(STATE)}${STATE.pickup_paused ? "<span>new work PAUSED</span>" : ""}<button class="ctl ${STATE.pickup_paused ? "paused" : ""}" onclick="togglePause()">${STATE.pickup_paused ? "▶ resume" : "⏸ pause new work"}</button></div>`
+    : `<b>The loop is not running.</b> <span class="muted">It assigns tickets to workers and reviewers and keeps the resident agents up: <code>tasking run</code>.</span>`;
+  const ms = AGENTS.agents.map((a) => ({ ...a, engagement: [{ mode: a.resident ? "continuous" : "per ticket", driver: "harness" }], flows: [], bootstrap: false }));
+  const working = ms.reduce((n, m) => n + m.jobs.length, 0);
+  $("agents-sub").textContent = `${ms.length} agents · ${working} job${working === 1 ? "" : "s"}`;
+  $("agents").innerHTML = ms.map((m) => machineCard(m)).join("") || `<div class="empty">No agents defined.</div>`;
+}
+
+async function control(body) {
+  const r = await fetch(API + "/control", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) alert(await r.text()); refresh();
+}
+function capacityCtl(s) {
+  const c = s.capacity || {};
+  const step = (kind, n) => `<button class="ctl" style="padding:0 6px" onclick="event.stopPropagation();setCapacity('${kind}',${n})" title="${n < 0 ? "one fewer" : "one more"} ${kind}">${n < 0 ? "−" : "+"}</button>`;
+  return `<span title="Concurrent workers and reviewers.">${step("workers", -1)}<b>${c.max_workers ?? "?"}</b>${step("workers", 1)} workers · ${step("reviewers", -1)}<b>${c.max_reviewers ?? "?"}</b>${step("reviewers", 1)} reviewers</span>`;
+}
+function setCapacity(kind, delta) {
+  const c = (STATE && STATE.capacity) || {};
+  const body = { action: "capacity", workers: c.max_workers, reviewers: c.max_reviewers };
+  body[kind] = Math.max(0, (c["max_" + kind] || 0) + delta);
+  control(body);
+}
+function togglePause() { control({ action: STATE && STATE.pickup_paused ? "resume" : "pause" }); }
+
+async function refreshStaging() {
+  try {
+    const d = await (await fetch(API + "/staging")).json();
+    const head = $("staging-head");
+    const ok = d.status === "running" && d.alive;
+    head.style.setProperty("--ec", !d.configured ? "var(--muted)" : ok ? "#22c55e" : d.status === "starting" ? "#f59e0b" : "#ef4444");
+    if (!d.configured) head.innerHTML = '<span class="muted">Not configured. Add a [staging] section to orchestra.toml.</span>';
+    else if (!d.current_build_id) head.innerHTML = '<span class="muted">No build deployed yet. The gate deploys the next landed build, or run <code>tasking staging deploy</code>.</span>';
+    else head.innerHTML = `<div class="kv"><div>status</div><div><span class="led"></span>${esc(d.status)}${d.alive ? "" : " (process not running)"}</div>
+        <div>build</div><div class="num">${esc(d.current_build_id)} · ${esc((d.build && d.build.commit || "").slice(0, 10))}</div>
+        <div>deployed</div><div class="num">${d.deployed_at ? esc(d.deployed_at) : "—"}</div>
+        <div>local</div><div><a href="${esc(d.local_url || "")}" target="_blank">${esc(d.local_url || "")}</a></div>
+        ${d.public_url ? `<div>public</div><div><a href="${esc(d.public_url)}" target="_blank">${esc(d.public_url)}</a></div>` : ""}</div>`;
+    const el = $("staging"); el.innerHTML = highlightLog(d.log || "");
+  } catch (e) {}
+}
+
+refresh(); refreshStaging();
+setInterval(refresh, 2500); setInterval(refreshStaging, 3000);
+openFromHash();
+</script>
+</body>
+</html>

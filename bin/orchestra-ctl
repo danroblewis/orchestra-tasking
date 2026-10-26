@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Orchestra watching this repository: its host and web UI. Runs with Orchestra's own environment
-# (ORCHESTRA_HOME, default ~/orchestra_2).
+# Orchestra watching this repository: its host and web UI, run from this repository's environment
+# (.venv, `uv sync`), where Orchestra is installed with the task system's plugin (its Tickets and
+# Agents pages). The task system's loop (`tasking run`) is started apart: it runs AI agents.
 #   bin/orchestra-ctl start | stop | status | restart <name>
 set -euo pipefail
 cd "$(dirname "$0")/.."
 RUN=run; mkdir -p "$RUN"
-HOME_O="${ORCHESTRA_HOME:-$HOME/orchestra_2}"; PY="$HOME_O/.venv/bin/python"; PORT="${PORT:-8060}"
+PY=.venv/bin/python; PORT="${PORT:-8060}"
 NAMES="host web"
 start() {
   local name=$1; shift
