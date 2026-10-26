@@ -50,7 +50,7 @@ function buildModel(s) {
   const msStats = {};
   for (const m of msOrder) {
     const all = s.tickets.filter((t) => t.milestone_id === m.id), done = all.filter((t) => DONE.has(t.state)).length;
-    const cls = !all.length ? "msnext" : done === all.length ? "msdone" : "mscur";
+    const cls = !all.length ? "msnext" : done === all.length ? "msdone" : "";
     msStats[m.id] = { all: all.length, done };
     nodes.push({ id: `ms:${m.id}`, kind: "ms", m, w: MW, h: MH, cls, open: opened.has(m.id), stats: msStats[m.id] });
   }
