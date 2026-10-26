@@ -42,8 +42,9 @@ broken without updating the spec and saying so in the commit.
     template project and its runner, not a package. No `sys.path` manipulation; the one
     exception is pytest's `pythonpath` in `pyproject.toml`, for the tests only, so that they can
     import `conftest`, `fake_machine` and `demo.run`. Orchestra comes from `../orchestra_2`
-    (editable) and the task system uses its bus, metrics store, config and plugin interface,
-    nothing else.
+    (editable: a clone of github.com/danroblewis/orchestra beside this repository, named
+    `orchestra_2` as `[tool.uv.sources]` says) and the task system uses its bus, metrics store,
+    config and plugin interface, nothing else.
 
 ## Conventions
 

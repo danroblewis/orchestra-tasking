@@ -62,14 +62,13 @@ Where to look, at http://127.0.0.1:8071:
   them: `task.assigned` from the scheduler, `task.accepted`/`task.reported` from the machines,
   `task.requested` from the planner, `request.done` back. `task_web` appears once an operator
   control has been pressed.
-- **Dynamics**: a thin model, hidden at first. Seconds after the start the host saves a first
-  version with one stock, `tasks tickets (OPEN)` (the series `tasks_tickets{state="OPEN"}`), fed
-  by one flow, `tasks tickets created` (the counter `tasks_tickets_created_total`), attributed to
-  `task_scheduler`. A stock that only fills starts hidden, so the page looks empty until the
-  "stocks that only fill (1)" box is ticked. Discovery looks at a 60-minute window on a 5-second
-  grid (`[discovery]` in orchestra.toml: a shell ticket lives seconds, so at the usual 30 s its
-  whole life would fit inside one step), and the demo's twenty seconds of ticket changes give it
-  nothing more. A meaningful model is shown on the sample project, not here.
+- **Dynamics**: no model. With four tickets every series has fewer than five events, or
+  changes in fewer than five steps, which is discovery's bar for a stock or a flow (fewer
+  coincide by chance), so the page shows no model; "how it was found" lists each series with
+  why it was left out, and that list is the honest view of this run. Discovery looks at a
+  60-minute window on a 5-second grid (`[discovery]` in orchestra.toml: a shell ticket lives
+  seconds, so at the usual 30 s its whole life would fit inside one step). A model is shown on
+  the agents' demo in orchestra-agents, which runs fifteen tickets.
 - **Core**: the event log itself.
 
 ## To go on

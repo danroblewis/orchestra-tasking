@@ -12,10 +12,10 @@ page of Python using only Orchestra's library (`demo/machines/`). `SPEC.md` is t
 
 ## Try it
 
-    uv sync --extra dev                # needs Orchestra checked out beside this repository, at ../orchestra_2 ([tool.uv.sources])
+    uv sync --extra dev                # first clone github.com/danroblewis/orchestra beside this repository as `orchestra_2` (the path in [tool.uv.sources])
     uv run demo/run.py                 # a fresh demo project at ~/orchestra-tasking-demo, http://127.0.0.1:8071
 
-Four tickets are created and worked by the two programs; in about twenty seconds two are done
+Four tickets are created and worked by the two programs; in about half a minute two are done
 and two are blocked for a planner to decide. `demo/README.md` says what you will see and where.
 Ctrl-C stops everything; remove `~/orchestra-tasking-demo` first to run it again.
 
@@ -30,7 +30,9 @@ repository need not have Orchestra or the task system installed:
     uv run --project <this repo> tasking api --as planner create_milestone --args '{"name": "First"}'
     uv run --project <this repo> tasking api --as planner create_ticket --args '{"title": "…", "milestone_id": "M1", "description": "…", "acceptance": "…"}'
 
-Then run something that fills the roles (`demo/machines/` as they are, or your own). Settings
+Then run something that fills the roles: the demo's programs (`demo/machines/` as they are),
+your own, or the AI agents in orchestra-agents (Claude Code, Pi or Codex), which fill `worker`
+and `reviewer` over the same bus. Settings
 are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
 `~/.orchestrator/<key>/tasks/`; events go on Orchestra's bus. If your tasks live seconds, set
 `[discovery] step = "5s"` (with a window of 30–60 m) in `orchestra.toml`: Orchestra's default
