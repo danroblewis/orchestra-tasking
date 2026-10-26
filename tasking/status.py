@@ -1,8 +1,7 @@
-"""One-screen status: loop, agents, web, tunnels, merge gate, queue, staging."""
+"""One-screen status: the scheduler, who holds work, web, tunnels, merge gate, queue, staging."""
 
 from __future__ import annotations
 
-import os
 import re
 import time
 import urllib.request
@@ -10,7 +9,6 @@ from pathlib import Path
 
 import psutil
 
-from .agents.roles import ROLES, resident_roles
 from .config import Project
 from .model import State
 from .staging import Staging
@@ -63,26 +61,15 @@ def collect(project: Project, store: LocalStore) -> dict:
     cfg = project.config
     rt = store.runtime()
     now = time.time()
-    sessions = {s["id"]: s for s in rt.get("sessions", {}).values()}
     tickets = store.list_tickets()
     by_id = {t.id: t for t in tickets}
 
-    ctl = rt.get("control") or {}
-    loop_alive = _alive(ctl.get("pid"))
-    loop_ok = loop_alive and _http_ok(f"http://127.0.0.1:{ctl.get('port', 0)}/health")
-
-    agents = []
-    for role in resident_roles():
-        s = sessions.get(role.session_id, {})
-        alive = _alive(s.get("pid"))
-        agents.append({"id": role.session_id, "state": "working" if s.get("status") == "running" and alive
-                       else "resident" if alive else "down",
-                       "since": s.get("started_at"), "last": (s.get("last_text") or "")[:80]})
-    workers = [{"id": s["id"], "kind": s.get("kind"), "ticket": s.get("ticket_id"),
-                "title": by_id[s["ticket_id"]].title if s.get("ticket_id") in by_id else "",
-                "elapsed": round(now - (s.get("started_at") or now))}
-               for s in sessions.values() if s.get("kind") in ("worker", "reviewer") and s.get("status") == "running"
-               and _alive(s.get("pid"))]
+    sch = rt.get("scheduler") or {}
+    loop_ok = _alive(sch.get("pid"))
+    workers = [{"id": a.get("instance") or f"(offered to a {a['role']})", "kind": a["role"], "ticket": a["ticket"],
+                "title": by_id[a["ticket"]].title if a["ticket"] in by_id else "",
+                "elapsed": round(now - (a.get("assigned_at") or now))}
+               for a in (rt.get("assignments") or {}).values()]
 
     web = rt.get("web") or {}
     web_alive = _alive(web.get("pid"))
@@ -115,10 +102,8 @@ def collect(project: Project, store: LocalStore) -> dict:
 
     counts = {s.value: sum(1 for t in tickets if t.state == s) for s in State}
     return {
-        "project": {"key": project.key, "repo_root": str(project.repo_root), "base_branch": cfg.base_branch,
-                    "model": f"{cfg.provider or 'default'}/{cfg.model or 'default'}"},
-        "loop": {"running": loop_ok, "pid": ctl.get("pid"), "control_port": ctl.get("port")},
-        "agents": agents,
+        "project": {"key": project.key, "repo_root": str(project.repo_root), "base_branch": cfg.base_branch, "work": cfg.work},
+        "loop": {"running": loop_ok, "pid": sch.get("pid")},
         "workers": workers,
         "slots": {"workers": f"{sum(1 for w in workers if w['kind'] == 'worker')}/{store.capacity()['workers']}",
                   "reviewers": f"{sum(1 for w in workers if w['kind'] == 'reviewer')}/{store.capacity()['reviewers']}"},
@@ -154,15 +139,12 @@ def _ago(sec: float | None) -> str:
 def render(d: dict) -> str:
     L: list[str] = []
     p = d["project"]
-    L.append(f"{p['key']}  {p['repo_root']}  base={p['base_branch']}  model={p['model']}")
+    L.append(f"{p['key']}  {p['repo_root']}  base={p['base_branch']}  work={p['work']}")
     lp = d["loop"]
-    L.append(f"loop:      {'RUNNING' if lp['running'] else 'DOWN'}" + (f"  pid {lp['pid']}  control 127.0.0.1:{lp['control_port']}" if lp["running"] else "   (start with `tasking run`)"))
-    for a in d["agents"]:
-        mark = {"working": "●", "resident": "○", "down": "✗"}[a["state"]]
-        L.append(f"  {mark} {a['id']:17} {a['state']:9} {a['last']}")
+    L.append(f"scheduler: {'RUNNING' if lp['running'] else 'DOWN'}" + (f"  pid {lp['pid']}" if lp["running"] else "   (start with `tasking run`)"))
     w = d["web"]
     L.append(f"web:       {'UP' if w['up'] else 'DOWN'}" + (f"  {w['url']}" if w["url"] else "   (start with `orchestra web`)") +
-             (f"  tunnel: " + ", ".join("https://" + h for h in w["tunnel_hosts"]) if w["tunnel_hosts"] else ""))
+             ("  tunnel: " + ", ".join("https://" + h for h in w["tunnel_hosts"]) if w["tunnel_hosts"] else ""))
     pl = d["pipeline"]
     L.append(f"pipeline:  {'PAUSED ' + str(pl.get('reason')) if pl.get('paused') else 'running'}   slots: workers {d['slots']['workers']}, reviewers {d['slots']['reviewers']}" + ("   NEW WORKERS PAUSED" if d.get("pickup_paused") else ""))
     for x in d["workers"]:

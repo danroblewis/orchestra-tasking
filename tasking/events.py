@@ -6,14 +6,8 @@ the ticket (or milestone) it is about is its ``subject``, and its ``source`` is 
 emitted it. Subscribers in this process, and ``read``, get the flat shape the old code expects:
 the data's fields beside ``type``, ``ts`` and ``source``.
 
-The source is the machine that emitted the event:
-
-- the loop is ``task_scheduler``, a program: it assigns tickets and starts the agents;
-- an event about an agent's session (its turn starting, settling, timing out) is the agent's own,
-  sent as the instance the loop bound to that session (``bind``): ``supervisor``, ``coordinator``,
-  or a slot of a per-ticket role, ``worker/1``;
-- an agent's own tool call (``tasking api`` or the MCP server, in the agent's environment) is
-  ``ORCHESTRA_SOURCE``, which the loop sets to the same instance."""
+The source is the machine that emitted the event: the scheduler is ``task_scheduler``, the web
+plugin ``tasks-web``, and a ``tasking`` command run by someone else (``ORCHESTRA_SOURCE``) theirs."""
 
 from __future__ import annotations
 
@@ -34,12 +28,7 @@ ATTENTION = "task.attention_needed"
 
 
 def default_source() -> str:
-    if os.environ.get("ORCHESTRA_SOURCE"):
-        return os.environ["ORCHESTRA_SOURCE"]
-    role, ticket = os.environ.get("ORCHESTRA_ROLE"), os.environ.get("ORCHESTRA_TICKET")
-    if not role:
-        return LOOP
-    return f"{role}/{ticket}" if ticket else role
+    return os.environ.get("ORCHESTRA_SOURCE") or LOOP
 
 
 def flat(ev: dict) -> dict:
@@ -56,7 +45,6 @@ class Events(OrchestraEvents):
     def __init__(self, path: Path | None = None, *, bus: EventBus | None = None, source: str | None = None):
         super().__init__(path, bus=bus, source=source or default_source())
         self._flat_subs: list[Callable[[dict], None]] = []
-        self._bound: dict[str, str] = {}             # session id -> the instance its events come from
 
     @classmethod
     def for_project(cls, project: Project, source: str | None = None) -> Events:
@@ -67,16 +55,9 @@ class Events(OrchestraEvents):
     def subscribe(self, fn: Callable[[dict], None]) -> None:
         self._flat_subs.append(fn)
 
-    def bind(self, session: str, source: str) -> None:
-        self._bound[session] = source
-
-    def unbind(self, session: str) -> None:
-        self._bound.pop(session, None)
-
     def emit(self, type: str, **data: Any) -> dict:
-        subject = data.get("ticket") or data.get("milestone") or data.get("session")
-        source = self._bound.get(data.get("session") or "")
-        ev = self.publish(type, data or None, source=source, **({"subject": str(subject)} if subject else {}))
+        subject = data.get("ticket") or data.get("milestone")
+        ev = self.publish(type, data or None, **({"subject": str(subject)} if subject else {}))
         f = flat(ev)
         for fn in list(self._flat_subs):
             try:

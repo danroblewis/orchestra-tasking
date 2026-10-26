@@ -11,6 +11,7 @@ from tasking.events import Events
 from tasking.staging import Staging, record_build
 from tasking.store import LocalStore
 
+
 def asked(events, to):
     """What the task system asked the planner ``to`` to look at: its attention events on the bus."""
     return [e["data"] for e in events.bus.read(0, limit=100000)[0] if e.get("type") == "task.attention_needed" and (e.get("data") or {}).get("to") == to]
@@ -53,7 +54,8 @@ def test_deploy_restart_rollback(project, tmp_path):
         wake = asked(store.events, "supervisor")
         assert wake and "staging deploy" in wake[0]["reason"]
         # Supervision restarts a dead process.
-        import os, signal
+        import os
+        import signal
         os.killpg(st.state()["pid"], signal.SIGKILL)
         time.sleep(0.5)
         st.ensure_running()

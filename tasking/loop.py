@@ -1,4 +1,8 @@
-"""The orchestration loop: slots, ticks, workers, reviewers, gate, wake-ups. SPEC.md section 6."""
+"""The task system's scheduler: it offers ready tickets to the roles that work them (a worker, a
+reviewer) over Orchestra's bus, applies what the machines that took them report, lands approved
+code through the merge gate, and runs the probes in ``orchestra.toml``. It runs no agent: whatever
+fills a role answers (orchestra-agents' AI agents, a script; tasking/assignments.py). SPEC.md
+section 6."""
 
 from __future__ import annotations
 
@@ -7,28 +11,26 @@ import threading
 import time
 from pathlib import Path
 
-import psutil
-
-from . import agents
-from .agents.roles import ROLES, resident_roles
-from .assignments import ACCEPTED, ASSIGNED, LEASE_S, RELEASED, REPORTED, WORKING, Follower, brief, new_id
+from .assignments import (
+    ACCEPTED,
+    ASSIGNED,
+    LEASE_S,
+    RELEASED,
+    REPORTED,
+    WORKING,
+    Follower,
+    brief,
+    new_id,
+)
 from .config import Project
-from .control import ControlServer
-from .events import ATTENTION, Events
+from .events import Events
 from .gate import run_gate
+from .gate.runner import run_specs
 from .git import Git, GitError
-from .harness import AgentSession, SessionSpec, get_harness
 from .model import ACTIVE, RECOVERY, Note, State, Ticket, effective_priorities, is_ready
-from .org import AgentDef, all_agents, all_teams, effective_tools, tools_path
-from .probes import Prober, config_probes, team_probes
-from .roles import all_roles, due_at, parse_interval
+from .probes import Prober, config_probes
 from .staging import Staging
 from .store import Conflict, LocalStore, StoreError
-
-# Built-in resident roles; custom roles are loaded from the role store each tick.
-PROJECT_AGENTS = tuple(r.name for r in resident_roles() if r.name != "supervisor")
-RESIDENT_AGENTS = tuple(r.name for r in resident_roles())
-
 
 HOST_LOG: Path | None = None          # <state>/logs/orchestra-host.log once a loop starts
 HOST_LOG_MAX = 5_000_000              # bytes; the file is rotated to .1 past this
@@ -57,32 +59,13 @@ class Loop:
         self.events = events
         self.git = Git(project.repo_root)
         self.cfg = project.config
-        self.workers: dict[str, threading.Thread] = {}
-        self.reviewers: dict[str, threading.Thread] = {}
         self.gate_thread: threading.Thread | None = None
-        self.agent_threads: dict[str, threading.Thread] = {}
-        self.agent_procs: dict[str, AgentSession] = {}
-        self.harness = get_harness(self.cfg.harness)
+        self.preparing: dict[str, threading.Thread] = {}   # assignment -> the review being prepared (its tests run)
         self.stop = threading.Event()
         self.staging = Staging(project, store, events)
         self.prober = Prober(project, store, events)
-        self._pending_depth: dict[str, int] = {}     # agent -> deepest cause chain among its queued event wake-ups
-        self.control: ControlServer | None = None
-        self._events_offset = 0
-        self._started_at = time.time()
-        self._last_scheduled: dict[str, float] = {}
-        self.live_procs: dict[str, AgentSession] = {}   # session id -> session, while a turn runs
-        self.killed: set[str] = set()                # ticket ids whose agent the operator stopped
-        self.agents: dict[str, AgentDef] = {}        # every agent (built-in, implicit, custom), refreshed each tick
-        self.teams: dict = {}
-        self.role_defs: dict = {}
-        self._last_token_write: dict[str, float] = {}
-        self._partial: dict[str, dict] = {}         # session id -> the assistant text streamed so far this message
-        self._events_tail = self.events.read(0, limit=1)[1]   # only events after startup can wake agents
-        self._slots: dict[str, str] = {}             # session id -> the machine instance it runs as ("worker/1")
+        self.killed: set[str] = set()                # ticket ids whose assignee the operator stopped
         self.follow = Follower(events)               # what the assignees say back (tasking/assignments.py)
-        from .runner import AgentRunner
-        self.runner = AgentRunner(self)              # the AI agents that answer assignments (in this process for now)
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -93,14 +76,6 @@ class Loop:
             if t.state in ACTIVE:
                 self.store.transition(t.id, t.version, RECOVERY[t.state])
                 log(f"recovered {t.id}: {t.state} -> {RECOVERY[t.state]}")
-        for s in self.store.sessions():
-            if s.get("status") == "running" and s.get("pid"):
-                self._kill_orphan(int(s["pid"]), s["id"])
-            if s.get("status") == "running":
-                # The previous loop died without closing this turn (crash or kill -9).
-                self.events.emit("turn_interrupted", session=s["id"], agent=s.get("kind"), ticket=s.get("ticket_id") or None,
-                                 reason="orchestra was not running (it crashed or was killed) during this turn")
-            self.store.set_session(s["id"], status="idle", pid=None)
         # A gate run that was in flight when the previous loop died never finished;
         # mark it so the dashboard does not show it as running forever.
         for run in self.store.gate_runs():
@@ -116,8 +91,6 @@ class Loop:
             self.git.branch_delete(b.strip("* "))
 
     def run(self, once: bool = False) -> None:
-        # SIGTERM/SIGINT stop the loop cleanly so resident Pi processes are closed,
-        # not orphaned, and the control port is released.
         import signal
 
         def _stop(_sig, _frame):
@@ -128,17 +101,16 @@ class Loop:
             except ValueError:  # not the main thread (tests)
                 pass
         self.recover()
-        from .requests import Desk
+        me = {"pid": os.getpid(), "started_at": time.time()}
+        self.store._mutate_runtime(lambda d: d.__setitem__("scheduler", me))
+        from .requests import REQUESTS, Desk
         self.desk = Desk(self.project, self.store, self.events, log)   # planners' requests (tasking/requests.py)
         self.desk.start()
         self.events.emit("loop_started")
-        from .requests import REQUESTS
         self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
                                                           "listens_for": sorted({*REQUESTS.values(), ACCEPTED, WORKING, REPORTED}),
-                                                          "does": "assigns ready tickets to workers and reviewers; starts the agents"})
+                                                          "does": "offers ready tickets to workers and reviewers and applies their reports"})
         log(f"project {self.project.key} on {self.project.repo_root}; workers={self.cfg.workers} reviewers={self.cfg.reviewers}")
-        self._start_project_agents()
-        self._start_control()
         paused = self.store.pipeline()
         if paused.get("paused"):
             self.events.attention("supervisor", f"the pipeline is still paused after a restart: {paused.get('reason')}. "
@@ -154,52 +126,19 @@ class Loop:
                     log(f"tick error: {e!r}")
                 if once and not self._busy():
                     break
-                time.sleep(3)
+                time.sleep(0.5 if once else 3)
         finally:
             if getattr(self, "desk", None):
                 self.desk.stop.set()
-            if self.control:
-                self.control.stop()
-            self._shutdown_markers()
-            for p in list(self.live_procs.values()):          # a worker or reviewer mid-turn: no orphans (AGENTS.md rule 2)
-                try:
-                    p.close()
-                except Exception as e:  # noqa: BLE001 - shut the rest down regardless
-                    log(f"closing a running session: {e!r}")
-            for name, p in self.agent_procs.items():
-                p.close()
-                self.store.set_session(self.agents[name].session_id if name in self.agents else name.replace("_", "-"),
-                                       status="idle", pid=None)
-            # Only drop the control record if it is ours: a replacement loop may already
-            # have registered while this one was shutting down.
-            self.store._mutate_runtime(lambda d: d.pop("control", None)
-                                       if (d.get("control") or {}).get("pid") == os.getpid() else None)
+            for aid, a in self.store.assignments().items():     # whoever holds work stops: no orphans
+                self.events.publish(RELEASED, {"assignment": aid, "ticket": a["ticket"], "role": a["role"],
+                                               "reason": "the task system shut down"}, subject=a["ticket"])
+            # only drop the record if it is ours: a replacement may already have started
+            self.store._mutate_runtime(lambda d: d.pop("scheduler", None) if (d.get("scheduler") or {}).get("pid") == os.getpid() else None)
             self.events.emit("loop_stopped")
 
-    @staticmethod
-    def _kill_orphan(pid: int, session_id: str) -> None:
-        """A turn's process outlived the loop that started it (the loop was killed): stop it, so
-        it neither keeps working unseen nor holds its session against the retry."""
-        import signal
-        try:
-            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
-                return
-            os.killpg(pid, signal.SIGTERM)                # each turn runs in a process group of its own
-            log(f"{session_id}: stopped its orphaned process {pid}")
-        except (psutil.NoSuchProcess, ProcessLookupError, PermissionError, OSError):
-            pass
-
-    def _shutdown_markers(self) -> None:
-        """Every turn still running is about to be cut off by this shutdown. Say so in the
-        event log, so the transcript does not look like the agent stopped on its own."""
-        for s in self.store.sessions():
-            if s.get("status") == "running":
-                self.events.emit("turn_interrupted", session=s["id"], agent=s.get("kind"), ticket=s.get("ticket_id") or None,
-                                 reason="orchestra shut down (restart or stop) during this turn")
-
     def _busy(self) -> bool:
-        return bool(self.store.assignments()) or self.runner.busy() or \
-            any(t.is_alive() for t in [*self.agent_threads.values(), self.gate_thread] if t)
+        return bool(self.store.assignments()) or any(t.is_alive() for t in [*self.preparing.values(), self.gate_thread] if t)
 
     # -- tick ------------------------------------------------------------------
 
@@ -207,15 +146,12 @@ class Loop:
         self.project.reload_config()
         self.cfg = self.project.config
         self._reap()
+        self._service_kills()
+        self._follow()
         tickets = self.store.tickets_by_id()
         milestones = self.store.milestones_by_id()
         cap = self.store.capacity()
         eff = effective_priorities(tickets, self.cfg.aging_days_per_level)
-        ordered = sorted(tickets.values(), key=lambda t: (eff.get(t.id, {}).get("effective", t.priority), t.created_at, t.id))
-
-        self._service_kills()
-        self._follow()
-        tickets = self.store.tickets_by_id()
         ordered = sorted(tickets.values(), key=lambda t: (eff.get(t.id, {}).get("effective", t.priority), t.created_at, t.id))
         paused = self.store.pickup_paused()
         out = self.store.assignments().values()
@@ -234,7 +170,6 @@ class Loop:
             if t.state == State.REJECTED or (t.state == State.OPEN and is_ready(t, tickets, milestones)):
                 if self._assign(t, "worker"):
                     busy["worker"] += 1
-        self.runner.tick()                            # the agents answer what was just assigned
         if self.cfg.work == "code" and self.gate_thread is None and not self.store.pipeline().get("paused"):
             approved = [t for t in ordered if t.state == State.APPROVED]
             if approved:
@@ -245,180 +180,10 @@ class Loop:
             if self.cfg.work == "code" and t.state == State.CANCELLED and self.store.worktree(t.id):
                 self._drop_worktree(t)
         self.staging.ensure_running()
-        self._refresh_org()
         try:
-            self.prober.tick(config_probes(self.project) + team_probes(self.project, self.teams))
+            self.prober.tick(config_probes(self.project))
         except Exception as e:
             log(f"probes: {e!r}")
-        self._schedule_wakeups()
-        self._wake_on_events()
-        for target in list(self.agents):
-            if target == "supervisor" and self.agent_procs.get("supervisor") is None:
-                continue
-            if self.agents[target].builtin and not self.agents[target].resident:
-                continue  # workers and reviewers are started per ticket, not by wake-up
-            if target not in self.agent_threads:
-                st = self.store.agent_state(target)
-                if st.get("paused") or st.get("deleted"):
-                    continue  # wake-ups stay queued until resumed
-                reasons = list(dict.fromkeys(w["reason"] for w in self.store.drain_wakeups(target)))
-                if reasons:
-                    self._spawn(self.agent_threads, target, self._wake, target, reasons)
-
-    def _refresh_org(self) -> None:
-        """Reload roles, teams, and agents from their stores; start resident processes for
-        new agents, close processes for agents that were deleted, paused, or asked to restart."""
-        try:
-            roles, teams, agents_ = all_roles(self.project), all_teams(self.project), all_agents(self.project)
-        except Exception as e:
-            log(f"org: could not load roles, teams, or agents: {e}")
-            return
-        for name in list(self.agent_procs):
-            st = self.store.agent_state(name)
-            gone = name not in agents_ or st.get("deleted")
-            if gone or st.get("restart_requested") or st.get("reset_requested") or st.get("paused"):
-                if name in self.agent_threads:
-                    continue  # let the current turn finish first
-                proc = self.agent_procs.pop(name)
-                proc.close()
-                sid = agents_[name].session_id if name in agents_ else name.replace("_", "-")
-                self.store.set_session(sid, status="idle", pid=None)
-                if st.get("reset_requested"):
-                    archived = self.store.retire_session(sid)
-                    self.store.set_agent_state(name, reset_requested=False, context_hash=None, turn_depth=0)
-                    self.events.emit("agent_reset", session=sid, agent=name, archived=archived, by=st.get("reset_by") or "operator")
-                    log(f"{name}: session reset by request; previous transcript archived as {archived}")
-                elif st.get("restart_requested"):
-                    self.store.set_agent_state(name, restart_requested=False)
-                    log(f"{name}: session restarted by request")
-        self.role_defs, self.teams, self.agents = roles, teams, agents_
-        for name, agent in agents_.items():
-            if name == "supervisor" or name in self.agent_procs or not agent.resident or agent.builtin:
-                continue  # built-in residents are started up front by _start_project_agents
-            st = self.store.agent_state(name)
-            if st.get("paused") or st.get("deleted"):
-                continue
-            self._start_resident(agent)
-
-    def _start_resident(self, agent: AgentDef) -> None:
-        try:
-            proc = self._session_for(agent, agent.session_id)
-            proc.open()
-            self.agent_procs[agent.name] = proc
-            self.store.set_session(agent.session_id, kind=agent.name, status="idle", pid=self._pid(proc),
-                                   session_file=proc.session_file, harness=proc.harness_name)
-            log(f"{agent.session_id}: session resident ({self.harness.name})")
-        except Exception as e:
-            log(f"{agent.session_id}: could not start: {e}")
-
-    def _session_for(self, agent: AgentDef, session_id: str) -> AgentSession:
-        """A session for a custom or implicit agent: its roles' prompts plus its team's
-        responsibilities and access, its working directory in the team's space, and the
-        team chain's tools/ directories on PATH."""
-        team = self.teams.get(agent.team) if agent.team else None
-        cwd = self.project.repo_root
-        extra: dict[str, str] = {}
-        if team is not None:
-            cwd = team.space_dir(self.project)
-            (cwd / "tools").mkdir(parents=True, exist_ok=True)
-            dirs = [str(p) for p in tools_path(self.project, self.teams, agent)]
-            extra["PATH"] = os.pathsep.join(dirs + [os.environ.get("PATH", "")])
-            extra["ORCHESTRA_TEAM"] = team.name
-        return self._open_session(session_id, agent.name, agents.agent_prompt(self.project, agent, self.role_defs, self.teams),
-                                  effective_tools(agent, self.role_defs, self.teams), cwd, extra_env=extra)
-
-    def _open_session(self, session_id: str, role: str, system_prompt: str, tools: tuple[str, ...], cwd: Path,
-                      ticket_id: str = "", extra_env: dict[str, str] | None = None) -> AgentSession:
-        """Start a session on the configured harness. Which product runs the agent is
-        invisible past this point: the loop only sees the AgentSession interface. The
-        prompt the session starts with is kept beside its stderr log, so a transcript can
-        show what the agent was told, whatever the harness records."""
-        prompt_file = self.project.logs_dir / "agents" / f"{session_id}.prompt.md"
-        prompt_file.parent.mkdir(parents=True, exist_ok=True)
-        prompt_file.write_text(system_prompt, encoding="utf-8")
-        source = self._instance(session_id, role, ticket_id)
-        extra_env = {**(extra_env or {}), "ORCHESTRA_SOURCE": source, "TASKING_REQUESTS": "bus"}   # its changes are requests
-        self._announce(source, role)
-        return self.harness.start(SessionSpec(
-            session_id=session_id, session_dir=self.project.sessions_dir, cwd=cwd,
-            system_prompt=system_prompt, role=role, tool_groups=tools,
-            env={"ORCHESTRA_ROLE": role, "ORCHESTRA_REPO": str(self.project.repo_root), "ORCHESTRA_TICKET": ticket_id,
-                 **(extra_env or {})},
-            log_path=self.project.logs_dir / "agents" / f"{session_id}.stderr.log",
-            model=self.cfg.model, provider=self.cfg.provider, thinking=self.cfg.thinking, ticket_id=ticket_id,
-            compact_tokens=self.cfg.compact_tokens))
-
-    def _instance(self, session_id: str, role: str, ticket_id: str = "") -> str:
-        """The machine instance a session runs as, which is also the source of its events: a
-        resident agent is its role ("supervisor"); a worker or reviewer for one ticket takes the
-        lowest free slot of its role ("worker/1"), given back when its turn ends."""
-        if session_id in self._slots:
-            return self._slots[session_id]
-        if not ticket_id:
-            source = role
-        else:
-            taken = {s for s in self._slots.values() if s.startswith(role + "/")}
-            source = next(f"{role}/{n}" for n in range(1, 1000) if f"{role}/{n}" not in taken)
-        self._slots[session_id] = source
-        self.events.bind(session_id, source)
-        return source
-
-    def _release(self, session_id: str) -> None:
-        source = self._slots.pop(session_id, None)
-        if source and "/" in source:
-            self.events.unbind(session_id)
-
-    def _announce(self, source: str, role: str) -> None:
-        """An agent instance says what it is when it starts (AGENTS.md: a machine announces its
-        mode and what it listens for): an AI agent, on which harness and model, engaged how."""
-        agent = self.agents.get(role) or all_agents(self.project).get(role)
-        mode = {"continuous": "continuous", "scheduled": "scheduled", "ad_hoc": "ad hoc"}.get(getattr(agent, "kind", ""), "ad hoc")
-        listens = sorted({w.split(":")[0] for w in (getattr(agent, "wake_on", None) or [])})
-        self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": mode, "listens_for": listens, "kind": "agent", "role": role,
-                                                          "harness": self.harness.name, "model": self.cfg.model},
-                            source=source)
-
-    @staticmethod
-    def _pid(proc: AgentSession) -> int | None:
-        """The process that proves the session is alive: the harness's own when it keeps one
-        (Pi), otherwise this loop, which is what holds the session open. A dead session has
-        no pid at all, so the UI can never mistake a dead agent for a running one."""
-        if not proc.alive():
-            return None
-        return proc.pid or os.getpid()
-
-    def _wake_on_events(self) -> None:
-        """Match new events against every agent's wake_on list and queue wake-ups."""
-        evs, self._events_tail = self.events.read(self._events_tail, limit=5000)
-        for ev in evs:
-            if ev.get("type") == ATTENTION and ev.get("to"):           # the task system asks a planner to look
-                self.store.add_wakeup(ev["to"], ev.get("reason") or "the task system needs your attention")
-                continue
-            for name, agent in self.agents.items():
-                if name == "supervisor" or not agent.wake_on or not agent.matches_event(ev):
-                    continue
-                bits = [f"{k}={ev[k]}" for k in ("ticket", "milestone", "from", "to", "gate_run", "reason", "by", "probe", "subject", "note", "output") if ev.get(k)]
-                self.store.add_wakeup(name, f"event {ev['type']}" + (" " + " ".join(str(b)[:300] for b in bits) if bits else ""))
-                self._pending_depth[name] = max(self._pending_depth.get(name, 0), int(ev.get("depth", 0)))
-
-    def _schedule_wakeups(self) -> None:
-        """Queue a wake-up for agents whose interval has elapsed or whose daily time has come."""
-        now_t = time.time()
-        for name, agent in self.agents.items():
-            st = self.store.agent_state(name)
-            if st.get("paused") or st.get("deleted") or agent.kind == "ad_hoc":
-                continue
-            if agent.every:
-                secs = parse_interval(agent.every)
-                last = self._last_scheduled.get(name, self._started_at)
-                if now_t - last >= secs:
-                    self._last_scheduled[name] = last = now_t
-                    self.store.add_wakeup(name, f"scheduled check-in (every {agent.every})")
-                if st.get("next_scheduled_at") != last + secs:
-                    self.store.set_agent_state(name, next_scheduled_at=last + secs)
-            if agent.at and due_at(agent.at, st.get("last_at_fire"), now_t):
-                self.store.set_agent_state(name, last_at_fire=now_t)
-                self.store.add_wakeup(name, f"scheduled daily session ({agent.at})")
 
     def _service_kills(self) -> None:
         """The operator stops whoever works a ticket: its assignment is released (the machine
@@ -433,172 +198,10 @@ class Loop:
                     self.events.emit("agent_killed", ticket=tid, session=f"{a['role']}-{tid}")
 
     def _reap(self) -> None:
-        for d in (self.workers, self.reviewers, self.agent_threads):
-            for k in [k for k, th in d.items() if not th.is_alive()]:
-                d.pop(k)
+        for k in [k for k, th in self.preparing.items() if not th.is_alive()]:
+            self.preparing.pop(k)
         if self.gate_thread and not self.gate_thread.is_alive():
             self.gate_thread = None
-        self._reap_residents()
-
-    CRASH_LOOP_COUNT, CRASH_LOOP_WINDOW = 3, 15 * 60
-
-    def _reap_residents(self) -> None:
-        """The process manager for resident agents. A resident process that has exited
-        between turns is recorded as a crash, its session marked dead, and it is dropped so
-        the next tick starts it again. Three crashes in fifteen minutes is a crash loop: the
-        agent is paused with the reason, and the Supervisor is woken to look at it."""
-        now_t = time.time()
-        for name in list(self.agent_procs):
-            if name in self.agent_threads:
-                continue  # mid-turn: the turn's own code reports how it ended
-            proc = self.agent_procs[name]
-            if proc.alive():
-                continue
-            self.agent_procs.pop(name)
-            try:
-                proc.close()
-            except Exception as e:
-                log(f"{proc.session_id}: close after exit: {e!r}")
-            sid = proc.session_id
-            tail = ""
-            try:
-                tail = (self.project.logs_dir / "agents" / f"{sid}.stderr.log").read_text(encoding="utf-8")[-400:]
-            except OSError:
-                pass
-            self.store.set_session(sid, status="idle", pid=None, phase="idle", tool_name=None)
-            st = self.store.agent_state(name)
-            crashes = [t for t in st.get("crashes", []) if now_t - t < self.CRASH_LOOP_WINDOW] + [now_t]
-            self.store.set_agent_state(name, crashes=crashes)
-            self.events.emit("agent_crashed", session=sid, agent=name, count=len(crashes), stderr=tail)
-            log(f"{sid}: process exited between turns ({len(crashes)} in {self.CRASH_LOOP_WINDOW // 60}m); will restart")
-            if len(crashes) >= self.CRASH_LOOP_COUNT:
-                self.store.set_agent_state(name, paused=True, crash_loop=f"{len(crashes)} crashes in {self.CRASH_LOOP_WINDOW // 60} minutes")
-                self.events.emit("agent_crash_loop", session=sid, agent=name, count=len(crashes), stderr=tail)
-                self.store.add_wakeup("supervisor", f"agent {name} crashed {len(crashes)} times in {self.CRASH_LOOP_WINDOW // 60} minutes and has been "
-                                      f"paused. Its last stderr: {tail.strip()[-200:] or '(empty)'}. Fix its definition or ask the human, then resume it.")
-                log(f"{sid}: crash loop; paused and the supervisor woken")
-
-    def _spawn(self, table: dict, key: str, fn, *args) -> None:
-        th = threading.Thread(target=fn, args=args, daemon=True, name=key)
-        table[key] = th
-        th.start()
-
-    # -- pi helpers ------------------------------------------------------------
-
-    def _session(self, session_id: str, role: str, cwd: Path, ticket_id: str = "") -> AgentSession:
-        """A session for a built-in agent: worker, reviewer, or one of the residents."""
-        spec = ROLES[role]
-        tools = tuple(spec.tools) if role in ("worker", "reviewer") else effective_tools(
-            self.agents.get(role) or all_agents(self.project)[role], self.role_defs or all_roles(self.project), self.teams or all_teams(self.project))
-        return self._open_session(session_id, role, agents.role_prompt(self.project, spec.prompt), tools, cwd, ticket_id)
-
-    def _session_running(self, sid: str, role: str, proc: AgentSession, ticket_id: str | None = None) -> None:
-        self.live_procs[sid] = proc
-        try:
-            proc.open()
-        except Exception:
-            pass
-        self.store.set_session(sid, kind=role, status="running", ticket_id=ticket_id, pid=self._pid(proc), instance=self._slots.get(sid, role),
-                               session_file=proc.session_file, harness=proc.harness_name, started_at=time.time(), last_text="",
-                               partial_text="", thinking_chars=0,
-                               last_output_at=None, phase="prompting", phase_since=time.time(),
-                               last_token_at=None, tool_name=None)
-        self.events.emit("session_started", session=sid, kind=role, ticket=ticket_id)
-        self.store.measure_turn(role, self._slots.get(sid, role), started=True)
-
-    def _session_idle(self, sid: str, text: str, resident: bool = False) -> None:
-        proc = self.live_procs.pop(sid, None) if not resident else self._proc_for(sid)
-        fields = {} if resident else {"pid": None}
-        if proc is not None and proc.session_file:
-            fields["session_file"] = proc.session_file   # some harnesses only name the transcript after the first turn
-        self.store.set_session(sid, status="idle", last_text=(text or "")[-500:], settled_at=time.time(), phase="idle", tool_name=None,
-                               **fields)
-        self.events.emit("session_settled", session=sid)
-        s = self.store.find_session(sid) or {}
-        self.store.measure_turn(s.get("kind") or sid, self._slots.get(sid, s.get("kind") or sid), started=False)
-        if not resident:
-            self._release(sid)
-
-    def _note_turn(self, sid: str, res, kind: str = "") -> None:
-        """A turn that Orchestra cut off, or that the harness failed, is recorded as an event
-        with what the agent was doing at that moment, so the transcript can show the stop
-        instead of just ending. Pi's session file is still the only transcript; this is
-        the event log, which the transcript view overlays."""
-        if not (res.timed_out or res.error):
-            return
-        s = self.store.find_session(sid) or {}
-        now_t = time.time()
-        if res.error and self.stop.is_set():
-            # The harness "failed" because this loop is shutting down and closed it.
-            self.events.emit("turn_interrupted", session=sid, agent=kind or s.get("kind"), ticket=s.get("ticket_id") or None,
-                             reason="orchestra shut down (restart or stop) during this turn")
-            return
-        if res.timed_out:
-            phase = s.get("phase") or "working"
-            doing = f"running `{s['tool_name']}`" if phase == "tool" and s.get("tool_name") else \
-                "generating a reply" if phase == "generating" else "waiting for the model to start replying" if phase == "prompting" else phase
-            by = getattr(res, "stopped_by", None) or "limit"
-            self.events.emit("turn_timed_out", session=sid, agent=kind or s.get("kind"), ticket=s.get("ticket_id") or None,
-                             stopped_by=by, limit=self.cfg.silence_timeout if by == "silence" else self.cfg.turn_timeout, doing=doing,
-                             phase_for=round(now_t - s["phase_since"]) if s.get("phase_since") else None,
-                             silent_for=round(now_t - s["last_output_at"]) if s.get("last_output_at") else None,
-                             last_text=(res.text or s.get("last_text") or "")[-300:])
-        else:
-            self.events.emit("turn_error", session=sid, agent=kind or s.get("kind"), ticket=s.get("ticket_id") or None, error=str(res.error)[:500])
-
-    def _proc_for(self, sid: str) -> AgentSession | None:
-        if sid in self.live_procs:
-            return self.live_procs[sid]
-        return next((p for p in self.agent_procs.values() if p.session_id == sid), None)
-
-    def _prompt_with_retry(self, proc: AgentSession, ticket_id: str, task: str, nudge: str) -> tuple[dict | None, str, bool]:
-        res = proc.prompt(task, self.cfg.turn_timeout or None, on_event=self._on_event(proc.session_id),
-                          idle_timeout=self.cfg.silence_timeout)
-        self._note_turn(proc.session_id, res)
-        report = self.store.pop_report(ticket_id)
-        if report or res.timed_out or res.error:
-            return report, res.text, res.timed_out or bool(res.error)
-        res = proc.prompt(nudge, 300, on_event=self._on_event(proc.session_id), idle_timeout=self.cfg.silence_timeout)
-        self._note_turn(proc.session_id, res)
-        return self.store.pop_report(ticket_id), res.text, res.timed_out or bool(res.error)
-
-    def _on_event(self, sid: str):
-        """Translate a session's normalized event stream into the phase the UI shows: waiting
-        for the model, generating, or inside a tool. Nothing here is harness-specific."""
-        def fn(ev: dict) -> None:
-            t = ev.get("type")
-            now_t = time.time()
-            if t == "turn_start":
-                self.store.set_session(sid, phase="prompting", phase_since=now_t, tool_name=None)
-            elif t == "assistant_start":
-                self.store.set_session(sid, phase="generating", phase_since=now_t, last_token_at=now_t)
-            elif t == "token":
-                # Many small events while tokens stream: accumulate the reply in progress here
-                # and write it, with the timestamp, every few seconds. Thinking is counted, not kept.
-                part = self._partial.setdefault(sid, {"text": "", "thinking": 0})
-                if ev.get("kind") == "text" and ev.get("delta"):
-                    part["text"] = (part["text"] + ev["delta"])[-4000:]
-                elif ev.get("kind") == "thinking" and ev.get("delta"):
-                    part["thinking"] += len(ev["delta"])
-                st = self._last_token_write.get(sid, 0)
-                if now_t - st > 3:
-                    self._last_token_write[sid] = now_t
-                    self.store.set_session(sid, phase="generating", last_token_at=now_t, last_output_at=now_t,
-                                           partial_text=part["text"], thinking_chars=part["thinking"])
-            elif t == "tool_start":
-                name = ev.get("name", "?")
-                self.store.set_session(sid, phase="tool", phase_since=now_t, tool_name=name, last_output_at=now_t,
-                                       last_text=f"tool: {name}")
-            elif t == "tool_end":
-                self.store.set_session(sid, phase="prompting", phase_since=now_t, tool_name=None, last_output_at=now_t)
-            elif t == "assistant_end":
-                fields = {"last_output_at": now_t, "last_token_at": now_t, "partial_text": "", "thinking_chars": 0}
-                self._partial.pop(sid, None)   # the message is in the transcript now
-                txt = (ev.get("text") or "").strip()
-                if txt:
-                    fields["last_text"] = txt[-500:]
-                self.store.set_session(sid, **fields)
-        return fn
 
     # -- worker ----------------------------------------------------------------
 
@@ -625,11 +228,10 @@ class Loop:
         move it to IN_PROGRESS or IN_REVIEW, record the assignment with its lease, and say so on
         the bus. Whatever serves the role takes it; nobody owns the ticket until one accepts."""
         tasks = self.cfg.work != "code"
-        sid = f"{role}-{t.id}"
         try:
             if role == "worker":
                 path, branch = (self._workspace(t), None) if tasks else self._worktree(t)
-                t = self.store.transition(t.id, t.version, State.IN_PROGRESS, worker_session=sid, worker_turns=t.worker_turns + 1,
+                t = self.store.transition(t.id, t.version, State.IN_PROGRESS, worker_turns=t.worker_turns + 1,
                                           **({} if tasks else {"branch": branch}))
             else:
                 if tasks:
@@ -637,7 +239,7 @@ class Loop:
                 else:
                     wt = self.store.worktree(t.id)
                     path, branch = (Path(wt["path"]), wt.get("branch")) if wt else (None, None)
-                t = self.store.transition(t.id, t.version, State.IN_REVIEW, reviewer_session=sid)
+                t = self.store.transition(t.id, t.version, State.IN_REVIEW)
                 if path is None or not path.is_dir():
                     self._reject(t.id, "orchestra", "the ticket's " + ("folder" if tasks else "worktree") + " is missing at review time; "
                                  "please do the work again", reviewer_text="")
@@ -646,12 +248,48 @@ class Loop:
             log(f"{t.id}: cannot assign a {role}: {e}")
             return False
         aid = new_id(t.id, role)
-        self.store.put_assignment({"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch,
-                                   "assigned_at": time.time(), "lease_until": time.time() + LEASE_S, "instance": None})
-        self.events.publish(ASSIGNED, {"assignment": aid, "role": role, "ticket": t.id, "kind": "work" if role == "worker" else "review",
-                                       "workspace": str(path), "branch": branch, "lease_s": LEASE_S, "brief": brief(t)}, subject=t.id)
+        offer = {"assignment": aid, "role": role, "ticket": t.id, "kind": "work" if role == "worker" else "review",
+                 "workspace": str(path), "branch": branch, "lease_s": LEASE_S, "brief": brief(t)}
+        if role == "worker" and not tasks and self.cfg.unit:
+            offer["unit_command"] = self.cfg.unit[0].command
+        record = {"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch,
+                  "assigned_at": time.time(), "lease_until": time.time() + LEASE_S, "instance": None}
+        if role == "reviewer" and not tasks:
+            # verifying is the task system's: the unit tests run on the branch before it is offered,
+            # so the lease starts when the offer goes out, not while the tests run
+            self.store.put_assignment({**record, "lease_until": time.time() + 86400})
+            th = threading.Thread(target=self._offer_review, args=(aid, t, path, offer), daemon=True, name=f"{aid}:prepare")
+            self.preparing[aid] = th
+            th.start()
+            return True
+        if role == "reviewer":
+            offer["review"] = {"summary": self._worker_summary(t.id)}
+        self.store.put_assignment(record)
+        self.events.publish(ASSIGNED, offer, subject=t.id)
         log(f"{t.id}: assigned to a {role} ({aid})")
         return True
+
+    def _worker_summary(self, tid: str) -> str:
+        return next((n.get("text", "") for n in reversed(self.store.notes(tid)) if n.get("author") == "worker"), "")
+
+    def _offer_review(self, aid: str, t: Ticket, path: Path, offer: dict) -> None:
+        """A code review's offer: the worker's summary, the commit to review, and the unit tests'
+        output on it, then the assignment goes out and its lease starts."""
+        test_output = None
+        try:
+            if self.cfg.unit:
+                _ok, res = run_specs(self.cfg.unit, path, self.project.logs_dir / "review" / t.id, stage="unit")
+                test_output = "\n".join(f"$ {r['command']}\n{r['tail']}\n[{r['status']}]" for r in res)
+            commit = t.reviewed_commit or self.git.rev_parse("HEAD", cwd=path)
+        except (GitError, OSError) as e:
+            log(f"{t.id}: cannot prepare the review: {e}")
+            commit = t.reviewed_commit
+        if aid not in self.store.assignments():                   # released meanwhile (the operator, a shutdown)
+            return
+        offer["review"] = {"summary": self._worker_summary(t.id), "commit": commit, "test_output": test_output}
+        self.store.update_assignment(aid, lease_until=time.time() + LEASE_S)
+        self.events.publish(ASSIGNED, offer, subject=t.id)
+        log(f"{t.id}: assigned to a reviewer ({aid})")
 
     def _follow(self) -> None:
         """What the assignees said since the last tick, applied: an acceptance names the owner, a
@@ -669,10 +307,12 @@ class Loop:
                                                "reason": f"already taken by {a['instance']}"}, subject=a["ticket"])
                 continue
             if ev["type"] == ACCEPTED:
-                a = self.store.update_assignment(aid, instance=ev.get("instance"), lease_until=time.time() + LEASE_S) or a
+                a = self.store.update_assignment(aid, instance=ev.get("instance"), session=ev.get("session"),
+                                                 lease_until=time.time() + LEASE_S) or a
                 t = self.store.get_ticket(a["ticket"])
-                if t.state in ACTIVE:
-                    self.store.update_ticket(t.id, None, owner=ev.get("instance"))
+                if t.state in ACTIVE:                                     # the owner, and the session it works in, if it has one
+                    self.store.update_ticket(t.id, None, owner=ev.get("instance"),
+                                             **({f"{a['role']}_session": ev["session"]} if ev.get("session") else {}))
             elif ev["type"] == WORKING and ev.get("source") in (a.get("instance"), None):
                 self.store.update_assignment(aid, lease_until=time.time() + LEASE_S)
             elif ev["type"] == WORKING:
@@ -843,131 +483,3 @@ class Loop:
         if wt:
             self.git.worktree_remove(Path(wt["path"]))
             self.store.remove_worktree(t.id)
-        for f in self.store.purge_ticket_sessions(t.id):
-            Path(f).unlink(missing_ok=True)
-
-    # -- project agents --------------------------------------------------------
-
-    def _start_project_agents(self) -> None:
-        """Start the resident supervisor and coordinator sessions up
-        front so they live for the life of `tasking run`."""
-        for target in RESIDENT_AGENTS:
-            sid = ROLES[target].session_id
-            try:
-                proc = self._session(sid, target, self.project.repo_root)
-                proc.open()
-                self.agent_procs[target] = proc
-                self.store.set_session(sid, kind=target, status="idle", pid=self._pid(proc),
-                                       session_file=proc.session_file, harness=proc.harness_name)
-                log(f"{sid}: session resident ({self.harness.name})")
-            except Exception as e:
-                log(f"{sid}: could not start: {e}")
-
-    def _start_control(self) -> None:
-        port = int(self.cfg.raw.get("agents", {}).get("control_port", 0))   # 0: any free port; it is recorded for the web
-        try:
-            self.control = ControlServer(port, self.prompt_supervisor)
-            self.control.start()
-            port = self.control.port
-            self.store._mutate_runtime(lambda d: d.__setitem__("control", {"port": port, "pid": os.getpid()}))
-            log(f"control endpoint on 127.0.0.1:{port} (tasking chat and the web attach here)")
-        except OSError as e:
-            log(f"control endpoint unavailable on port {port}: {e}")
-
-    def prompt_supervisor(self, message: str, emit) -> dict:
-        """One supervisor turn on the resident session, with the event digest prefix."""
-        self._trim_if_large(self.agent_procs.get("supervisor"), "supervisor", "supervisor")
-        proc = self.agent_procs.get("supervisor")
-        if proc is None or not proc.alive():
-            proc = self._session("supervisor", "supervisor", self.project.repo_root)
-            proc.open()
-            self.agent_procs["supervisor"] = proc
-        new, self._events_offset = self.events.read(self._events_offset)
-        new = [e for e in new if e["type"] not in ("session_started", "session_settled")]
-        prefix = agents.supervisor_context(self.store.snapshot(), new, self.project, self.store)
-        self._session_running("supervisor", "supervisor", proc)
-
-        def on_event(ev: dict) -> None:
-            self._on_event("supervisor")(ev)
-            if ev.get("type") in ("tool_start", "assistant_end"):
-                emit(ev)
-
-        res = proc.prompt(prefix + message, self.cfg.turn_timeout or None, on_event=on_event, idle_timeout=self.cfg.silence_timeout)
-        self._note_turn("supervisor", res, "supervisor")
-        self._session_idle("supervisor", res.text, resident=True)
-        return {"text": res.text, "error": res.error, "timed_out": res.timed_out}
-
-    def _trim_if_large(self, proc, sid: str, agent: str) -> str | None:
-        """Keep every session's context bounded. When the transcript has grown past
-        `session_max_bytes` since it was last compacted, ask the harness to compact: older
-        messages become a summary and the agent keeps what it learned, which is what
-        matters 200k tokens into a task. Only when the harness cannot compact (or the
-        attempt fails) is the session rotated: archived as a run and started fresh, with
-        the wake-up or task carrying the current state. Returns "compacted", "rotated",
-        or None when nothing was needed."""
-        limit = self.cfg.session_max_bytes
-        s = self.store.find_session(sid) or {}
-        f = s.get("session_file")
-        if not limit or not f or not Path(f).exists():
-            return None
-        size = Path(f).stat().st_size
-        grown = size - int(s.get("compacted_at_bytes") or 0)
-        if grown <= limit:
-            return None
-        if proc is not None and proc.alive():
-            res = proc.compact()
-            if res and res.get("mode") == "auto":
-                # The harness bounds its own context (Claude Code's --autocompact); nothing to do but note it.
-                self.store.set_session(sid, compacted_at_bytes=Path(f).stat().st_size)
-                self.events.emit("agent_compacted", session=sid, agent=agent, mode="auto", limit=res.get("limit"),
-                                 reason=f"the harness compacts itself past {int(res.get('limit') or 0):,} tokens")
-                return "compacted"
-            if res:
-                self.store.set_session(sid, compacted_at_bytes=Path(f).stat().st_size, compactions=int(s.get("compactions") or 0) + 1)
-                self.events.emit("agent_compacted", session=sid, agent=agent, tokens_before=res.get("tokens_before"),
-                                 tokens_after=res.get("tokens_after"), reason=f"{grown // 1000} KB of transcript since the last compaction")
-                log(f"{sid}: compacted ({res.get('tokens_before')} -> {res.get('tokens_after')} tokens)")
-                return "compacted"
-        # no compaction on this harness, or it failed: rotate
-        owned = self.agent_procs.get(agent)
-        if owned is not None and owned.session_id == sid:
-            self.agent_procs.pop(agent).close()
-        elif proc is not None:
-            proc.close()
-        archived = self.store.retire_session(sid)
-        self.store.set_agent_state(agent, context_hash=None)
-        self.events.emit("agent_reset", session=sid, agent=agent, archived=archived, by="orchestra",
-                         reason=f"transcript reached {size // 1000} KB and the harness could not compact it")
-        log(f"{sid}: transcript {size // 1000} KB, no compaction; archived as {archived}, starting fresh")
-        return "rotated"
-
-    def _wake(self, target: str, reasons: list[str]) -> None:
-        agent = self.agents.get(target)
-        if agent is None:
-            return
-        sid = agent.session_id
-        ephemeral = agent.ephemeral
-        if ephemeral:
-            sid = f"{agent.session_id}-{time.strftime('%Y%m%d-%H%M%S')}"
-            proc = self._session_for(agent, sid)
-        else:
-            self._trim_if_large(self.agent_procs.get(target), sid, target)
-            proc = self.agent_procs.get(target)
-            if proc is None or not proc.alive():
-                proc = self._session(sid, target, self.project.repo_root) if agent.builtin else self._session_for(agent, sid)
-                self.agent_procs[target] = proc
-        self.store.set_agent_state(target, last_woken=time.time(), turn_depth=self._pending_depth.pop(target, 0))
-        log(f"{sid}: waking ({len(reasons)} reason(s))")
-        self._session_running(sid, target, proc)
-        task = agents.wake_task(target, reasons, self.store.snapshot())
-        if target == "supervisor":
-            task = ("[Orchestra: escalation from another agent; the human is not present for this turn. "
-                    "Act with your tools if you can, otherwise leave a note the human will see.]\n\n"
-                    + agents.supervisor_context(self.store.snapshot(), [], self.project, self.store) + task)
-        res = proc.prompt(task, self.cfg.turn_timeout or None, on_event=self._on_event(sid), idle_timeout=self.cfg.silence_timeout)
-        self._note_turn(sid, res, target)
-        self._session_idle(sid, res.text, resident=not ephemeral)
-        if ephemeral:
-            proc.close()
-        self.events.emit("agent_said", session=sid, summary=(res.text or "")[:500])
-        log(f"{sid}: {(res.text or '(no text)')[:160]!r}")

@@ -39,14 +39,3 @@ def test_ticket_levels_and_flows_balance(store):
     again = LocalStore(store.project, Events(store.project.events_file, source="worker/1"))
     again.create_ticket(title="c", milestone_id=ms.id)
     assert m.latest("tasks_tickets_created_total", {"project": key, "machine": "worker"})[1] == 3
-
-
-def test_agent_turns(store):
-    m = metrics_for(store.project.orchestra)
-    store.set_session("worker-T-1", kind="worker", status="running")
-    store.measure_turn("worker", "worker/1", started=True)
-    assert m.latest("tasks_agents_working", {"project": store.project.key, "role": "worker", "machine": "worker"})[1] == 1
-    store.set_session("worker-T-1", status="idle")
-    store.measure_turn("worker", "worker/1", started=False)
-    assert m.latest("tasks_agents_working", {"project": store.project.key, "role": "worker", "machine": "worker"})[1] == 0
-    assert m.latest("tasks_agent_turns_finished_total", {"project": store.project.key, "role": "worker", "machine": "worker"})[1] == 1

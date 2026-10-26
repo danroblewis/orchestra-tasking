@@ -209,8 +209,6 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_ids: li
                     store.remove_worktree(tid)
                 if t.branch:
                     git.branch_delete(t.branch)
-                for f in store.purge_ticket_sessions(tid):
-                    Path(f).unlink(missing_ok=True)
                 run["merged"].append(tid)
             run["status"] = "landed"
             run["summary"] = f"landed {', '.join(merged)} on {base} at {gate_commit[:10]}"

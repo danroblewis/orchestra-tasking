@@ -27,8 +27,7 @@ from ..model import (
 from .base import Conflict, StoreError
 
 EMPTY_TICKETS = {"tickets": {}, "milestones": {}, "notes": {}, "counters": {"ticket": 0, "milestone": 0}}
-EMPTY_RUNTIME = {"sessions": {}, "worktrees": {}, "gate_runs": {}, "reports": {},
-                 "pipeline": {"paused": False, "reason": None}, "wakeups": []}
+EMPTY_RUNTIME = {"worktrees": {}, "gate_runs": {}, "pipeline": {"paused": False, "reason": None}}
 
 
 def _read(path: Path, empty: dict) -> dict:
@@ -257,66 +256,6 @@ class LocalStore:
             _write(self.project.runtime_file, data)
             return result
 
-    def set_session(self, session_id: str, **fields: Any) -> dict:
-        def fn(data):
-            s = data["sessions"].setdefault(session_id, {"id": session_id, "status": "idle"})
-            s.update(fields)
-            s["updated_at"] = now()
-            return dict(s)
-        return self._mutate_runtime(fn)
-
-    def measure_turn(self, role: str, source: str, started: bool) -> None:
-        """An agent turn started or finished: its counters and how many of its role are working."""
-        points = self._mutate_runtime(lambda d: self.measures.turn_points(
-            list(d["sessions"].values()), d.setdefault("metric_counts", {}), role=role, source=source, started=started))
-        self.measures.write(points)
-
-    def sessions(self) -> list[dict]:
-        return list(self._r()["sessions"].values())
-
-    def purge_ticket_sessions(self, ticket_id: str) -> list[str]:
-        """Retire a finished ticket's worker/reviewer sessions: the records leave the live
-        session list (nothing is running) but are archived with their transcript paths
-        so the ticket's history stays viewable. Returns nothing to delete."""
-        def fn(data):
-            archive = data.setdefault("archived_sessions", {})
-            for sid in (f"worker-{ticket_id}", f"reviewer-{ticket_id}"):
-                rec = data["sessions"].pop(sid, None)
-                if rec:
-                    rec["status"] = "archived"
-                    rec["pid"] = None
-                    archive[sid] = rec
-            return []
-        return self._mutate_runtime(fn)
-
-    def retire_session(self, session_id: str) -> str | None:
-        """Start a resident agent over: its transcript file moves to sessions/archive/ and
-        its record is kept under an archived id, so the old conversation stays readable
-        as a run, and the live record is emptied for the fresh session to fill."""
-        stamp = now().replace(":", "-")
-        archived_id = f"{session_id}-reset-{stamp[:19]}"
-        def fn(data):
-            rec = data["sessions"].get(session_id)
-            if not rec:
-                return None
-            old = dict(rec)
-            f = old.get("session_file")
-            if f and Path(f).exists():
-                dest = Path(f).parent / "archive"
-                dest.mkdir(parents=True, exist_ok=True)
-                target = dest / Path(f).name
-                Path(f).rename(target)
-                old["session_file"] = str(target)
-            old.update({"id": archived_id, "status": "archived", "pid": None, "reset_at": now()})
-            data.setdefault("archived_sessions", {})[archived_id] = old
-            rec.update({"session_file": None, "status": "idle", "pid": None, "last_text": "", "phase": "idle", "tool_name": None})
-            return archived_id
-        return self._mutate_runtime(fn)
-
-    def find_session(self, session_id: str) -> dict | None:
-        r = self._r()
-        return r["sessions"].get(session_id) or r.get("archived_sessions", {}).get(session_id)
-
     def set_worktree(self, ticket_id: str, path: str, branch: str) -> None:
         self._mutate_runtime(lambda d: d["worktrees"].__setitem__(
             ticket_id, {"ticket_id": ticket_id, "path": path, "branch": branch, "created_at": now()}))
@@ -332,13 +271,6 @@ class LocalStore:
 
     def gate_runs(self) -> list[dict]:
         return sorted(self._r()["gate_runs"].values(), key=lambda r: r.get("started_at", ""))
-
-    def set_report(self, ticket_id: str, report: dict) -> None:
-        report["ts"] = now()
-        self._mutate_runtime(lambda d: d["reports"].__setitem__(ticket_id, report))
-
-    def pop_report(self, ticket_id: str) -> dict | None:
-        return self._mutate_runtime(lambda d: d["reports"].pop(ticket_id, None))
 
     # -- assignments: work the scheduler has offered a role (tasking/assignments.py) ---------
 
@@ -406,16 +338,6 @@ class LocalStore:
         self.events.emit("capacity_changed", by=by, workers=out.get("workers"), reviewers=out.get("reviewers"), note=note)
         return self.capacity()
 
-    def agent_state(self, name: str) -> dict:
-        return dict((self._r().get("agent_state") or self._r().get("role_state") or {}).get(name) or {})
-
-    def set_agent_state(self, name: str, **fields) -> dict:
-        def fn(d):
-            st = d.setdefault("agent_state", {}).setdefault(name, {})
-            st.update(fields)
-            return dict(st)
-        return self._mutate_runtime(fn)
-
     def pickup_paused(self) -> bool:
         return bool(self._r().get("pickup_paused"))
 
@@ -454,16 +376,6 @@ class LocalStore:
         self._mutate_runtime(lambda d: d.__setitem__("pipeline", {"paused": paused, "reason": reason}))
         self.events.emit("pipeline_paused" if paused else "pipeline_resumed", reason=reason)
 
-    def add_wakeup(self, target: str, reason: str) -> None:
-        self._mutate_runtime(lambda d: d["wakeups"].append({"target": target, "reason": reason, "ts": now()}))
-
-    def drain_wakeups(self, target: str) -> list[dict]:
-        def fn(data):
-            mine = [w for w in data["wakeups"] if w["target"] == target]
-            data["wakeups"] = [w for w in data["wakeups"] if w["target"] != target]
-            return mine
-        return self._mutate_runtime(fn)
-
     # -- snapshots -------------------------------------------------------------
 
     def snapshot(self) -> dict:
@@ -475,7 +387,7 @@ class LocalStore:
             counts[x.state.value] += 1
         by_id = {x.id: x for x in tickets}
         milestones = {k: Milestone.from_dict(v) for k, v in t["milestones"].items()}
-        running_workers = sum(1 for s in r["sessions"].values() if s.get("kind") == "worker" and s.get("status") == "running")
+        running_workers = sum(1 for a in (r.get("assignments") or {}).values() if a.get("role") == "worker")
         cap = self.capacity()
         eff = effective_priorities(by_id, self.project.config.aging_days_per_level)
 
@@ -495,14 +407,12 @@ class LocalStore:
             return d
         return {
             "project": {"key": self.project.key, "repo_root": str(self.project.repo_root),
-                        "base_branch": self.project.config.base_branch,
-                        "model": self.project.config.model, "provider": self.project.config.provider,
-                        "harness": self.project.config.harness},
+                        "base_branch": self.project.config.base_branch, "work": self.project.config.work},
             "tickets": [ticket_view(x) for x in sorted(tickets, key=lambda x: (eff.get(x.id, {}).get("effective", x.priority), x.created_at))],
             "workers": cap["workers"],
             "capacity": cap,
             "milestones": [d for d in sorted(t["milestones"].values(), key=lambda m: m["order"])],
-            "sessions": list(r["sessions"].values()),
+            "assignments": list((r.get("assignments") or {}).values()),
             "worktrees": list(r["worktrees"].values()),
             "gate_runs": sorted(r["gate_runs"].values(), key=lambda g: g.get("started_at", ""))[-20:],
             "pipeline": r["pipeline"],

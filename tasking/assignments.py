@@ -1,12 +1,12 @@
 """Assignment: how the task system gives a ticket to whoever fills a role, over Orchestra's bus.
 
 The scheduler does not start the machine that does the work. It offers the work to a role, and
-whatever machine serves that role answers (an AI agent today, through tasking/runner.py; a script
-or anything else that speaks this): docs/proposals/agents-split.md.
+whatever machine serves that role answers (orchestra-agents' AI agents, a script, anything that
+speaks this): docs/proposals/agents-split.md.
 
 | Event | From | Data |
 |---|---|---|
-| ``task.assigned`` | task_scheduler | assignment, role, ticket, kind (work or review), workspace, branch, lease_s, the brief |
+| ``task.assigned`` | task_scheduler | assignment, role, ticket, kind (work or review), workspace, branch, lease_s, the brief (the ticket's fields); a code worker's unit_command; a reviewer's review (the worker's summary; in code mode the commit and the unit tests' output, run by the scheduler) |
 | ``task.accepted`` | the machine instance (worker/1) | assignment, instance, session |
 | ``task.working`` | the instance | assignment (a heartbeat: the lease goes on) |
 | ``task.reported`` | the instance | assignment, report (a worker's: state READY_FOR_REVIEW or BLOCKED with a summary or reason; a reviewer's: verdict APPROVED or REJECTED with feedback; none when it ended without one), failed, text |
@@ -47,5 +47,6 @@ class Follower:
 
 def brief(t) -> dict:
     """What a machine needs to do the ticket, whoever it is."""
-    return {k: getattr(t, k, None) for k in ("title", "objective", "description", "acceptance", "verification", "feedback",
-                                             "rejected_by", "review_rounds", "priority", "milestone_id")}
+    return {k: getattr(t, k, None) for k in ("id", "title", "objective", "description", "acceptance", "verification", "feedback",
+                                             "rejected_by", "review_rounds", "priority", "milestone_id", "depends_on", "branch",
+                                             "reviewed_commit", "worker_turns")}

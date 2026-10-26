@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "orchestra-tasking"
 version = "0.1.0"
-description = "A task system for AI agents and programs, observed by Orchestra: tickets, the loop that assigns them, the agent harnesses, the merge gate."
+description = "A task system observed by Orchestra: tickets, the scheduler that offers them to whatever fills the worker and reviewer roles, the merge gate."
 requires-python = ">=3.12"
 dependencies = ["orchestra[bus-redis,sd]"]
 
@@ -26,6 +26,7 @@ packages = ["tasking"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/e2e"]
+pythonpath = ["tests"]
 
 [tool.ruff]
 line-length = 100

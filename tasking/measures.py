@@ -4,9 +4,10 @@ measure (Orchestra's discovery decides what is a stock and what is a flow):
 - ``tasks_tickets{state}``: tickets in each state, every state written at every change;
 - ``tasks_tickets_created_total{machine}``: tickets created, by the machine that created them;
 - ``tasks_ticket_transitions_total{from, to, machine}``: state changes, by the machine that made
-  them (the scheduler applies a worker's or reviewer's report; an agent's own tool call is its);
-- ``tasks_agents_working{role}``: agent sessions of a role in a turn now;
-- ``tasks_agent_turns_started_total{role}`` and ``tasks_agent_turns_finished_total{role}``.
+  them (the scheduler applies a worker's or reviewer's report; a planner's request is the
+  scheduler's desk's).
+
+The agents measure their own turns (orchestra-agents).
 
 A level and the counters that move it are taken from the same change, at the same instant, so
 they balance exactly (a level sampled now and then would be off by whatever moved in between).
@@ -80,12 +81,3 @@ class Measures:
             by_state[d["state"]] = by_state.get(d["state"], 0) + 1
         out += [Point("tasks_tickets", float(n), t, self._labels(state=s, machine="task_scheduler")) for s, n in by_state.items()]
         return out
-
-    def turn_points(self, sessions: list[dict], counts: dict, *, role: str, source: str, started: bool) -> list[Point]:
-        """The points for an agent turn starting or finishing."""
-        t = time.time()
-        labels = {"role": role, "machine": machine_of(source)}   # role names the series (discovery reads machine as attribution only)
-        name = "tasks_agent_turns_started_total" if started else "tasks_agent_turns_finished_total"
-        working = sum(1 for s in sessions if s.get("kind") == role and s.get("status") == "running")
-        return [Point(name, float(self.count(counts, name, labels)), t, self._labels(**labels)),
-                Point("tasks_agents_working", float(working), t, self._labels(role=role, machine=machine_of(source)))]

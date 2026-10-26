@@ -11,6 +11,7 @@ from tasking.loop import Loop
 from tasking.model import State
 from tasking.store import LocalStore
 
+
 def asked(events, to):
     """What the task system asked the planner ``to`` to look at: its attention events on the bus."""
     return [e["data"] for e in events.bus.read(0, limit=100000)[0] if e.get("type") == "task.attention_needed" and (e.get("data") or {}).get("to") == to]
@@ -23,7 +24,7 @@ def project(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    return init_project(repo, provider="p", model="m", prefix="T")
+    return init_project(repo, prefix="T")
 
 
 def test_escalation_fires_at_the_threshold_and_its_multiples(project):

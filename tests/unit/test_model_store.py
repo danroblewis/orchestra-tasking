@@ -1,6 +1,4 @@
-import os
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -16,7 +14,7 @@ def project(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    return init_project(repo, provider="p", model="m", prefix="T")
+    return init_project(repo, prefix="T")
 
 
 def test_transitions():
@@ -75,8 +73,10 @@ def test_operator_capacity_is_the_ceiling_the_coordinator_dials_under(project):
 
 
 def test_config_durations():
-    cfg = Config.from_toml('[agents]\nturn_timeout = "2m"\n[[gate.unit]]\nname="u"\ncommand="true"\n')
-    assert cfg.turn_timeout == 120 and cfg.unit[0].command == "true"
+    cfg = Config.from_toml('[tasks]\nworkers = 2\n[build]\ntimeout = "2m"\n[[gate.unit]]\nname="u"\ncommand="true"\n')
+    assert cfg.build_timeout == 120 and cfg.workers == 2 and cfg.unit[0].command == "true"
+    old = Config.from_toml('[agents]\nworkers = 4\nreviewers = 2\n')        # before the agents left, these were [agents]
+    assert (old.workers, old.reviewers) == (4, 2)
 
 
 @pytest.mark.parametrize("n", range(1, 9))

@@ -22,8 +22,11 @@ def project(tmp_path, monkeypatch):
 def test_orchestra_serves_the_task_pages_and_api(project):
     c = TestClient(create_app(load_orchestra_project(project.repo_root)))
     d = c.get("/api/plugins").json()
-    assert [p["path"] for p in d["pages"]] == ["/tickets", "/agents"] and d["errors"] == []
-    assert "tasks.js" in c.get("/tickets").text and "tasks.js" in c.get("/agents").text
+    assert [p["path"] for p in d["pages"] if p["plugin"] == "tasks"] == ["/tickets"] and d["errors"] == []
+    assert "tasks.js" in c.get("/tickets").text
     assert c.get("/plugins/tasks/static/tasks.js").status_code == 200
     assert c.get("/api/plugins/tasks/state").json()["tickets"] == []
-    assert {a["id"] for a in c.get("/api/plugins/tasks/agents").json()["agents"]} >= {"supervisor", "coordinator", "worker", "reviewer"}
+    assert c.get("/api/plugins/tasks/board").json()["tickets"] == []
+    assert c.get("/api/plugins/tasks/attention").json() == {"ok": True, "blocked": [], "count": 0}
+    machines = {m["id"]: m for m in c.get("/api/machines").json()["machines"]}
+    assert machines["task_scheduler"]["package"] == "tasks"

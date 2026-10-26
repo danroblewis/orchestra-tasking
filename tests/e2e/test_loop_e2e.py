@@ -1,17 +1,11 @@
-"""End-to-end: the real loop, store, git, and gate driven by a fake harness.
+"""End-to-end: the real scheduler, store, git, and gate, with a machine that fills the worker and
+reviewer roles over the bus (tests/fake_machine.py). The code path: a branch per ticket, the
+reviewer gets the commit and the unit tests' output in its assignment, the gate lands it."""
 
-Every test runs once per harness: the fake Pi (RPC protocol, tools via the extension's
-`tasking api` path), the fake Claude Code (stream-json, tools via the real MCP server),
-and the fake Codex (`exec --json`, tools via the same MCP server). The loop must behave
-identically on all of them."""
-
-import os
-import shutil
-import stat
 import subprocess
-from pathlib import Path
 
 import pytest
+from fake_machine import FakeMachine
 
 from tasking.config import init_project
 from tasking.events import Events
@@ -19,29 +13,14 @@ from tasking.loop import Loop
 from tasking.model import State
 from tasking.store import LocalStore
 
-FAKES = {"pi": Path(__file__).parent / "fake_pi.py", "claude_code": Path(__file__).parent / "fake_claude.py",
-         "codex": Path(__file__).parent / "fake_codex.py"}
-BINARY_ENV = {"pi": "PI_BINARY", "claude_code": "CLAUDE_BINARY", "codex": "CODEX_BINARY"}
-
 
 def git(*args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
-@pytest.fixture(params=["pi", "claude_code", "codex"])
-def env(tmp_path, monkeypatch, request):
-    harness = request.param
-    home = tmp_path / "home"
-    monkeypatch.setenv("ORCHESTRATOR_HOME", str(home))
-    fake = tmp_path / harness
-    shutil.copy(FAKES[harness], fake)
-    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv(BINARY_ENV[harness], str(fake))
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
-    monkeypatch.delenv("FAKE_PI_WORKER_BLOCK", raising=False)
-    monkeypatch.delenv("FAKE_PI_REJECT_FIRST", raising=False)
-    monkeypatch.delenv("FAKE_PI_BREAK_FIRST", raising=False)
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_HOME", str(tmp_path / "home"))
     repo = tmp_path / "repo"
     repo.mkdir()
     git("init", "-q", "-b", "main", cwd=repo)
@@ -52,9 +31,8 @@ def env(tmp_path, monkeypatch, request):
     git("commit", "-qm", "init", cwd=repo)
     project = init_project(repo, prefix="E2E", unit_command="test -f README.md")
     toml = repo / "orchestra.toml"
-    toml.write_text(toml.read_text().replace('harness = "pi"', f'harness = "{harness}"').replace('work = "tasks"', 'work = "code"'))   # the code path: a branch per ticket, the gate
+    toml.write_text(toml.read_text().replace('work = "tasks"', 'work = "code"'))   # the code path: a branch per ticket, the gate
     project.reload_config()
-    assert project.config.harness == harness
     git("add", "-A", cwd=repo)
     git("commit", "-qm", "orchestra config", cwd=repo)
     monkeypatch.setenv("ORCHESTRA_REPO", str(repo))
@@ -64,14 +42,16 @@ def env(tmp_path, monkeypatch, request):
     return project, store, events, ms, repo
 
 
-def run_loop(project, store, events):
-    Loop(project, store, events).run(once=True)
+def run_loop(project, store, events, **behaviour):
+    with FakeMachine(events, **behaviour) as m:
+        Loop(project, store, events).run(once=True)
+    return m
 
 
 def test_ticket_goes_open_to_done(env):
     project, store, events, ms, repo = env
     t = store.create_ticket(title="Do the thing", milestone_id=ms.id, description="x", acceptance="y")
-    run_loop(project, store, events)
+    m = run_loop(project, store, events)
     t = store.get_ticket(t.id)
     assert t.state == State.DONE
     assert t.worker_turns == 1 and t.reviewer_rejections == 0 and t.gate_rejections == 0
@@ -79,35 +59,34 @@ def test_ticket_goes_open_to_done(env):
     assert "Merge E2E-1" in git("log", "-1", "--format=%s", "main", cwd=repo)
     assert not (project.worktrees_dir / t.id).exists()
     assert not git("branch", "--list", "orchestra/*", cwd=repo).strip()
-    assert {s["id"] for s in store.sessions()} == {"supervisor", "coordinator"}
-    archived = store.runtime()["archived_sessions"]
-    assert set(archived) == {f"worker-{t.id}", f"reviewer-{t.id}"}
-    assert all(Path(a["session_file"]).exists() for a in archived.values())
-    assert {a["harness"] for a in archived.values()} == {project.config.harness}
     assert store.gate_runs()[-1]["status"] == "landed"
-    assert store.get_milestone(ms.id).status == "open"  # fake coordinator does not close it
+    work, review = m.offers
+    assert work["unit_command"] == "test -f README.md" and work["brief"]["id"] == t.id and work["brief"]["title"] == "Do the thing"
+    r = review["review"]                                     # what the reviewer is handed: the scheduler verified it
+    assert r["summary"] == "added WORK.md line" and len(r["commit"]) == 40 and "[passed]" in r["test_output"]
 
 
-def test_rejection_loops_back_to_worker(env, monkeypatch):
+def test_rejection_loops_back_to_worker(env):
     project, store, events, ms, repo = env
-    monkeypatch.setenv("FAKE_PI_REJECT_FIRST", "1")
     t = store.create_ticket(title="Needs two tries", milestone_id=ms.id)
-    run_loop(project, store, events)
+    m = run_loop(project, store, events, reject_first=True)
     t = store.get_ticket(t.id)
     assert t.state == State.DONE and t.review_rounds == 1
     assert t.worker_turns == 2 and t.reviewer_rejections == 1 and t.gate_rejections == 0   # re-engaged once, by the reviewer
-    kinds = [n["kind"] for n in store.notes(t.id)]
-    assert kinds.count("review") == 2
+    assert [n["kind"] for n in store.notes(t.id)].count("review") == 2
+    second = [o for o in m.offers if o["role"] == "worker"][1]["brief"]
+    assert second["feedback"] == "1. add more" and second["rejected_by"] == "reviewer" and second["worker_turns"] == 2
 
 
-def test_blocked_worker(env, monkeypatch):
+def test_blocked_worker(env):
     project, store, events, ms, repo = env
-    monkeypatch.setenv("FAKE_PI_WORKER_BLOCK", "1")
     t = store.create_ticket(title="Blocked one", milestone_id=ms.id)
-    run_loop(project, store, events)
+    run_loop(project, store, events, block=True)
     t = store.get_ticket(t.id)
     assert t.state == State.BLOCKED and t.blocked_reason == "need a decision"
     assert (project.worktrees_dir / t.id).exists()  # kept for resumption
+    asked = [e for e in events.read(0, limit=1000)[0] if e["type"] == "task.attention_needed"]
+    assert asked and asked[-1]["to"] == "coordinator" and t.id in asked[-1]["reason"]
 
 
 def test_dependency_order(env):
@@ -121,14 +100,13 @@ def test_dependency_order(env):
     assert log.index(f"Merge {b.id}: B") < log.index(f"Merge {a.id}: A")  # B landed after A
 
 
-def test_gate_rejection_reengages_worker_then_lands(env, monkeypatch):
+def test_gate_rejection_reengages_worker_then_lands(env):
     """The whole failed-merge flow: the worker's first attempt passes review but fails the
-    gate's tests; the gate sends it back with feedback; the same worker session is
-    re-engaged in the same worktree, fixes it, is re-reviewed, and lands."""
+    gate's tests; the gate sends it back with feedback; the worker is offered it again in the
+    same worktree, fixes it, is re-reviewed, and lands."""
     project, store, events, ms, repo = env
-    monkeypatch.setenv("FAKE_PI_BREAK_FIRST", "1")
     t = store.create_ticket(title="Breaks the build first", milestone_id=ms.id)
-    run_loop(project, store, events)
+    m = run_loop(project, store, events, break_first=True)
     t = store.get_ticket(t.id)
     assert t.state == State.DONE
     assert t.review_rounds == 1                       # the gate rejection counted as one round
@@ -147,35 +125,5 @@ def test_gate_rejection_reengages_worker_then_lands(env, monkeypatch):
                      ("IN_REVIEW", "APPROVED"), ("APPROVED", "MERGING"), ("MERGING", "DONE")]
     assert "README.md" in git("ls-tree", "--name-only", "main", cwd=repo)
     assert "WORK.md" in git("ls-tree", "--name-only", "main", cwd=repo)
-    # One worker session for the ticket, re-engaged rather than replaced.
-    archived = store.runtime()["archived_sessions"]
-    assert set(archived) == {f"worker-{t.id}", f"reviewer-{t.id}"}
-    from tasking.harness import read_transcript
-    msgs = read_transcript(archived[f"worker-{t.id}"])
-    assert sum(1 for m in msgs if m["role"] == "user") == 2
-    assert any(m["role"] == "assistant" and any(c["name"] == "report_ticket" for c in m["tool_calls"]) for m in msgs)
-
-
-def test_team_lead_is_woken_in_its_space(env):
-    """A custom team (Stage 2): the lead is a scheduled agent that also wakes on landings.
-    When a ticket lands, the loop wakes it in the team's space with a prompt made of its
-    role, the team's responsibilities, and its access."""
-    from tasking import api
-    project, store, events, ms, repo = env
-    api.handle(project, store, "create_role", {"name": "owner", "description": "Owns the backlog",
-                                               "prompt": "# You own the backlog\n\n" + "Keep it full and honest. " * 4, "tools": ["tickets"]}, role="supervisor")
-    api.handle(project, store, "create_agent", {"name": "po", "roles": ["owner"], "team": "product", "kind": "scheduled", "every": "1d",
-                                                "wake_on": ["ticket_transition:DONE"]}, role="supervisor")
-    api.handle(project, store, "create_team", {"name": "product", "lead": "po", "responsibilities": "# Product\n\n1. The backlog is never empty.",
-                                               "access": [{"tools": ["events"]}]}, role="supervisor")
-    store.drain_wakeups("po")   # the creation introduction; this test is about the landing
-    t = store.create_ticket(title="Do the thing", milestone_id=ms.id)
-    run_loop(project, store, events)
-    assert store.get_ticket(t.id).state == State.DONE
-    from tasking.harness import read_transcript
-    sess = next(s for s in store.sessions() if s["id"] == "po")
-    texts = [m["text"] for m in read_transcript(sess) if m["role"] == "user"]
-    assert any("event ticket_transition" in x and "to=DONE" in x for x in texts)
-    assert (project.repo_root / ".orchestra" / "spaces" / "product" / "tools").is_dir()
-    assert "The backlog is never empty" in (project.logs_dir / "agents" / "po.prompt.md").read_text()   # what it was started with
-    assert store.agent_state("po").get("last_woken")
+    first_review = [o for o in m.offers if o["role"] == "reviewer"][0]["review"]
+    assert "[failed]" in first_review["test_output"]   # the reviewer was told the tests fail on the branch

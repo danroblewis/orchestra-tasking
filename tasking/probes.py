@@ -1,7 +1,6 @@
 """Probes: conditions Orchestra checks on an interval and turns into events.
 
-A probe is a command with a schedule, declared in ``orchestra.toml`` (``[[probes]]``) or by
-a team (``probes`` in its record, run in the team's space with its tools on PATH). Exit 0
+A probe is a command with a schedule, declared in ``orchestra.toml`` (``[[probes]]``). Exit 0
 means the condition holds. Orchestra remembers each probe's last state and emits
 ``probe_failed`` and ``probe_recovered`` only on the transition, so a failing probe wakes
 the agents subscribed to it once, not every interval. Agents never run probes; Orchestra
@@ -10,6 +9,7 @@ supplies the clock and the event, the repository or the team supplies the check.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 import time
@@ -18,10 +18,16 @@ from pathlib import Path
 
 from .config import Project
 from .events import Events
-from .roles import RoleError, parse_interval
 from .store import LocalStore
 
 OUTPUT_TAIL = 2000
+
+
+def parse_interval(text: str) -> float:
+    m = re.fullmatch(r"\s*(\d+)\s*(s|m|h|d)\s*", text)
+    if not m:
+        raise ValueError("every must look like 30s, 30m, 6h, or 1d")
+    return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
 
 
 @dataclass(frozen=True)
@@ -36,12 +42,10 @@ class ProbeSpec:
     env: dict[str, str] = field(default_factory=dict)
 
 
-def _spec(d: dict, project: Project, team=None, path_dirs: tuple[str, ...] = ()) -> ProbeSpec:
+def _spec(d: dict, project: Project) -> ProbeSpec:
     every = d.get("every", "5m")
     secs = parse_interval(every) if isinstance(every, str) else float(every)
-    cwd = team.space_dir(project) if team is not None else project.repo_root
-    return ProbeSpec(name=d["name"], command=d["command"], every=secs, timeout=float(d.get("timeout", 120)),
-                     cwd=cwd, team=team.name if team is not None else None, path_dirs=path_dirs)
+    return ProbeSpec(name=d["name"], command=d["command"], every=secs, timeout=float(d.get("timeout", 120)), cwd=project.repo_root)
 
 
 def config_probes(project: Project) -> list[ProbeSpec]:
@@ -49,22 +53,8 @@ def config_probes(project: Project) -> list[ProbeSpec]:
     for d in project.config.raw.get("probes", []) or []:
         try:
             out.append(_spec(d, project))
-        except (KeyError, RoleError, ValueError):
+        except (KeyError, ValueError):
             continue
-    return out
-
-
-def team_probes(project: Project, teams: dict) -> list[ProbeSpec]:
-    """Every team's probes, run in the team's space with the team chain's tools on PATH."""
-    from .org import team_chain
-    out = []
-    for t in teams.values():
-        dirs = tuple(str(x.space_dir(project) / "tools") for x in team_chain(teams, t.name))
-        for d in getattr(t, "probes", []) or []:
-            try:
-                out.append(_spec(d, project, t, dirs))
-            except (KeyError, RoleError, ValueError):
-                continue
     return out
 
 

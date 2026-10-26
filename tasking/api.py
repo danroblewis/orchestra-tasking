@@ -1,27 +1,15 @@
-"""Service functions behind `tasking api`, the CLI, and the web server.
-
-Every write an agent can make goes through `handle()`. The role and ticket come from the
-environment Orchestra set when it launched the agent's Pi process, never from the agent."""
+"""The task system's operations on tickets, milestones, capacity, the gate and staging: what a
+planner's request asks for (tasking/requests.py, applied by the scheduler's desk), and what
+`tasking api` and the web server call. ``by`` (the role) is whoever asked, as the request said;
+which agent may ask for what is the agents' to decide (orchestra-agents checks its grants)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from .api_org import ORG_COMMANDS, handle_org
 from .config import Project
 from .model import ACTIVE, TERMINAL, Note, State
 from .store import LocalStore, StoreError
-
-AGENT_ROLES = {"supervisor", "coordinator"}
-
-
-def _has_tools(project: Project, role: str, group: str) -> bool:
-    """A custom agent may do what its roles and team grant it (the built-ins are listed in
-    AGENT_ROLES); the grant is the same one the harness started it with."""
-    from .org import all_agents, all_teams, effective_tools
-    from .roles import all_roles
-    ag = all_agents(project).get(role)
-    return bool(ag) and group in effective_tools(ag, all_roles(project), all_teams(project))
 
 
 def _ticket_view(store: LocalStore, ticket_id: str) -> dict:
@@ -44,12 +32,11 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
         snap = store.snapshot()
         return {"ok": True, "counts": snap["counts"], "pipeline": snap["pipeline"],
                 "milestones": [{"id": m["id"], "name": m["name"], "status": m["status"]} for m in snap["milestones"]],
-                "active_sessions": [s["id"] for s in snap["sessions"] if s.get("status") == "running"],
+                "assigned": [{"ticket": a["ticket"], "role": a["role"], "instance": a.get("instance")} for a in store.assignments().values()],
                 "blocked": [{"id": t["id"], "reason": t["blocked_reason"]} for t in snap["tickets"] if t["state"] == "BLOCKED"]}
 
     if command == "snapshot":
         snap = store.snapshot()
-        snap.pop("sessions", None)                       # the agents' own, not the task system's
         return {"ok": True, "snapshot": snap}
 
     if command == "list_milestones":
@@ -85,8 +72,6 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
         return {"ok": True, "ticket": _ticket_view(store, a["id"])}
 
     if command == "create_ticket":
-        if role and role not in AGENT_ROLES and not _has_tools(project, role, "tickets"):
-            raise StoreError(f"role {role} may not create tickets")
         t = store.create_ticket(
             title=a["title"], description=a.get("description", ""), acceptance=a.get("acceptance", ""),
             objective=a.get("objective", ""), verification=a.get("verification", ""),
@@ -127,73 +112,6 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
                              feedback=f"Blocker resolved by {author}: {a.get('note', '')}")
         return {"ok": True, "ticket": t.to_dict()}
 
-    if command == "report_ticket":
-        if role != "worker":
-            raise StoreError("only workers may call report_ticket")
-        t = store.get_ticket(ticket_env)
-        if t.state != State.IN_PROGRESS:
-            raise StoreError(f"{t.id} is {t.state}; report ignored")
-        state = a.get("state")
-        if state not in ("READY_FOR_REVIEW", "BLOCKED"):
-            raise StoreError("state must be READY_FOR_REVIEW or BLOCKED")
-        if state == "BLOCKED" and not (a.get("blocked_reason") or "").strip():
-            raise StoreError("BLOCKED requires blocked_reason")
-        store.set_report(t.id, {"kind": "worker", "state": state, "summary": a.get("summary", ""),
-                                "blocked_reason": a.get("blocked_reason")})
-        return {"ok": True, "message": "Report recorded. You may stop now."}
-
-    if command == "report_review":
-        if role != "reviewer":
-            raise StoreError("only reviewers may call report_review")
-        t = store.get_ticket(ticket_env)
-        if t.state != State.IN_REVIEW:
-            raise StoreError(f"{t.id} is {t.state}; report ignored")
-        verdict = a.get("verdict")
-        if verdict not in ("APPROVED", "REJECTED"):
-            raise StoreError("verdict must be APPROVED or REJECTED")
-        if verdict == "REJECTED" and not (a.get("feedback") or "").strip():
-            raise StoreError("REJECTED requires feedback")
-        store.set_report(t.id, {"kind": "reviewer", "verdict": verdict, "summary": a.get("summary", ""),
-                                "feedback": a.get("feedback")})
-        return {"ok": True, "message": "Verdict recorded. You may stop now."}
-
-    if command == "get_project_context":
-        from . import agents
-        return {"ok": True, "context": agents.read_context(project)}
-
-    if command == "update_project_context":
-        from . import agents
-        if role and role != "supervisor":
-            raise StoreError("only the supervisor maintains the project context")
-        text = a.get("text") or ""
-        if len(text.strip()) < 20:
-            raise StoreError("context text is too short; write the full document")
-        agents.write_context(project, text)
-        store.events.emit("context_updated", by=author)
-        return {"ok": True}
-
-    if command in ORG_COMMANDS:
-        return handle_org(project, store, command, a, author, role)
-
-    if command == "read_events":
-        from datetime import datetime, timezone
-        minutes = int(a.get("minutes") or 60)
-        types = set(a.get("types") or [])
-        since = __import__("time").time() - minutes * 60
-        evs, _ = store.events.read(0, limit=5000)
-        out = []
-        for e in evs:
-            try:
-                ts = datetime.fromisoformat(e["ts"]).replace(tzinfo=timezone.utc).timestamp()
-            except Exception:
-                continue
-            if ts < since or (types and e.get("type") not in types):
-                continue
-            if e.get("type") in ("session_started", "session_settled"):
-                continue
-            out.append(e)
-        return {"ok": True, "events": out[-200:], "count": len(out)}
-
     if command == "get_capacity":
         return {"ok": True, "capacity": store.capacity()}
 
@@ -203,10 +121,6 @@ def handle(project: Project, store: LocalStore, command: str, args: dict[str, An
         cap = store.set_capacity(a.get("workers"), a.get("reviewers"), note=a.get("note", ""), by=author)
         return {"ok": True, "capacity": cap,
                 "message": f"effective workers={cap['workers']} (max {cap['max_workers']}), reviewers={cap['reviewers']} (max {cap['max_reviewers']})"}
-
-    if command == "escalate_to_supervisor":
-        store.add_wakeup("supervisor", f"[{author}] {a.get('note', '')}")
-        return {"ok": True, "message": "The supervisor will be woken with your note."}
 
     if command == "list_gate_runs":
         return {"ok": True, "runs": [{k: r.get(k) for k in ("id", "status", "batch", "started_at", "finished_at", "summary")}

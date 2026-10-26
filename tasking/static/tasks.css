@@ -1,6 +1,6 @@
-/* The task system's look: its ticket states and agent roles, its agents and ticket cards, the
-   transcript and ticket drawers, the ticket graph. Moved out of Orchestra's style.css (2026-10-25):
-   Orchestra knows no tickets. Loaded by the task system's pages and its scripts on Orchestra's. */
+/* The task system's look: its ticket states, its ticket cards, the ticket and gate drawers, the ticket graph.
+   Moved out of Orchestra's style.css (2026-10-25): Orchestra knows no tickets. Loaded by the task
+   system's pages and its scripts on Orchestra's; the agents have their own (orchestra-agents). */
 :root {
   --OPEN:#6b7280; --BLOCKED:#f0883e; --IN_PROGRESS:#3b82f6; --READY_FOR_REVIEW:#7c3aed; --IN_REVIEW:#a855f7; --REJECTED:#ef4444;
   --APPROVED:#d97706; --MERGING:#f59e0b; --DONE:#16a34a; --CANCELLED:#374151;

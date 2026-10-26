@@ -1,7 +1,7 @@
 """The task system's settings and where it keeps its state.
 
 The settings are sections of the repository's ``orchestra.toml`` that Orchestra itself ignores
-([project], [agents], [build], [acceptance], [gate], [staging], [[probes]]); [events] and
+([project], [tasks], [build], [acceptance], [gate], [staging], [[probes]]); [events] and
 [metrics] are Orchestra's, read here only to reach the same bus and metrics store. State lives
 in ``~/.orchestrator/<key>/tasks/``, beside Orchestra's own; the project key is Orchestra's.
 
@@ -38,20 +38,10 @@ class Config:
     ticket_prefix: str = "ORC"
     work: str = "tasks"          # tasks: a scratch folder per ticket, no merging | code: a branch per ticket, the merge gate
     push: bool = False
-    harness: str = "pi"          # pi | claude_code | codex
-    provider: str | None = None
-    model: str | None = None
-    thinking: str | None = None
-    workers: int = 1
-    agents_serve: list[str] = field(default_factory=lambda: ["worker", "reviewer"])   # roles the AI agents answer
+    workers: int = 1             # tickets offered to workers at once
     reviewers: int = 1
-    turn_timeout: float = 0.0          # hard cap per turn; 0 = none
-    silence_timeout: float = 1200.0    # end a turn after this long with nothing from the harness
-    session_max_bytes: int = 300_000   # transcript growth since the last compaction that triggers one (or rotation)
-    compact_tokens: int = 100_000      # harnesses that compact themselves (Claude Code) are told to do so past this
     review_rounds_before_escalation: int = 3
     aging_days_per_level: float = 2.0
-    prompt_overrides: dict[str, str] = field(default_factory=dict)
     build_command: str | None = None
     build_artifact: str | None = None
     build_timeout: float = 600.0
@@ -82,7 +72,8 @@ class Config:
     @classmethod
     def from_toml(cls, text: str) -> Config:
         raw = tomllib.loads(text)
-        p, a, b, acc, g, st = (raw.get(k, {}) for k in ("project", "agents", "build", "acceptance", "gate", "staging"))
+        p, b, acc, g, st = (raw.get(k, {}) for k in ("project", "build", "acceptance", "gate", "staging"))
+        a = {**(raw.get("agents") or {}), **(raw.get("tasks") or {})}   # [tasks]; before the agents left, these were in [agents]
         tun = st.get("tunnel", {}) or {}
         gt = parse_duration(g.get("timeout"), 900.0)
 
@@ -100,20 +91,10 @@ class Config:
             ticket_prefix=p.get("ticket_prefix", "ORC"),
             work=p.get("work", "tasks"),
             push=bool(p.get("push", False)),
-            harness=(a.get("harness") or "pi").replace("-", "_"),
-            provider=a.get("provider") or None,
-            model=a.get("model") or None,
-            thinking=a.get("thinking"),
             workers=int(a.get("workers", 1)),
-            agents_serve=list(a.get("serves", ["worker", "reviewer"])),
             reviewers=int(a.get("reviewers", 1)),
-            turn_timeout=parse_duration(a.get("turn_timeout"), 0.0),
-            silence_timeout=parse_duration(a.get("silence_timeout"), 1200.0),
-            session_max_bytes=int(a.get("session_max_bytes", 300_000)),
-            compact_tokens=int(a.get("compact_tokens", 100_000)),
             review_rounds_before_escalation=int(a.get("review_rounds_before_escalation", 3)),
             aging_days_per_level=float(a.get("aging_days_per_level", 2.0)),
-            prompt_overrides=dict(a.get("prompts", {})),
             build_command=b.get("command"),
             build_artifact=b.get("artifact"),
             build_timeout=parse_duration(b.get("timeout"), 600.0),
@@ -142,19 +123,12 @@ class Config:
 STARTER_TOML = """[project]
 base_branch = "main"
 ticket_prefix = "{prefix}"
-work = "tasks"           # tasks: agents do tasks in a scratch folder per ticket | code: a git branch per ticket and the merge gate
+work = "tasks"           # tasks: a scratch folder per ticket | code: a git branch per ticket and the merge gate
 push = false
 
-[agents]
-harness = "pi"           # pi | claude_code | codex: the product that runs the agents
-provider = "{provider}"   # Pi only; leave empty to use Pi's default provider
-model = "{model}"         # leave empty for the harness's default (Claude Code: haiku, sonnet; Codex: gpt-5.5)
-thinking = "medium"
-workers = 3
+[tasks]
+workers = 3              # tickets offered to workers at once (whatever fills the role takes them)
 reviewers = 3
-silence_timeout = "20m"           # a turn ends when nothing has come from the agent for this long
-session_max_bytes = 300000        # after this much new transcript the session is compacted (Pi) or, failing that, started fresh
-# turn_timeout = "2h"             # optional hard cap per turn; unset means none: a busy agent is never cut off
 review_rounds_before_escalation = 3
 aging_days_per_level = 2        # a ticket gains one priority level per N days of age; 0 disables
 
@@ -219,10 +193,6 @@ class Project:
         return self.state_dir / ".lock"
 
     @property
-    def sessions_dir(self) -> Path:
-        return self.state_dir / "sessions"
-
-    @property
     def worktrees_dir(self) -> Path:
         return self.state_dir / "worktrees"
 
@@ -247,7 +217,7 @@ class Project:
         return self.state_dir / "artifacts"
 
     def ensure_dirs(self) -> None:
-        for d in (self.state_dir, self.sessions_dir, self.worktrees_dir, self.gate_dir, self.logs_dir,
+        for d in (self.state_dir, self.worktrees_dir, self.gate_dir, self.logs_dir,
                   self.staging_dir, self.artifacts_dir):
             d.mkdir(parents=True, exist_ok=True)
 
@@ -263,14 +233,14 @@ def load_project(repo: Path | str | None = None) -> Project:
     return project
 
 
-def init_project(repo: Path, *, provider: str | None = None, model: str | None = None,
-                 prefix: str | None = None, unit_command: str = "uv run pytest -q") -> Project:
-    """Write a starter ``orchestra.toml`` with the task system's sections (if there is none) and
-    register the project with Orchestra."""
-    root = find_repo_root(repo)
+def init_project(repo: Path, *, prefix: str | None = None, unit_command: str = "uv run pytest -q") -> Project:
+    """Orchestra's starter ``orchestra.toml`` (if there is none) with the task system's sections
+    added (if it has no ``[project]``), and the project registered with Orchestra."""
+    from orchestra.config import init_project as init_orchestra
+    root = init_orchestra(Path(repo)).repo_root
     toml_path = root / "orchestra.toml"
-    if not toml_path.exists():
+    text = toml_path.read_text()
+    if "project" not in tomllib.loads(text):
         pfx = prefix or re.sub(r"[^A-Za-z]", "", root.name.upper())[:4] or "ORC"
-        toml_path.write_text(STARTER_TOML.format(prefix=pfx, provider=provider or "", model=model or "",
-                                                 unit_command=unit_command))
+        toml_path.write_text(text.rstrip() + "\n\n" + STARTER_TOML.format(prefix=pfx, unit_command=unit_command))
     return load_project(root)
