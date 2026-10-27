@@ -138,3 +138,31 @@ def test_a_rewritten_ticket_does_not_inherit_the_old_backoff(project, monkeypatc
     sched.tick()                                     # the offer made before the rewrite is missed, and a new one made
     rec = store.untaken()[f"{t.id}/worker"]
     assert rec["misses"] == 1 and rec["since"] > first_since and rec["version"] == store.get_ticket(t.id).version
+
+
+def test_an_acceptance_names_its_assignment_and_a_late_one_is_told_released(project):
+    """Each acceptance is answered: the one that holds the offer by ``ticket.transitioned`` naming
+    its assignment (another assignment's transition of the same ticket confirms nothing), and one
+    for an assignment no longer held by ``task.released`` naming the instance, so it never waits
+    out its lease or starts work on a ticket it does not hold."""
+    events = Events.for_project(project, source="task_scheduler")
+    store = LocalStore(project, events)
+    first = Scheduler(project, store, events)
+    first.recover()
+    ms = store.create_milestone(name="m")
+    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    first.tick()
+    old = on_bus(events, ASSIGNED)[-1]["data"]["assignment"]
+    accept = lambda aid: events.publish(ACCEPTED, {"assignment": aid, "ticket": t.id, "role": "worker"},
+                                        source="worker/1", subject=t.id)
+    accept(old)
+    first.tick()
+    assert [e["data"].get("assignment") for e in on_bus(events, "ticket.transitioned", to="IN_PROGRESS")] == [old]
+    second = Scheduler(project, store, events)                     # a restart: the old assignment is no longer held
+    second.recover()
+    before = len(on_bus(events, "task.released", assignment=old))
+    accept(old)                                                    # worker/1 answers late
+    second.tick()
+    late = on_bus(events, "task.released", assignment=old)[before:]
+    assert len(late) == 1 and late[0]["data"]["instance"] == "worker/1"
+    assert store.get_ticket(t.id).state == State.OPEN               # it changed nothing

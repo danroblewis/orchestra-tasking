@@ -123,7 +123,8 @@ class Tickets:
             write(self.project.tickets_file, data)
             t = Ticket.from_dict(d)
         self.measures.write(points)
-        self.events.emit("ticket.transitioned", ticket=ticket_id, owner=t.owner, **{"from": src.value, "to": to_state.value})
+        held = {"assignment": fields["assignment"]} if fields.get("assignment") else {}   # an acceptance's confirmation names it
+        self.events.emit("ticket.transitioned", ticket=ticket_id, owner=t.owner, **{"from": src.value, "to": to_state.value}, **held)
         return t
 
     def reassert_levels(self) -> None:

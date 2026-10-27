@@ -375,6 +375,11 @@ class Scheduler:
                     if ev["type"] != WORKING:
                         log(f"{ev.get('ticket')}: {ev['type']} from {ev.get('source')} for assignment {aid} ignored: not held "
                             "(released or already settled); the ticket is offered afresh")
+                    if ev["type"] == ACCEPTED and aid and ev.get("source"):
+                        # a late acceptance is answered, or the instance waits out its lease for a word
+                        self.events.publish(RELEASED, {"assignment": aid, "ticket": ev.get("ticket"), "role": ev.get("role"),
+                                                       "reason": "not held (released or already settled)",
+                                                       "instance": ev["source"]}, subject=ev.get("ticket"))
                     continue
                 a = out[aid]
                 if ev["type"] == ACCEPTED:
@@ -443,7 +448,7 @@ class Scheduler:
                   if a["role"] == "worker" else {})
         try:
             self.store.transition(t.id, t.version, State.IN_PROGRESS if a["role"] == "worker" else State.IN_REVIEW, by=machine_and_instance(holder)[0] or "unknown",
-                                  owner=holder, **fields)
+                                  owner=holder, assignment=a["id"], **fields)
         except (Conflict, StoreError, TransitionError) as e:
             self._release(a, f"the ticket cannot be {'worked' if a['role'] == 'worker' else 'reviewed'} now: {e}", instance=holder)
             self.store.drop_assignment(a["id"])
