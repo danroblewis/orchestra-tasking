@@ -172,6 +172,16 @@ def cmd_doctor(args) -> int:
             print(f"orphan worktree: {p}")
             if args.fix:
                 git.worktree_remove(p)
+    slots = {s["path"] for s in store.pool().values()}
+    for p in project.pool_dir.glob("*"):
+        if str(p) not in slots:
+            problems += 1
+            print(f"orphan pool worktree: {p}")
+            if args.fix:
+                git.worktree_remove(p)
+    if len(slots) > project.config.worktree_pool:
+        print(f"note: the pool holds {len(slots)} worktrees, more than [tasks] worktree_pool = {project.config.worktree_pool}; "
+              "none is made beyond it, and the extra ones stay until removed by hand")
     if project.config.work == "code":
         if not project.config.unit:
             print("warning: no [[gate.unit]] specs; the gate and reviews run no tests")
@@ -222,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("action", choices=["status", "logs", "deploy", "restart", "stop"])
     s.set_defaults(fn=cmd_staging)
 
-    s = sub.add_parser("doctor", help="orphan worktrees and, in code mode, missing gate specs")
+    s = sub.add_parser("doctor", help="orphan worktrees (a ticket's or the pool's) and, in code mode, missing gate specs")
     s.add_argument("--fix", action="store_true", help="remove the orphan worktrees")
     s.set_defaults(fn=cmd_doctor)
     return p

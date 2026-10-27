@@ -39,6 +39,21 @@ your own, or any other package's machines that speak the same contract over the 
 `[discovery] step = "5s"` (with a window of 30–60 m) in `orchestra.toml`: Orchestra's default
 grid is 30 s, and a level that changes inside one step is not a stock.
 
+**Reusing worktrees.** In code mode each ticket gets its own git worktree, made when it is first
+worked and removed when it lands. For a repository whose checkout is large, keep a pool instead:
+
+    [tasks]
+    reuse_worktrees = true          # off by default
+    worktree_pool = 2               # at most this many worktrees, the gate's included (default workers + reviewers + 1)
+    worktree_clean_ignored = false  # true: a reset also removes ignored files (build caches, node_modules)
+
+Each turn (a worker's, a reviewer's, a gate run's) gets a free worktree from
+`~/.orchestrator/<key>/tasks/pool/`, reset for it: tracked changes discarded, untracked files
+removed, ignored files kept unless `worktree_clean_ignored`, and the ticket's branch checked out
+(from the base when new). A ticket that comes back gets the worktree it last used when that one
+is free. With the pool full a turn waits; the scheduler's log says so, and
+`tasks_worktrees{state="waiting"}` counts it. SPEC.md section 5 has the details.
+
 ## Writing tickets for the demo's worker
 
 The demo's worker (`demo/machines/shell_worker.py`) runs the ```` ```sh ```` blocks of a ticket's

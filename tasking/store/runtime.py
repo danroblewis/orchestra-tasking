@@ -1,5 +1,5 @@
 """The runtime half of the store: what the scheduler holds while it runs, in ``runtime.json``:
-assignments, the offers nobody took, worktrees, gate runs, capacity, pickup, kill requests, probes, the pipeline, the
+assignments, the offers nobody took, worktrees, the worktree pool, gate runs, capacity, pickup, kill requests, probes, the pipeline, the
 scheduler's own record, staging and builds. The operator's changes are observations on the bus
 (``capacity.changed``, ``pickup.*``, ``kill.requested``, ``pipeline.*``)."""
 
@@ -11,7 +11,7 @@ from typing import Any
 from ..model import now
 from .files import read, write
 
-EMPTY_RUNTIME = {"assignments": {}, "untaken": {}, "worktrees": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
+EMPTY_RUNTIME = {"assignments": {}, "untaken": {}, "worktrees": {}, "pool": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
                  "capacity": {}, "operator_capacity": {}, "pickup_paused": False, "scheduler": None, "staging": {},
                  "pipeline": {"paused": False, "reason": None}, "desk": None}
 
@@ -79,6 +79,47 @@ class Runtime:
 
     def worktrees(self) -> dict[str, dict]:
         return dict(self._r()["worktrees"])
+
+    def pool(self) -> dict[str, dict]:
+        """The worktree pool's slots by name (tasking/pool.py): path, holder (an assignment id, or
+        ``gate:<ticket>`` for a gate run, or None), ticket (the last one it was reset for) and
+        since (when it was last claimed), each with ``free`` worked out as ``claim_slot`` does."""
+        r = self._r()
+        return {n: {**s, "free": _free(s, r["assignments"])} for n, s in r["pool"].items()}
+
+    def claim_slot(self, holder: str, ticket: str, size: int, prefer: str | None = None) -> tuple[dict, bool] | None:
+        """A free slot for ``holder``, or a new one while there are fewer than ``size``; None when
+        the pool is full. A slot is free when nobody holds it, or its holder is an assignment that
+        is no longer recorded (released, settled, or never offered): the assignments are the
+        truth, so whatever drops one frees its worktree. A gate's hold lasts until it is
+        released (``release_slot``) or the scheduler restarts. The slot that last served
+        ``prefer`` comes first, then the one claimed longest ago. Returns the slot and whether it
+        is new (its worktree is still to be made)."""
+        def fn(d):
+            slots = d["pool"]
+            free = [s for s in slots.values() if _free(s, d["assignments"])]
+            pick = next((s for s in free if prefer and s.get("ticket") == prefer), None) \
+                or min(free, key=lambda s: s.get("since") or 0, default=None)
+            new = pick is None
+            if new:
+                if len(slots) >= size:
+                    return None
+                name = next(str(i) for i in range(1, len(slots) + 2) if str(i) not in slots)
+                pick = slots[name] = {"name": name, "path": str(self.project.pool_dir / name)}
+            pick.update(holder=holder, ticket=ticket, since=now())
+            return dict(pick), new
+        return self._mutate_runtime(fn)
+
+    def release_slot(self, holder: str) -> None:
+        self._mutate_runtime(lambda d: [s.__setitem__("holder", None) for s in d["pool"].values() if s.get("holder") == holder])
+
+    def release_gate_slots(self) -> None:
+        """Every gate hold dropped (a restart: no gate runs any more)."""
+        self._mutate_runtime(lambda d: [s.__setitem__("holder", None) for s in d["pool"].values()
+                                        if str(s.get("holder") or "").startswith("gate:")])
+
+    def forget_slot(self, name: str) -> None:
+        self._mutate_runtime(lambda d: d["pool"].pop(name, None))
 
     def save_gate_run(self, run: dict) -> None:
         self._mutate_runtime(lambda d: d["gate_runs"].__setitem__(run["id"], run))
@@ -200,3 +241,8 @@ class Runtime:
             d["staging"].update(fields)
             return dict(d["staging"])
         return self._mutate_runtime(fn)
+
+
+def _free(slot: dict, assignments: dict) -> bool:
+    holder = slot.get("holder")
+    return holder is None or (not holder.startswith("gate:") and holder not in assignments)

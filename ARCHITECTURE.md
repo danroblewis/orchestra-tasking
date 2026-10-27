@@ -248,7 +248,8 @@ On start (`Scheduler.recover`, then `run`):
    Every ticket still active goes back too. This is the "no zombies" rule.
 2. The record of offers nobody took is cleared, so they go out fresh.
 3. Gate runs left `running` are marked `aborted`; gate worktrees and `orchestra/gate-*`
-   branches are removed.
+   branches are removed. With reused worktrees, the gate's hold on the pool is dropped and a
+   pool worktree left on a gate branch is detached first, so the branch can go.
 4. The desk thread starts. Then the runtime record names this pid. Then the scheduler
    publishes `orchestra.machine.started` (`package: tasks`, `mode: continuous`, `kind: program`,
    `listens_for`, `log`). `listens_for` names the requests and queries, `task.accepted`,
@@ -285,7 +286,8 @@ flowchart TD
 
 Points worth knowing:
 
-- **Reviews first.** Finished work moves on before new work starts. Pausing pickup stops worker
+- **Reviews first.** Finished work moves on before new work starts. With reused worktrees the
+  gate goes first of all: it is started before the offers, so its claim on the pool wins. Pausing pickup stops worker
   offers only; reviews still go out.
 - **Capacity counts offers, not just held work.** Every assignment record counts against its
   role, accepted or not. An offer nobody answers holds a slot until its lease runs out.
@@ -529,6 +531,40 @@ out; it counts against reviewer capacity. If preparation fails, the record is dr
 ticket is offered again later. A cancelled ticket's worktree is removed by the next tick; a
 landed ticket's worktree and branch are removed by the gate.
 
+**Reused worktrees** (`[tasks] reuse_worktrees = true`, code mode; `tasking/pool.py`,
+`Runtime.claim_slot`). When one checkout costs gigabytes, a worktree per ticket is too many. The
+pool keeps at most `worktree_pool` worktrees at `<state>/pool/<n>/` and lends one to each turn:
+a worker's, a reviewer's, a gate run's.
+
+```mermaid
+flowchart TD
+    T["a turn: worker, reviewer or gate"] --> C{"Runtime.claim_slot:<br/>a free slot?<br/>(the ticket's own first,<br/>then longest unused)"}
+    C -- yes --> R
+    C -- "no, fewer than worktree_pool" --> N["git worktree add --detach<br/>pool/N from the base"] --> R
+    C -- "no, pool full" --> W["no offer this tick<br/>log line once,<br/>tasks_worktrees waiting"]
+    R["Pool.reset: abort merge/rebase,<br/>reset --hard, clean -ffd (-x if set),<br/>check out the branch<br/>(new from base, or its own)"] --> O["offer, holder = assignment id<br/>(gate: gate:TICKET)"]
+    O --> E["the assignment is dropped<br/>(report, lease, restart, operator)<br/>or the gate run ends"]
+    E --> F["slot free; files stay<br/>until the next reset"]
+```
+
+- **Who holds a slot** is the runtime record: `pool[n].holder` is an assignment id or
+  `gate:<ticket>`. A slot whose holder is an assignment no longer in the record is free, so every
+  path that drops an assignment frees its worktree without a second step, and a crash cannot
+  leak one. A gate's hold is released when its thread ends and on restart.
+- **All claims happen in the tick thread** (the gate's too, before it starts its thread), so two
+  claims never race; releases may come from any thread, under the store's lock.
+- **Between turns the work is on the branch.** A ticket holds no worktree while it waits. Its
+  reviewer gets a slot reset to its branch; if the branch is gone, the ticket is rejected without
+  a review round, as a missing worktree is without the pool.
+- **A branch is checked out in one worktree at a time.** Before checking one out, `Pool.reset`
+  detaches any other of the task system's worktrees that has it and that no assignment works in;
+  the gate does the same before deleting a landed branch.
+- **The gate** resets its slot to `orchestra/gate-RUN`, and for a base check to
+  `orchestra/gate-RUN-base` in the same slot; at the end it detaches the slot and deletes both
+  branches. Nothing is made under `gate/`.
+- **Pool full** is back-pressure, like capacity: the offer waits, the log says so once per ticket
+  and role, and `tasks_worktrees{state="waiting"}` counts the waits. No attention is asked.
+
 Machines never merge, push, or touch the base branch (`AGENTS.md` rule 5). Only the gate lands
 code, and only a landing deploys staging.
 
@@ -544,7 +580,7 @@ base itself fails.
 ```mermaid
 flowchart TD
     S(["APPROVED ticket, oldest first"]) --> M["MERGING<br/>gate.started"]
-    M --> W["gate worktree on orchestra/gate-RUN<br/>from the base head"]
+    M --> W["gate worktree on orchestra/gate-RUN<br/>from the base head<br/>(reused worktrees: the gate's slot, reset)"]
     W --> G["git merge --no-ff reviewed_commit"]
     G -- clean --> ST
     G -- conflict --> R{"only orchestra.toml,<br/>both sides added whole tables<br/>at the same place,<br/>result parses?"}
@@ -643,6 +679,7 @@ changes, so a failing probe wakes listeners once.
 | `tasks_tickets` | level (gauge) | `project`, `state` (all ten), `machine="task_scheduler"` | at every ticket change, and again every discovery step |
 | `tasks_tickets_created_total` | counter | `project`, `machine`, `by` | at every ticket creation |
 | `tasks_ticket_transitions_total` | counter | `project`, `from`, `to`, `machine`, `by` | at every transition |
+| `tasks_worktrees` | level (gauge) | `project`, `state` (`in_use`, `free`, `waiting`), `machine="task_scheduler"` | with reused worktrees only: when a value changes, and again every discovery step |
 
 - `machine` on the counters is the writer: the source of the process that made the change.
   In practice that is the scheduler, `task_scheduler`, because the desk and the reports run in
@@ -833,11 +870,12 @@ A planner is a machine too: it publishes requests (section 8) and listens for
   tasks/
     tickets.json        tickets, milestones, notes, id counters, metric counters
     runtime.json        scheduler pid, assignments, untaken offers, capacity (dial and ceiling),
-                        pickup pause, kill requests, worktrees, gate runs, builds, pipeline,
+                        pickup pause, kill requests, worktrees, the worktree pool, gate runs, builds, pipeline,
                         probes, staging, the desk's offset
     .lock               one fcntl lock around every read-modify-write
     workspaces/<ticket>/          tasks mode
     worktrees/<ticket>/           code mode
+    pool/<n>/                     code mode with reused worktrees
     gate/<run>/  artifacts/<run>/  staging/
     logs/scheduler.log  logs/<run>/<stage>-<spec>.log  logs/review/<ticket>/
 ```
