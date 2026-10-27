@@ -226,3 +226,51 @@ def test_untracked_files_in_the_way_of_a_landing_are_named(env):
     assert git("rev-parse", "main", cwd=repo) == before and store.get_ticket(t.id).state == State.APPROVED
     [a] = asked(events, "supervisor")
     assert "untracked files in the repository root would be overwritten" in a["reason"] and "scripts/sampler.py" in a["reason"]
+
+
+def _append(text: str):
+    return lambda wt: (wt / "orchestra.toml").write_text((wt / "orchestra.toml").read_text() + text)
+
+
+def test_two_tickets_that_each_append_a_collector_to_orchestra_toml_both_land(env):
+    """Parallel tickets each add a [[collect]] block at the end of orchestra.toml: git calls it a
+    conflict, the gate keeps both (the base's first), and the merged tree still passes the stages."""
+    project, store, events, ms, repo = env
+    original = git("rev-parse", "main", cwd=repo).strip()
+    a = merging_ticket(store, ms, repo, "disk", _append('\n[[collect]]\nname = "disk"\ncommand = "machines/disk.sh"\nevery = "60s"\n'))
+    assert run_gate(project, store, events, a.id)["status"] == "landed"
+    b = merging_ticket(store, ms, repo, "weather",
+                       _append('\n# the weather\n[[collect]]\nname = "weather"\ncommand = "machines/weather.py"\n\n[[scrape]]\nname = "app"\nurl = "http://127.0.0.1:9/metrics"\n'),
+                       base=original)
+    run = run_gate(project, store, events, b.id)
+    assert run["status"] == "landed" and run["conflict"] is False, run
+    assert "both kept" in run["resolved"] and "both kept" in run["summary"]
+    import tomllib
+    toml = tomllib.loads(git("show", "main:orchestra.toml", cwd=repo))
+    assert [c["name"] for c in toml["collect"]] == ["disk", "weather"] and toml["scrape"][0]["name"] == "app"
+    assert store.get_ticket(b.id).state == State.DONE
+    assert "gate.conflict" not in event_types(events)
+
+
+def test_an_orchestra_toml_conflict_that_is_not_two_appended_tables_goes_back_to_the_worker(env):
+    """Keys appended to the last table (they would land in the other ticket's table), or a conflict
+    in another file as well, stay conflicts."""
+    project, store, events, ms, repo = env
+    original = git("rev-parse", "main", cwd=repo).strip()
+    a = merging_ticket(store, ms, repo, "A", _append('\n[[collect]]\nname = "disk"\ncommand = "machines/disk.sh"\n'))
+    assert run_gate(project, store, events, a.id)["status"] == "landed"
+    b = merging_ticket(store, ms, repo, "B", _append('\nextra_key = 1\n'), base=original)
+    run = run_gate(project, store, events, b.id)
+    assert run["status"] == "conflict" and store.get_ticket(b.id).state == State.REJECTED
+    assert "extra_key" not in git("show", "main:orchestra.toml", cwd=repo)
+
+    def both(name):
+        def mutate(wt):
+            _append(f'\n[[collect]]\nname = "{name}"\ncommand = "machines/{name}.sh"\n')(wt)
+            (wt / "README.md").write_text(f"# gate\nline from {name}\n")
+        return mutate
+    a2 = merging_ticket(store, ms, repo, "A2", both("a2"))
+    base2 = git("rev-parse", "main", cwd=repo).strip()
+    assert run_gate(project, store, events, a2.id)["status"] == "landed"
+    c = merging_ticket(store, ms, repo, "C", both("c"), base=base2)
+    assert run_gate(project, store, events, c.id)["status"] == "conflict"

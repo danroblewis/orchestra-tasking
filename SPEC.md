@@ -241,7 +241,11 @@ commit in the offer (`review.test_output`, `review.commit`), so the reviewer see
 
 **The merge gate** (`tasking/gate.py`) lands approved code, one ticket per run: a gate
 worktree on a temporary branch from the base head, `git merge --no-ff` of the reviewed commit (a
-conflict sends the ticket back to its worker without counting as a review round), then the
+conflict sends the ticket back to its worker without counting as a review round; one kind of
+conflict the gate resolves itself, in `tasking/appends.py`: when `orchestra.toml` is the only
+conflicted file and both sides only added whole tables at the same place, such as two tickets
+that each appended a `[[collect]]` entry, it keeps both, the base's first, if the result parses,
+and says so in the run's summary), then the
 stages from `orchestra.toml`: `[build]` (the artifact is copied to `<state>/artifacts/<run>/`),
 every `[[gate.unit]]` spec, and if `[acceptance]` and `[[gate.acceptance]]` are set, the artifact
 started on a free port and the acceptance specs run against it. All pass: the base branch is
@@ -290,7 +294,10 @@ event types of section 3. The demo's `demo/machines/shell_worker.py` and
    with `listens_for` naming `task.assigned`). To accept, publish `task.accepted` {assignment, ticket, role} with
    `subject=ticket`: the holder is the event's source; `instance`, if sent, must equal it (an
    acceptance whose instance is not its source is refused, and the offer stays open). If
-   another instance was first you get `task.released` naming your instance: stop.
+   another instance was first you get `task.released` naming your instance: stop. If you won,
+   `ticket.transitioned` for the ticket names your instance as its `owner` (to `IN_PROGRESS` or
+   `IN_REVIEW`). A machine whose work costs something (a model's tokens, a build) waits for one
+   of the two before it starts, so losing the race costs nothing.
 5. **Work, and say so**: do the task in the workspace; publish `task.working` {assignment}
    well within the offer's `lease_s` (`HEARTBEAT_S`, 30 s; the demo's worker says it every sixth
    of the lease) so the lease goes on (a review that takes a moment needs none). If

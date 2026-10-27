@@ -18,6 +18,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from .appends import CONFIG, resolve_appends
 from .config import Project, TestSpec
 from .events import COORDINATOR, SUPERVISOR, Events
 from .git import Git, GitError
@@ -197,7 +198,9 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
         git.worktree_add(gate_branch, path, base)
         t = store.get_ticket(ticket_id)
         p = git.merge_no_ff(t.reviewed_commit or t.branch or "", path, f"Merge {ticket_id}: {t.title}")
-        if p.returncode != 0:
+        if p.returncode != 0 and resolve_appends(git, path):
+            run["resolved"] = f"{CONFIG}: both sides appended tables at the same place; both kept, {base}'s first"
+        elif p.returncode != 0:
             git.abort_merge(path)
             reject(f"The branch conflicts with `{base}`: another ticket landed first, so `{base}` has to be merged "
                    f"into it before it can land (git output below). The ticket is offered to its worker again.\n\n{p.stdout}\n{p.stderr}",
@@ -228,7 +231,8 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
             if t.branch:
                 git.branch_delete(t.branch)
             run["status"] = "landed"
-            run["summary"] = f"landed {ticket_id} on {base} at {gate_commit[:10]}" + (f"; {unseen}" if unseen else "")
+            run["summary"] = (f"landed {ticket_id} on {base} at {gate_commit[:10]}" + (f" ({run['resolved']})" if run.get("resolved") else "")
+                              + (f"; {unseen}" if unseen else ""))
             events.emit("gate.landed", gate_run=run_id, ticket=ticket_id, commit=gate_commit)
             if unseen:
                 events.attention(COORDINATOR, unseen, ticket=ticket_id)
