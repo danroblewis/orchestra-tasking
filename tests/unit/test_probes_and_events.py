@@ -12,7 +12,7 @@ def run_probe(prober, spec):
 
 
 def test_probe_emits_only_on_transitions(project, tmp_path):
-    events = Events.for_project(project, source="task_scheduler")
+    events = Events.for_project(project, source="probes")      # as the scheduler publishes them: the condition checks
     store = LocalStore(project, events)
     flag = tmp_path / "broken"
     spec = ProbeSpec(name="readme_ok", command=f"test ! -e {flag}", every=0, timeout=10)

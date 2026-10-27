@@ -1,25 +1,34 @@
 """The task system's events, published on Orchestra's bus with the CloudEvents envelope.
 
-The code here calls ``emit(type, **fields)`` and reads events as flat dicts (``ev["ticket"]``).
-``emit`` publishes a CloudEvent: the fields are its ``data``, the ticket (or milestone) it is
-about is its ``subject``, and its ``source`` is the machine that emitted it. ``read`` gives the
-flat shape back: the data's fields beside ``type``, ``ts`` and ``source``.
+The code here calls ``emit(type, src=..., **fields)`` and reads events as flat dicts
+(``ev["ticket"]``). ``emit`` publishes a CloudEvent: the fields are its ``data``, the ticket (or
+milestone) it is about is its ``subject``, and its ``source`` is the machine it is published as.
+``read`` gives the flat shape back: the data's fields beside ``type``, ``ts`` and ``source``.
 
-Every publisher names itself as its source: the scheduler is ``task_scheduler``, the web plugin
-``task_web``, the command line ``task_cli``, and a planner asking through ``tasking api`` whatever
-it says it is. The bus itself is opened as Orchestra opens it (``[events] url`` or
-ORCHESTRA_EVENTS_URL), so there is one place that decides where the events go.
+**The scheduler is no machine** (the owner, 2026-10-27). It is one daemon standing in for each
+machine's own scheduler: the worker's queue, the reviewer's, the merge gate, the answers to a
+planner's requests. So it never publishes as itself (``task_scheduler``) and never announces
+itself: every event it publishes is published as the machine whose responsibility it implements
+at that moment (``src``), and only for an act that machine's own process did not already announce
+(SPEC.md section 3, "Who publishes what"). A publish as ``task_scheduler`` is refused. The web
+plugin's operator controls publish as ``task_web``, the command line as ``task_cli``, a planner
+asking through ``tasking api`` as whatever it says it is. The bus itself is opened as Orchestra
+opens it (``[events] url`` or ORCHESTRA_EVENTS_URL), so there is one place that decides where the
+events go.
 
-**Causation.** ``emit(..., cause=ev)`` names the event that caused this one as its CloudEvents
-``causationid``. When that event is another machine's, this one is the record of that machine's
-step, not an act of this publisher on the ticket: it carries the ticket in its data but not as its
-subject, so Orchestra's event map, which infers hand-offs from who acts next on a subject, does
-not put the task system between the machines that do the work (SPEC.md section 3).
+**No echoes.** The task system's record is its store: it publishes nothing that restates a step
+another machine already announced (a review requested, changes requested, an approval, a claim).
+There is no ``ticket.transitioned`` and no ``ticket.note_added``: a ticket's state and notes are
+read from the record (the ``get_ticket``, ``list_tickets`` and ``snapshot`` queries, the Tickets
+page), and its moves are measured (``tasks_ticket_transitions_total``, tasking/measures.py).
+
+**Causation.** ``emit(..., cause=id)`` names the event this one answers or acts on as its
+CloudEvents ``causationid`` (a ticket created on a request names the request).
 
 The names: ``task.*`` is the protocol between the task system and the machines that fill roles
-(assignment, requests, attention); ``ticket.*`` and ``milestone.*`` are the facts the task
-system records about its own objects. So a request to create a ticket is ``task.requested`` and
-the fact is ``ticket.created``."""
+(assignment, requests, attention); ``ticket.created`` and ``milestone.created`` say what a
+request made (its id). So a request to create a ticket is ``task.requested`` and what it made is
+``ticket.created``."""
 
 from __future__ import annotations
 
@@ -31,7 +40,9 @@ from orchestra.events import machine_and_instance
 if TYPE_CHECKING:
     from .config import Project
 
-SCHEDULER = "task_scheduler"
+SCHEDULER = "task_scheduler"  # the daemon's name in its log and on the record's notes: never an event's source
+WORKER, REVIEWER = "worker", "reviewer"   # the roles a turn is offered to, and the machines their queues are published as
+OPERATOR = "task_web"         # the operator's console (the web plugin's controls): pause, capacity ceiling, stop
 GATE = "merge_gate"           # the merge gate, a machine of the task system's own: it takes approved work
 ATTENTION = "task.attention_needed"
 COORDINATOR, SUPERVISOR = "coordinator", "supervisor"     # the planner roles attention is addressed to: names, not programs here
@@ -47,37 +58,38 @@ def flat(ev: dict) -> dict:
     return out
 
 
-def recorded(cause: dict | None, source: str) -> bool:
-    """Whether an event ``source`` publishes because of ``cause`` records another machine's step."""
-    return bool(cause) and machine_and_instance(cause.get("source"))[0] != machine_and_instance(source)[0]
-
-
 class Events(OrchestraEvents):
     @classmethod
     def for_project(cls, project: Project, source: str) -> Events:
         return super().for_project(project.orchestra, source=source)
 
-    def emit(self, type: str, *, cause: dict | None = None, because: str | None = None, **data: Any) -> dict:
-        """Publish ``type`` with ``data``. ``cause``: the event (flat) whose step this records;
-        ``because``: the id of an event this publisher acts on (the gate on an approval), which
-        is named as the causationid while the ticket stays the subject."""
-        subject = data.get("ticket") or data.get("milestone")
-        ext = {"subject": str(subject)} if subject and not recorded(cause, self.source) else {}
-        if (cause or {}).get("id") or because:
-            ext["causationid"] = (cause or {}).get("id") or because
-        return flat(self.publish(type, data or None, **ext))
+    def publish(self, type: str, data=None, *, source: str | None = None, **ext):
+        src = source or self.source
+        if machine_and_instance(src)[0] == SCHEDULER:
+            raise ValueError(f"{type}: the scheduler publishes as the machine whose responsibility it implements, never as {SCHEDULER}")
+        return super().publish(type, data, source=src, **ext)
 
-    def attention(self, to: str, reason: str, ticket: str | None = None) -> dict:
-        """The task system needs a planner's decision: a ticket blocked, rejected at every
-        multiple of the threshold, a landed orchestra.toml the repository root did not follow, the base branch broken, a gate error, the pipeline still
-        paused after a restart, a staging deploy failed or could not be restarted. An event for whatever
-        machine fills the planner role ``to`` (coordinator, supervisor) to listen for, not a write
-        into its queue; routine creations and completions are in ``ticket.*`` and ``milestone.*``."""
-        return self.emit(ATTENTION, to=to, reason=reason, **({"ticket": ticket} if ticket else {}))
+    def emit(self, type: str, *, src: str | None = None, cause: str | None = None, **data: Any) -> dict:
+        """Publish ``type`` with ``data`` as ``src`` (this publisher's own source when None).
+        ``cause``: the id of the event this one answers or acts on, named as its causationid."""
+        subject = data.get("ticket") or data.get("milestone")
+        ext = {"subject": str(subject)} if subject else {}
+        if cause:
+            ext["causationid"] = cause
+        return flat(self.publish(type, data or None, source=src, **ext))
+
+    def attention(self, to: str, reason: str, ticket: str | None = None, *, src: str | None = None) -> dict:
+        """A planner's decision is needed: a ticket blocked, rejected at every multiple of the
+        threshold, a landed orchestra.toml the repository root did not follow, the base branch
+        broken, a gate error, the pipeline still paused after a restart, a staging deploy failed or
+        could not be restarted. An event for whatever machine fills the planner role ``to``
+        (coordinator, supervisor) to listen for, not a write into its queue, published as the
+        machine whose work is stuck or whose responsibility raised it (``src``)."""
+        return self.emit(ATTENTION, src=src, to=to, reason=reason, **({"ticket": ticket} if ticket else {}))
 
     def read(self, since: int = 0, limit: int = 500) -> tuple[list[dict], int]:
         evs, nxt = super().read(since, limit)
         return [flat(e) for e in evs], nxt
 
 
-__all__ = ["ATTENTION", "COORDINATOR", "GATE", "SCHEDULER", "SUPERVISOR", "Events", "recorded"]
+__all__ = ["ATTENTION", "COORDINATOR", "GATE", "OPERATOR", "REVIEWER", "SCHEDULER", "SUPERVISOR", "WORKER", "Events"]

@@ -46,9 +46,14 @@ def test_a_planners_change_is_a_request_the_scheduler_applies_and_answers(env):
     sent = [(e["type"], e["source"]) for e in evs if e["type"].endswith("requested")]
     answered = [(e["type"], e["source"]) for e in evs if e["type"].startswith("request.")]
     assert sent[:3] == [("milestone.requested", "supervisor"), ("task.requested", "supervisor"), ("task.requested", "supervisor")]
-    assert answered[:3] == [("request.done", "task_scheduler"), ("request.done", "task_scheduler"), ("request.refused", "task_scheduler")]
-    created = [e for e in evs if e["type"] == "ticket.created"]
-    assert created and all(e["source"] == "task_scheduler" for e in created)     # the task system made it, on request
+    # the desk stands in for the asker's own request handling: its answers, and what a request made,
+    # go out as the asker, naming the request as their cause; never as the scheduler
+    assert answered[:3] == [("request.done", "supervisor"), ("request.done", "supervisor"), ("request.refused", "supervisor")]
+    requests = {e["id"]: e for e in evs if e["type"].endswith("requested")}
+    created = [e for e in evs if e["type"] in ("ticket.created", "milestone.created")]
+    assert len(created) == 2 and all(e["source"] == "supervisor" and requests[e["causationid"]]["source"] == "supervisor" for e in created)
+    assert all(e["causationid"] in requests for e in evs if e["type"].startswith("request."))
+    assert not [e for e in evs if e["source"] == "task_scheduler"]
     events = Events.for_project(p, source="test")
     assert asked(events, "coordinator") == [] and asked(events, "supervisor") == []   # a creation is routine: no attention
 
@@ -66,17 +71,17 @@ def test_every_operation_is_answered(env):
     assert do("update_ticket", {"id": t, "priority": 2, "objective": "o"})["ticket"]["priority"] == 2
 
     x = store.get_ticket(t)
-    store.transition(t, x.version, State.IN_PROGRESS)
+    store.transition(t, x.version, State.IN_PROGRESS, by="worker")
     assert do("cancel_ticket", {"id": t, "reason": "no"})["ok"] is False and f"{t} is IN_PROGRESS" in refusal()
     x = store.get_ticket(t)
-    store.transition(t, x.version, State.OPEN)
+    store.transition(t, x.version, State.OPEN, by="worker")
     assert do("cancel_ticket", {"id": t, "reason": "no"})["ticket"]["state"] == "CANCELLED"
 
     u = do("create_ticket", {"title": "b", "milestone_id": m["id"]})["ticket"]["id"]
     assert do("unblock_ticket", {"id": u, "note": "n"})["ok"] is False and f"{u} is OPEN, not BLOCKED" in refusal()
     x = store.get_ticket(u)
-    x = store.transition(u, x.version, State.IN_PROGRESS)
-    store.transition(u, x.version, State.BLOCKED, blocked_reason="r")
+    x = store.transition(u, x.version, State.IN_PROGRESS, by="worker")
+    store.transition(u, x.version, State.BLOCKED, blocked_reason="r", by="worker")
     assert do("unblock_ticket", {"id": u, "note": "n"})["ticket"]["state"] == "OPEN"
 
     assert do("update_milestone", {"id": m["id"], "name": "N"})["milestone"]["name"] == "N"

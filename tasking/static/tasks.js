@@ -35,7 +35,7 @@ function turnsText(t) {
 
 // The headline over the tickets, from a /board answer D: a partition of the tickets (every
 // ticket in exactly one bucket, so the numbers add up to the ticket count), drawn by the Tasks
-// panel and the scheduler's card. Zero buckets are left out except the two always shown; the
+// panel. Zero buckets are left out except the two always shown; the
 // finished ones (done, cancelled) are left out when finished is false.
 function taskSummary(D, { finished = true } = {}) {
   const c = D.counts || {}, n = (s) => c[s] || 0;
@@ -92,7 +92,7 @@ function priorityText(t, live) {
   return p.effective === p.own ? `${p.own}` : `${p.effective} <span class="muted">(own ${p.own}; ${bits.join(", ")})</span>`;
 }
 
-// The operator's controls, drawn by the Tasks panel and the scheduler's card from the same /board
+// The operator's controls, drawn by the Tasks panel from the /board
 // answer D: the capacity ceilings with one-more/one-fewer buttons, and the pause. ns names the
 // object (taskControlActions) the buttons call.
 function taskControls(D, ns) {

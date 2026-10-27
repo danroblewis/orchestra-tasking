@@ -6,7 +6,7 @@ import threading
 import time
 
 import pytest
-from conftest import git, run_scheduler
+from conftest import git, moves, run_scheduler
 from fake_machine import FakeMachine
 
 from tasking import scheduler as scheduler_mod
@@ -26,13 +26,13 @@ def env(project):
     git("commit", "-qm", "code mode", cwd=repo)
     events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
-    ms = store.create_milestone(name="m")
+    ms = store.create_milestone(src="planner", name="m")
     return project, store, events, ms, repo
 
 
 def test_ticket_goes_open_to_done(env):
     project, store, events, ms, repo = env
-    t = store.create_ticket(title="Do the thing", milestone_id=ms.id, description="x", acceptance="y")
+    t = store.create_ticket(src="planner", title="Do the thing", milestone_id=ms.id, description="x", acceptance="y")
     m = run_scheduler(project, store, events)
     t = store.get_ticket(t.id)
     assert t.state == State.DONE
@@ -52,7 +52,7 @@ def test_the_gate_lands_what_the_scheduler_recorded_as_reviewed(env):
     """A reviewer that omits the commit from its report changes nothing: the commit under
     review is the one the scheduler took from the worker's branch, and the gate lands that."""
     project, store, events, ms, repo = env
-    t = store.create_ticket(title="Reviewed as recorded", milestone_id=ms.id)
+    t = store.create_ticket(src="planner", title="Reviewed as recorded", milestone_id=ms.id)
     m = run_scheduler(project, store, events, echo_commit=False)
     reviewed = next(o for o in m.offers if o["role"] == "reviewer")["review"]["commit"]
     t = store.get_ticket(t.id)
@@ -63,7 +63,7 @@ def test_the_gate_lands_what_the_scheduler_recorded_as_reviewed(env):
 
 def test_rejection_loops_back_to_worker(env):
     project, store, events, ms, _repo = env
-    t = store.create_ticket(title="Needs two tries", milestone_id=ms.id)
+    t = store.create_ticket(src="planner", title="Needs two tries", milestone_id=ms.id)
     m = run_scheduler(project, store, events, reject_first=True)
     t = store.get_ticket(t.id)
     assert t.state == State.DONE and t.review_rounds == 1
@@ -75,7 +75,7 @@ def test_rejection_loops_back_to_worker(env):
 
 def test_blocked_worker(env):
     project, store, events, ms, _repo = env
-    t = store.create_ticket(title="Blocked one", milestone_id=ms.id)
+    t = store.create_ticket(src="planner", title="Blocked one", milestone_id=ms.id)
     run_scheduler(project, store, events, block=True)
     t = store.get_ticket(t.id)
     assert t.state == State.BLOCKED and t.blocked_reason == "need a decision"
@@ -86,8 +86,8 @@ def test_blocked_worker(env):
 
 def test_dependency_order(env):
     project, store, events, ms, repo = env
-    a = store.create_ticket(title="A", milestone_id=ms.id, priority=5)
-    b = store.create_ticket(title="B", milestone_id=ms.id, priority=1, depends_on=[a.id])
+    a = store.create_ticket(src="planner", title="A", milestone_id=ms.id, priority=5)
+    b = store.create_ticket(src="planner", title="B", milestone_id=ms.id, priority=1, depends_on=[a.id])
     run_scheduler(project, store, events)
     assert store.get_ticket(a.id).state == State.DONE
     assert store.get_ticket(b.id).state == State.DONE
@@ -100,7 +100,7 @@ def test_gate_rejection_reengages_worker_then_lands(env):
     gate's tests; the gate sends it back with feedback; the worker is offered it again in the
     same worktree, fixes it, is re-reviewed, and lands."""
     project, store, events, ms, repo = env
-    t = store.create_ticket(title="Breaks the build first", milestone_id=ms.id)
+    t = store.create_ticket(src="planner", title="Breaks the build first", milestone_id=ms.id)
     m = run_scheduler(project, store, events, break_first=True)
     t = store.get_ticket(t.id)
     assert t.state == State.DONE
@@ -111,12 +111,14 @@ def test_gate_rejection_reengages_worker_then_lands(env):
     kinds = [(n["author"], n["kind"]) for n in store.notes(t.id)]
     assert kinds.count(("merge_gate", "gate")) == 2   # the rejection and the landing
     assert kinds.count(("reviewer", "review")) == 2   # reviewed before each gate run
+    # each move counted by the machine whose act it was; nothing published for any of them
+    assert moves(store) == {("OPEN", "IN_PROGRESS", "worker"): 1, ("IN_PROGRESS", "READY_FOR_REVIEW", "worker"): 2,
+                            ("READY_FOR_REVIEW", "IN_REVIEW", "reviewer"): 2, ("IN_REVIEW", "APPROVED", "reviewer"): 2,
+                            ("APPROVED", "MERGING", "merge_gate"): 2, ("MERGING", "REJECTED", "merge_gate"): 1,
+                            ("REJECTED", "IN_PROGRESS", "worker"): 1, ("MERGING", "DONE", "merge_gate"): 1}
     evs, _ = events.read(0, limit=10000)
-    trail = [(e["from"], e["to"]) for e in evs if e["type"] == "ticket.transitioned" and e["ticket"] == t.id]
-    assert trail == [("OPEN", "IN_PROGRESS"), ("IN_PROGRESS", "READY_FOR_REVIEW"), ("READY_FOR_REVIEW", "IN_REVIEW"),
-                     ("IN_REVIEW", "APPROVED"), ("APPROVED", "MERGING"), ("MERGING", "REJECTED"),
-                     ("REJECTED", "IN_PROGRESS"), ("IN_PROGRESS", "READY_FOR_REVIEW"), ("READY_FOR_REVIEW", "IN_REVIEW"),
-                     ("IN_REVIEW", "APPROVED"), ("APPROVED", "MERGING"), ("MERGING", "DONE")]
+    assert [e["type"] for e in evs if e["type"].startswith("gate.")] == ["gate.started", "gate.rejected", "gate.started", "gate.landed"]
+    assert not [e for e in evs if e["type"].startswith("ticket.") and e["type"] != "ticket.created"]
     assert "README.md" in git("ls-tree", "--name-only", "main", cwd=repo)
     assert "WORK.md" in git("ls-tree", "--name-only", "main", cwd=repo)
     first_review = next(o for o in m.offers if o["role"] == "reviewer")["review"]
@@ -132,7 +134,7 @@ def test_a_shutdown_lets_the_gate_finish_its_run(env):
     project.reload_config()
     git("add", "-A", cwd=repo)
     git("commit", "-qm", "a slow unit stage", cwd=repo)
-    t = store.create_ticket(title="Slow to land", milestone_id=ms.id)
+    t = store.create_ticket(src="planner", title="Slow to land", milestone_id=ms.id)
     sched = Scheduler(project, store, events)
 
     def stop_in_the_gate():

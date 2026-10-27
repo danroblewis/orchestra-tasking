@@ -38,8 +38,11 @@ It is an Orchestra plugin named `tasks`. Orchestra's web UI shows its pages, and
 
 What it is not:
 
-- It runs no machine besides its own scheduler. Whatever fills a role is another program that
-  speaks the contract in section 6. In this repository that is a shell runner and a file checker
+- It runs no machine besides the merge gate (`merge_gate`, code mode). Its scheduler is a
+  daemon, not a machine: it stands in for each machine's own scheduling (the worker's queue, the
+  reviewer's, the gate, the answers to requests) and publishes only as the machine it acts for
+  (section 6, "Who publishes what"). Whatever fills a role is another program that speaks the
+  contract in section 6. In this repository that is a shell runner and a file checker
   (`demo/machines/`); elsewhere it can be anything, an AI agent included.
 - It knows nothing about what a machine is made of. It reads a claim's `source` (who holds the
   work) and what the holder ended its turn with (a review requested, a verdict, a report).
@@ -74,7 +77,7 @@ flowchart LR
     end
 
     STORE[("LocalStore<br/>tasking/store/<br/>tickets.json, runtime.json")]
-    MEAS["Measures<br/>tasking/measures.py"]
+    MEAS["tasking metrics<br/>tasking/measures.py"]
     BUS[["Orchestra event bus<br/>(via tasking/events.py)"]]
     METRICS[("Orchestra metrics store")]
     MODEL["Orchestra discovery<br/>and SD model"]
@@ -86,10 +89,10 @@ flowchart LR
     REP --> STORE
     API --> STORE
     WEB <--> STORE
-    STORE --> MEAS --> METRICS --> MODEL
+    STORE --> MEAS -- "instrument tasks.tickets<br/>(orchestra run, every discovery step)" --> METRICS --> MODEL
     SCH <--> BUS
     DESK <--> BUS
-    STORE -- "ticket.*, milestone.*" --> BUS
+    STORE -- "ticket.created, milestone.created<br/>(as the asker)" --> BUS
     MACH <--> BUS
     PLAN <--> BUS
     GATE <--> GIT
@@ -99,19 +102,19 @@ flowchart LR
 | Module | What it does |
 |---|---|
 | `tasking/model.py` | `Ticket`, `Milestone`, `Note`, the `State` enum, `TRANSITIONS`, `RECOVERY`, readiness (`is_ready`) and effective priority (`effective_priorities`). Pure data and rules. |
-| `tasking/store/` | The only code that reads or writes the JSON state. `tickets.py` holds tickets, milestones and notes; `runtime.py` holds what the scheduler holds while running; `files.py` does whole-file writes under one `fcntl` lock; `local.py` joins the halves as `LocalStore`. Every change also publishes an observation and writes metrics. |
-| `tasking/scheduler.py` | The loop: follows the bus, owns leases, makes offers, starts the gate, keeps staging and probes going, re-asserts the levels. |
+| `tasking/store/` | The only code that reads or writes the JSON state. `tickets.py` holds tickets, milestones and notes; `runtime.py` holds what the scheduler holds while running; `files.py` does whole-file writes under one `fcntl` lock; `local.py` joins the halves as `LocalStore`. A change is recorded and counted (`metric_counts`), never published, except what a request made (`ticket.created`, `milestone.created`, as the asker). |
+| `tasking/scheduler.py` | The loop: follows the bus, owns leases, makes offers (as `worker` or `reviewer`), starts the gate, keeps staging and probes going. It is no machine and announces nothing of itself. |
 | `tasking/reports.py` | What the end of a turn (a review requested, a verdict, a report, or none) makes of a ticket. |
 | `tasking/assignments.py` | The assignment contract: event names, `LEASE_S`, `HEARTBEAT_S`, the offer's `brief`. Its docstring table is the single source of truth for the five assignment events. |
 | `tasking/requests.py` | Request names, the `Desk` that answers them, and `ask()` for callers. |
 | `tasking/api.py` | The operations the desk applies (`create_ticket`, `cancel_ticket`, ...). |
-| `tasking/events.py` | `Events`, a thin layer over `orchestra.events.Events`: `emit()` sets the subject to the ticket or milestone; `read()` flattens `data` into the event dict. Attention helper. |
+| `tasking/events.py` | `Events`, a thin layer over `orchestra.events.Events`: `emit(type, src=..., cause=...)` publishes as `src` with the ticket or milestone as subject and `cause` as `causationid`; `read()` flattens `data` into the event dict. Refuses a publish as `task_scheduler`. Attention helper. |
 | `tasking/gate.py`, `tasking/appends.py`, `tasking/git.py` | The merge gate, its one automatic conflict resolution, and thin `git` wrappers. |
 | `tasking/staging.py`, `tasking/probes.py` | The staging instance and the `[[probes]]` checks. |
-| `tasking/measures.py` | The series written to Orchestra's metrics store. |
+| `tasking/measures.py` | The counters kept in the record and the Prometheus text an instrument reads (`tasking metrics`, `/metrics`). |
 | `tasking/config.py` | The task system's sections of `orchestra.toml`, and the state paths. |
-| `tasking/web.py`, `tasking/static/` | The plugin: pages, every-page scripts, API routes, the declared machine and process. |
-| `tasking/cli.py`, `tasking/status.py` | The `tasking` command and its one-screen status. |
+| `tasking/web.py`, `tasking/static/` | The plugin: pages, every-page scripts, API routes, the scheduler's process and the instrument. |
+| `tasking/cli.py`, `tasking/status.py` | The `tasking` command (`tasking metrics` included) and its one-screen status. |
 
 Two processes touch the store: the scheduler (`tasking run`) and Orchestra's web server, which
 loads the plugin. They share the store through the file lock. The web server writes only the
@@ -211,26 +214,33 @@ Who makes each move, and the `by` label the move carries in the metrics (section
 | `OPEN`, `REJECTED` | `IN_PROGRESS` | the first valid claim of a worker offer (the queue's, or changes requested of the worker); `worker_turns` + 1, `worker` = the holder | `Scheduler._accept` | the holder's machine name |
 | `IN_PROGRESS` | `READY_FOR_REVIEW` | `review.requested`; in code mode the commit it names becomes `reviewed_commit` | `Reports.review_requested` | `worker` |
 | `IN_PROGRESS` | `BLOCKED` | worker report `BLOCKED` with a reason | `Reports._worker` | `worker` |
-| `IN_PROGRESS` | `BLOCKED` | third crash in a row; a turn that ended on purpose with no report; code mode, a review requested of nothing beyond the base | `Reports._block` | `task_scheduler` |
-| `IN_PROGRESS` | `OPEN` | first or second crash (lease ran out, unusable report or review request, `failed: true`) | `Reports._worker` | `task_scheduler` |
-| `IN_PROGRESS` | `OPEN` | operator stop, restart, shutdown, an outcome that threw | `Reports.back_to_waiting` | `task_scheduler` |
+| `IN_PROGRESS` | `BLOCKED` | third crash in a row; a turn that ended on purpose with no report; code mode, a review requested of nothing beyond the base | `Reports._block` | `worker` |
+| `IN_PROGRESS` | `OPEN` | first or second crash (lease ran out, unusable report or review request, `failed: true`) | `Reports._worker` | `worker` |
+| `IN_PROGRESS` | `OPEN` | operator stop, restart, shutdown, an outcome that threw | `Reports.back_to_waiting` | `worker` (whose turn it was) |
 | `READY_FOR_REVIEW` | `IN_REVIEW` | the first valid claim of a review (the worker's request, or the queue's offer) | `Scheduler._accept` | the holder's machine name |
-| `READY_FOR_REVIEW` | `REJECTED` | the folder or worktree is gone at review time; not a review round | `Scheduler._assign` → `Reports.reject` | `task_scheduler` |
+| `READY_FOR_REVIEW` | `REJECTED` | the folder or worktree is gone at review time; not a review round; `rejected_by = task_scheduler` | `Scheduler._assign` → `Reports.reject` | `reviewer` |
 | `IN_REVIEW` | `APPROVED` | `review.approved` | `Reports.verdict` | `reviewer` |
 | `IN_REVIEW` | `REJECTED` | `changes.requested`; `review_rounds` + 1 | `Reports.verdict` → `reject` | `reviewer` |
-| `IN_REVIEW` | `REJECTED` | the fourth review in a row without a verdict | `Reports.reject` | `task_scheduler` |
-| `IN_REVIEW` | `READY_FOR_REVIEW` | no verdict (up to three times), lease ran out, operator stop, restart, shutdown | `Reports._no_verdict`, `back_to_waiting` | `task_scheduler` |
+| `IN_REVIEW` | `REJECTED` | the fourth review in a row without a verdict; `rejected_by = task_scheduler` | `Reports.reject` | `reviewer` |
+| `IN_REVIEW` | `READY_FOR_REVIEW` | no verdict (up to three times), lease ran out, operator stop, restart, shutdown | `Reports._no_verdict`, `back_to_waiting` | `reviewer` |
 | `APPROVED` | `DONE` | tasks mode: right after `APPROVED` | `Reports.verdict` | `reviewer` |
-| `APPROVED` | `MERGING` | the gate (`merge_gate`) takes the oldest approved ticket | `Scheduler._gate` | `task_scheduler` |
-| `MERGING` | `DONE` | the gate landed it | `run_gate` | `task_scheduler` |
-| `MERGING` | `REJECTED` | conflict (not a review round) or a failed stage (a review round); `rejected_by = merge_gate` | `run_gate.reject` | `task_scheduler` |
-| `MERGING` | `APPROVED` | base branch broken, gate error, or a restart during the run | `run_gate`, `recover` | `task_scheduler` |
-| `BLOCKED` | `OPEN` | `unblock_ticket` request | `api.handle` | the request's `by` |
-| any waiting state | `CANCELLED` | `cancel_ticket` request; refused while active | `api.handle` | the request's `by` |
+| `APPROVED` | `MERGING` | the gate (`merge_gate`) takes the oldest approved ticket | `Scheduler._gate` | `merge_gate` |
+| `MERGING` | `DONE` | the gate landed it | `run_gate` | `merge_gate` |
+| `MERGING` | `REJECTED` | conflict (not a review round) or a failed stage (a review round); `rejected_by = merge_gate` | `run_gate.reject` | `merge_gate` |
+| `MERGING` | `APPROVED` | base branch broken, gate error, or a restart during the run | `run_gate`, `recover` | `merge_gate` |
+| `BLOCKED` | `OPEN` | `unblock_ticket` request | `api.handle` | the asker's machine (the request's source) |
+| any waiting state | `CANCELLED` | `cancel_ticket` request; refused while active | `api.handle` | the asker's machine (the request's source) |
 
-Two things change no state at all: an offer nobody claims, and a heartbeat. The record of a
-machine's step names that step's event (`ticket.transitioned`'s `causationid`, the ticket's
-`caused_by`); the gate's moves are published as `merge_gate`.
+`by` is never `task_scheduler`: a move the scheduler records names the machine whose act or
+responsibility it was, and the store refuses one recorded by the scheduler without a `by`
+(`Tickets.transition`). A restart that sends an active ticket back counts it for the machine whose
+turn it was (`Reports.ROLE_OF`: `IN_PROGRESS` worker, `IN_REVIEW` reviewer, `MERGING` merge_gate).
+A ticket's `rejected_by` still says `task_scheduler` when the task system's rules sent it back, for
+the worker to read.
+
+Two things change no state at all: an offer nobody claims, and a heartbeat. No move is published:
+the record keeps it (the ticket's `caused_by` names the event that caused it), the queries and the
+Tickets page read it, and `tasks_ticket_transitions_total` counts it (section 13).
 
 `TRANSITIONS` allows `CANCELLED` only from a waiting state, so the store itself refuses to
 cancel an active ticket; `cancel_ticket` checks first to say why ("wait for it to settle").
@@ -254,18 +264,19 @@ On start (`Scheduler.recover`, then `run`):
 3. Gate runs left `running` are marked `aborted`; gate worktrees and `orchestra/gate-*`
    branches are removed. With reused worktrees, the gate's hold on the pool is dropped and a
    pool worktree left on a gate branch is detached first, so the branch can go.
-4. The desk thread starts. Then the runtime record names this pid. Then the scheduler
-   publishes `orchestra.machine.started` (`package: tasks`, `mode: continuous`, `kind: program`,
-   `listens_for`, `log`). `listens_for` names the requests and queries, `task.accepted`,
-   `task.working`, `review.requested`, `changes.requested`, `review.approved`, `task.reported`
-   and `orchestra.machine.started` (a machine that listens for offers starting sends the resting
-   offers out again). In code mode the gate announces itself too, as `merge_gate`
-   (`listens_for: [review.approved]`).
-5. If the pipeline is still paused, the supervisor role gets attention.
+4. The desk thread starts. Then the runtime record names this pid. The scheduler announces
+   nothing of itself: it is no machine. It says once per bus what makes the worker's queue act,
+   as `worker` with only `{listens_for: [gate.conflict, gate.rejected, ticket.created]}`
+   (`Scheduler._announce_queues`; skipped when the bus already has it, so a restart does not make
+   it the worker's latest announcement). In code mode the gate announces itself, as `merge_gate`
+   (`package: tasks`, `mode: continuous`, `kind: program`, `listens_for: [review.approved]`,
+   `log`).
+5. If the pipeline is still paused, the supervisor role gets attention (as `merge_gate`).
 6. If staging was deployed and its process is gone, it is started again.
 
 On SIGTERM or SIGINT, the loop ends. A running gate run finishes first. Then every assignment is released ("the task system shut down"),
-the pid is cleared, and `scheduler.stopped` is published.
+and the pid is cleared. Nothing says the scheduler stopped: the runtime record and the Core page
+(the process `tasks.scheduler`) do.
 
 ### The tick
 
@@ -285,9 +296,10 @@ flowchart TD
     H -- no --> J
     I --> J["drop worktrees of<br/>cancelled tickets"]
     J --> K["staging.ensure_running<br/>run due probes"]
-    K --> L{"a discovery step<br/>since last levels?"}
-    L -- yes --> M["re-assert tasks_tickets levels"]
 ```
+
+The tick writes no metrics. With reused worktrees it keeps the number of turns waiting for a
+worktree in the runtime record, for the instrument to read (section 13).
 
 Points worth knowing:
 
@@ -333,39 +345,72 @@ Points worth knowing:
 The tables in the docstring of `tasking/assignments.py` are the contract; `SPEC.md` section 3 is
 the design (the owner's decision D17: the task system is the record, not the hub). This section
 explains it. The `assignment` id (`<ticket>.<role>.<8 hex>`) names one turn of work and is made by
-whoever offers the turn. The `source` is who speaks: `task_scheduler` for the scheduler,
-`merge_gate` for the gate, `<machine>/<instance>` for a machine.
+whoever offers the turn. The `source` is who speaks: `<machine>/<instance>` for a machine,
+`worker` or `reviewer` (no instance) for that role's queue, `merge_gate` for the gate. The
+scheduler is never a source (`task_scheduler` is refused by `tasking/events.py`): the owner's
+decision of 2026-10-27 is that it is no machine but one daemon standing in for each machine's own
+scheduling, an implementation detail of the task system that Orchestra's Machines page, event
+graph and hand-offs never show.
 
 ### Who speaks
 
-Work passes directly between the machines that do it. The scheduler reads every event, records
-it, and speaks only when it acts itself:
+Work passes directly between the machines that do it. The scheduler reads every event and
+records it; it publishes only an act no machine's own process already announced, as the machine
+whose responsibility it implements:
 
 | Step | Who publishes | Event |
 |---|---|---|
-| waiting work is offered from the queue | `task_scheduler` | `task.assigned` (to a role; or `to` the worker that did rejected work) |
+| waiting work is offered from the queue | the role's queue: `worker` or `reviewer` | `task.assigned` (to a role; or `to` the worker that did rejected work) |
 | a machine takes an offer | the instance | `task.accepted` |
 | the holder is still at it | the holder | `task.working` |
 | a worker has finished | the worker | `review.requested` (offers the review) |
 | a reviewer rejects | the reviewer | `changes.requested` (offers the rework `to` the worker that did it) |
 | a reviewer approves | the reviewer | `review.approved` (for the gate) |
 | the work passes to no machine | the holder | `task.reported` (a worker's BLOCKED, or no report) |
-| the gate takes approved code | `merge_gate` | `ticket.transitioned` (to MERGING, DONE or REJECTED), `gate.*` |
-| work is taken back | `task_scheduler` | `task.released` |
-| the record of a machine's step | `task_scheduler` | `ticket.transitioned`, `ticket.note_added`: no subject, `causationid` = the step |
+| the gate takes approved code | `merge_gate` | `gate.*` (`gate.started` names the approval as `causationid`) |
+| work is taken back | the role's queue: `worker` or `reviewer` | `task.released` |
+| the record of a machine's step | nobody: recorded in the store only | none |
+
+### Who publishes what
+
+Everything the scheduler publishes, and as whom. It is the same table as SPEC.md section 3.
+
+| What the scheduler does | Published as (source) | Events |
+|---|---|---|
+| creates a ticket or milestone on a planner's request | the asker (the request's source); `causationid` = the request | `ticket.created`, `milestone.created` |
+| answers a request or query | the asker; `causationid` = the request; subject = the ticket for a change, none for a query | `request.done`, `request.refused` |
+| applies any other request (update, note, cancel, unblock, milestone change or close, capacity, resume the pipeline) | nothing beyond the answer | none |
+| offers waiting work from the queue (also rejected work addressed `to` the worker that did it, after a gate rejection) | the role's machine, no instance: `worker` or `reviewer` | `task.assigned` |
+| takes work back: an offer nobody claimed within its lease, a silent holder, the return timeout, the operator's stop, a restart or shutdown, a claim it cannot record | the role's machine (`worker`, `reviewer`); `instance` in the data when addressed to one | `task.released` |
+| says once per bus what makes the worker's queue act | `worker`, data only `{listens_for: [gate.conflict, gate.rejected, ticket.created]}` (no kind, mode or package: the worker's instances say what they are) | `orchestra.machine.started` |
+| records a step another machine announced (a claim, a heartbeat, `review.requested`, `changes.requested`, `review.approved`, `task.reported`) | nothing: recorded in the store only | none |
+| runs the gate | `merge_gate` (a machine: it does work of its own, merging) | `gate.started` (`causationid` = the approval), `gate.landed`, `gate.rejected`, `gate.conflict`, `gate.error`, `gate.base_broken`; in code mode its announcement {package: tasks, mode: continuous, kind: program, listens_for: [review.approved], log} |
+| pauses the pipeline | `merge_gate` | `pipeline.paused` |
+| deploys or restarts staging | `merge_gate` | `staging.deployed`, `staging.failed`, `staging.restarted` |
+| asks a planner about a ticket blocked by the worker's report, a worker turn that keeps failing, nothing beyond the base | `worker` (whose work is stuck) | `task.attention_needed` |
+| asks a planner about a ticket rejected at a multiple of the threshold by reviews (or by reviews that kept ending without a verdict) | `reviewer` | `task.attention_needed` |
+| asks a planner about gate rejections at the threshold, the base broken, a gate error, a landed `orchestra.toml` the root did not follow, the pipeline still paused after a restart, staging failed | `merge_gate` | `task.attention_needed` |
+| runs the `[[probes]]` | `probes` (the condition checks; whether they should become instruments is open: Orchestra's `docs/roadmap/story-placement.md` §7 item 2) | `probe.failed`, `probe.recovered` |
+| the operator's controls (web) | `task_web` | `capacity.changed`, `pickup.paused`/`resumed`, `kill.requested` |
+
+No echoes: `ticket.transitioned`, `ticket.note_added`, `ticket.updated`, `milestone.updated`,
+`milestone.closed` and `scheduler.stopped` no longer exist, nor `capacity.changed` and
+`pipeline.resumed` caused by a planner's request. Each restated an act some machine had already
+announced (a claim, `review.requested`, `changes.requested`, `review.approved`, `task.reported`,
+`gate.*`, `task.released`, a request answered by `request.done`).
 
 ### The events
 
 | Event | From | Data | The scheduler reads |
 |---|---|---|---|
-| `task.assigned` | `task_scheduler` | the offer fields: `assignment`, `role`, `ticket`, `workspace`, `branch` and `base` (null in tasks mode), `lease_s`, `brief`, `unit_command` (code), a reviewer's `review` {`summary`, `commit`, `test_output`, `worker`}, `to` | (it sends this) |
+| `task.assigned` | the role's queue, as `worker` or `reviewer` | the offer fields: `assignment`, `role`, `ticket`, `workspace`, `branch` and `base` (null in tasks mode), `lease_s`, `brief`, `unit_command` (code), a reviewer's `review` {`summary`, `commit`, `test_output`, `worker`}, `to` | (it sends this) |
 | `review.requested` | the worker holding the work | the offer fields for the reviewer's turn, `ends` | `ends`, `assignment`, `ticket`, `role`, `workspace`, `review.summary`, `review.commit`, `review.test_output`, `source` |
 | `changes.requested` | the reviewer holding the review | the offer fields for the worker's turn (`brief.feedback`, `brief.rejected_by` set), `to`, `ends`, `summary`, `feedback`, `commit` | `ends`, `assignment`, `ticket`, `role`, `workspace`, `to`, `summary`, `feedback`, `commit`, `source` |
 | `task.accepted` | the instance | `assignment`, `ticket`, `role`, optional `instance` | `assignment`, `instance`, `source` |
 | `task.working` | the holder | `assignment`, `ticket`, `role`, optional `text` | `assignment`, `text` (last 200 chars, shown on the Tasks panel), `source` |
 | `review.approved` | the reviewer holding the review | `ends`, `ticket`, `role`, `summary`, `commit` | `ends`, `summary`, `commit`, `source` |
 | `task.reported` | the holder | `assignment`, `ticket`, `role`, `report`, `failed`, `text`, `commit` | `assignment`, `report`, `failed`, `text`, `source` |
-| `task.released` | `task_scheduler` | `assignment`, `ticket`, `role`, `reason`; `instance` when addressed to one instance | (it sends this) |
+| `task.released` | the role's queue, as `worker` or `reviewer` | `assignment`, `ticket`, `role`, `reason`; `instance` when addressed to one instance | (it sends this) |
 
 `brief` holds the ticket's `id`, `title`, `objective`, `description`, `acceptance`,
 `verification`, `feedback`, `rejected_by`, `review_rounds`, `priority`, `depends_on`, `branch`
@@ -378,8 +423,8 @@ that opened it as its CloudEvents `causationid`.
 - **The bus's order decides who holds a turn.** The first valid claim of an offer holds it:
   `instance`, if sent, equals `source`, and an offer addressed `to` an instance is claimed by that
   instance. The claimant reads its claim back from the bus to know; the scheduler records the
-  same holder (`ticket.transitioned` with `owner` and `assignment`, caused by the claim) and says
-  nothing to a loser (`assignments.holder`, the rule both sides apply).
+  same holder in the store (the ticket's `owner`, `caused_by` the claim; nothing is published)
+  and says nothing to a loser (`assignments.holder`, the rule both sides apply).
 - **A claim naming another instance than its source** gets `task.released` naming the
   `source`, and the offer stays open. A claim of an offer addressed to someone else changes
   nothing.
@@ -419,7 +464,7 @@ that opened it as its CloudEvents `causationid`.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant S as task_scheduler
+    participant S as scheduler (as worker, reviewer)
     participant B as Bus
     participant W1 as worker/1
     participant W2 as worker/2
@@ -427,11 +472,11 @@ sequenceDiagram
     participant G as merge_gate
 
     Note over S: tick: TK-7 is OPEN and ready, a worker slot is free
-    S->>B: task.assigned {assignment A, role worker, ticket TK-7, workspace, branch, lease_s 180, brief}
+    S->>B: task.assigned {assignment A, role worker, ...} as source worker (the worker's queue)
     W1->>B: task.accepted {assignment A}
     W2->>B: task.accepted {assignment A}
     Note over W1,W2: each reads its claim back: W1's is first, W2 lost and does nothing
-    Note over S: records W1 as holder (ticket.transitioned, no subject, causationid = W1's claim)
+    Note over S: records W1 as holder in the store (nothing published)
     loop every 30 s or sooner (lease 180 s)
         W1->>B: task.working {assignment A, text}
     end
@@ -446,17 +491,24 @@ sequenceDiagram
     R->>B: task.accepted {assignment R2}
     R->>B: review.approved {ends R2, commit}
     Note over S: records APPROVED
-    G->>B: ticket.transitioned {to MERGING}, gate.started (causationid = the approval)
-    G->>B: gate.landed, ticket.transitioned {to DONE}
+    Note over G: records MERGING
+    G->>B: gate.started (causationid = the approval)
+    G->>B: gate.landed
+    Note over G: records DONE
     alt worker/1 is gone when C1 comes
         Note over S: return timeout with no claim
-        S->>B: task.released {assignment C1, reason "worker/1 did not take the rejected work back ..."}
-        S->>B: task.assigned {assignment A2, role worker} (any worker)
+        S->>B: task.released {assignment C1, reason "worker/1 did not take the rejected work back ..."} as worker
+        S->>B: task.assigned {assignment A2, role worker} as worker (any worker)
     end
 ```
 
-Orchestra's event map (hand-offs inferred from who acts next on a subject) draws this as
-`task_scheduler → worker → reviewer → worker → reviewer → merge_gate`.
+Orchestra's event map (hand-offs inferred from who acts next on a subject, named by the event
+the receiver listens for) draws this, with the planner that asked for TK-7, as `planner → worker
+(via ticket.created) → reviewer (review.requested) → worker (changes.requested) → reviewer →
+merge_gate (review.approved)`, with nothing in between: the first offer, as `worker`, is the
+worker's own queue acting, and the worker's queue announcement (section 5) names `ticket.created`
+as what it listens for. After a gate rejection it draws `merge_gate → worker` via `gate.rejected`.
+`tests/e2e/test_handoffs_e2e.py` checks this, and that no event has the source `task_scheduler`.
 
 ## 7. What the end of a turn makes of a ticket
 
@@ -467,9 +519,10 @@ worker's `{state: "BLOCKED", blocked_reason: "..."}`, or a null `report` (the tu
 one). Anything else, a `READY_FOR_REVIEW` or a verdict included (those pass on directly), is
 treated as no report with `failed: true`, and the reason becomes the machine's last words.
 
-Everything a machine did is recorded with its event as the cause (`cause=ev`): the store's
-`ticket.transitioned` and `ticket.note_added` then name it as `causationid` and carry no subject
-(`tasking/events.py`, `recorded`), and the ticket keeps its id as `caused_by`.
+Everything a machine did is recorded with its event as the cause (`cause=ev`): the ticket keeps
+its id as `caused_by`. Nothing is published for it: the machine announced it itself. Each move is
+counted `by` the machine whose act or responsibility it was (section 4), and attention is
+published as that machine (section 9).
 
 **Worker outcomes** (`Reports._worker`), only while the ticket is `IN_PROGRESS`:
 
@@ -490,7 +543,7 @@ resets the count.
 |---|---|
 | `review.approved` | note; `APPROVED`; in tasks mode `DONE` straight after |
 | `changes.requested` | note; `REJECTED` with `feedback` (or the summary), `rejected_by = reviewer`, `review_rounds` + 1; the rework offer `to` the worker is recorded |
-| no verdict (quiet, a report, or a `commit` that differs from `reviewed_commit`) | crash note; `READY_FOR_REVIEW` to be reviewed again (from the queue). The fourth in a row is `REJECTED` by `task_scheduler` (`NO_VERDICT_BUDGET` = 3) |
+| no verdict (quiet, a report, or a `commit` that differs from `reviewed_commit`) | crash note; `READY_FOR_REVIEW` to be reviewed again (from the queue). The fourth in a row is `REJECTED` with `rejected_by = task_scheduler`, counted `by` `reviewer` (`NO_VERDICT_BUDGET` = 3) |
 
 On a counted rejection, when `review_rounds` is a multiple of
 `review_rounds_before_escalation` (default 3), the `coordinator` role gets attention. Every
@@ -510,8 +563,9 @@ asking. The desk is a thread in the scheduler's process. It polls the bus every 
 each request with `api.handle`, and answers.
 
 A request carries `request` (an id), `args` and `by`. `by` is a label the asker picks. It names
-the author: it becomes `created_by`, the note author, and the metrics' `by` (its part before
-`/`). A change without `by` is refused. The task system checks the rules of tickets and
+the author: it becomes `created_by` and the note author. The metrics' `by` is the machine of the
+request's source (its part before `/`; `tasking api` publishes with `source` = `by`, so the two
+agree). A change without `by` is refused. The task system checks the rules of tickets and
 milestones, not who asks.
 
 | Event type | `op` | `args` |
@@ -533,7 +587,14 @@ Answers:
 - `request.done` {`request`, `result`}
 - `request.refused` {`request`, `error`}
 
-The subject is the `id` or `milestone_id` in `args`, or the created ticket's id.
+Both are published as the asker (the request's `source`), with the request's id as
+`causationid`: the desk stands in for the asker's own request handling and is no machine. The
+subject is the `id` or `milestone_id` in `args`, or the created ticket's id; a query's answer has
+none. `create_ticket` and `create_milestone` also publish `ticket.created` or `milestone.created`
+as the asker, caused by the request, since the new id is news. Every other change (an update, a
+note, a cancel, an unblock, a milestone's change or close, `set_capacity`, `resume_pipeline`) is
+answered by `request.done` alone (`set_capacity` and `set_pipeline` are called with
+`announce=False`): the request already said what it asks.
 
 **Restarts.** The desk saves its bus offset, and the ids it has answered since that offset, in
 the runtime record after every answer. A new desk reads on from there, so a request sent while
@@ -546,23 +607,26 @@ up long ago.
 
 ## 9. Attention
 
-`Events.attention` publishes `task.attention_needed` {`to`, `reason`, `ticket`?}. `to` is a
-planner role name, `coordinator` or `supervisor`. The task system runs no planner. Nothing hears
-these unless a planner machine listens.
+`Events.attention` publishes `task.attention_needed` {`to`, `reason`, `ticket`?}, as the machine
+whose work is stuck or whose responsibility raised it (`src`). `to` is a planner role name,
+`coordinator` or `supervisor`. The task system runs no planner. Nothing hears these unless a
+planner machine listens.
 
-| When | `to` | Code |
-|---|---|---|
-| a worker reports `BLOCKED` | `coordinator` | `Reports._worker` |
-| the task system blocks a ticket (crashes, no report, no commits) | `coordinator` | `Reports._block` |
-| `review_rounds` reaches a multiple of the threshold on a counted rejection (reviewer, task system or gate) | `coordinator` | `reports.send_back` (from `Reports.reject` and `run_gate.reject`) |
-| a landing changed `orchestra.toml` but the repository root did not follow | `coordinator` | `run_gate` |
-| the base branch fails the gate; the pipeline pauses | `supervisor` | `run_gate` |
-| the gate hit an error; the pipeline pauses | `supervisor` | `run_gate.error` |
-| the pipeline is still paused when the scheduler starts | `supervisor` | `Scheduler.run` |
-| a staging deploy failed and was rolled back | `supervisor` | `Staging._deploy` |
-| staging died or stopped answering, and the first restart failed | `supervisor` | `Staging._recover` |
+| When | `to` | Published as | Code |
+|---|---|---|---|
+| a worker reports `BLOCKED` | `coordinator` | `worker` | `Reports._worker` |
+| the task system blocks a ticket (crashes, no report, no commits) | `coordinator` | `worker` | `Reports._block` |
+| `review_rounds` reaches a multiple of the threshold on a counted rejection by reviews (a reviewer's, or reviews that kept ending without a verdict) | `coordinator` | `reviewer` | `reports.send_back` (from `Reports.reject`) |
+| the same, by the gate | `coordinator` | `merge_gate` | `reports.send_back` (from `run_gate.reject`) |
+| a landing changed `orchestra.toml` but the repository root did not follow | `coordinator` | `merge_gate` | `run_gate` |
+| the base branch fails the gate; the pipeline pauses | `supervisor` | `merge_gate` | `run_gate` |
+| the gate hit an error; the pipeline pauses | `supervisor` | `merge_gate` | `run_gate.error` |
+| the pipeline is still paused when the scheduler starts | `supervisor` | `merge_gate` | `Scheduler.run` |
+| a staging deploy failed and was rolled back | `supervisor` | `merge_gate` | `Staging._deploy` |
+| staging died or stopped answering, and the first restart failed | `supervisor` | `merge_gate` | `Staging._recover` |
 
-Routine news is not attention. It is in `ticket.*`, `milestone.*` and `gate.landed`.
+Routine news is not attention. It is in `ticket.created`, `milestone.created`, `gate.landed` and
+`request.done`, and every move is in the record.
 
 ## 10. Work modes: tasks and code
 
@@ -696,7 +760,8 @@ Details:
 ## 12. Staging and probes
 
 **Staging** (`tasking/staging.py`) runs when `[staging] start` is set. It is one long-lived
-instance of the last build that passed the gate.
+instance of the last build that passed the gate. In the scheduler it publishes as `merge_gate`,
+whose landings it deploys.
 
 - A landing with an artifact records a build and calls `Staging.deploy`. Deploy stops the
   previous process group, starts the new build (`{artifact}`, `{port}`, `{python}` filled in),
@@ -720,34 +785,49 @@ instance of the last build that passed the gate.
 **Probes** (`tasking/probes.py`) are `[[probes]]` commands run on an interval (`every`, default
 5 m), each in its own thread, from the repository root, with `ORCHESTRA_REPO`,
 `ORCHESTRA_PROBE` and `STAGING_URL` set. Exit 0 means the condition holds. The scheduler
-publishes `probe.failed` {`probe`, `output`} and `probe.recovered` {`probe`} only when the state
+publishes, as `probes` (the condition checks, no other machine's), `probe.failed` {`probe`, `output`} and `probe.recovered` {`probe`} only when the state
 changes, so a failing probe wakes listeners once.
 
 ## 13. Metrics, and how they become stocks
 
-`tasking/measures.py`, written through `orchestra.metrics`.
+`tasking/measures.py`, read by an instrument. The scheduler writes no metrics (Orchestra's rule
+7: the metrics store is filled by instruments).
 
-| Series | Kind | Labels | Written |
-|---|---|---|---|
-| `tasks_tickets` | level (gauge) | `project`, `state` (all ten), `machine="task_scheduler"` | at every ticket change, and again every discovery step |
-| `tasks_tickets_created_total` | counter | `project`, `machine`, `by` | at every ticket creation |
-| `tasks_ticket_transitions_total` | counter | `project`, `from`, `to`, `machine`, `by` | at every transition |
-| `tasks_worktrees` | level (gauge) | `project`, `state` (`in_use`, `free`, `waiting`), `machine="task_scheduler"` | with reused worktrees only: when a value changes, and again every discovery step |
+| Series | Kind | Labels |
+|---|---|---|
+| `tasks_tickets` | level (gauge) | `state` (all ten) |
+| `tasks_tickets_created_total` | counter | `by` |
+| `tasks_ticket_transitions_total` | counter | `from`, `to`, `by` |
+| `tasks_worktrees` | level (gauge) | `state` (`in_use`, `free`, `waiting`); with reused worktrees only |
 
-- `machine` on the counters is the writer: the source of the process that made the change.
-  In practice that is the scheduler, `task_scheduler`, because the desk and the reports run in
-  its process.
-- `by` is the actor whose report or request was applied. See the `by` column in section 4.
-- The level and the counters for one change are computed from the same data, under the store's
-  lock, with the same timestamp. So they balance exactly: the change in
-  `tasks_tickets{state=X}` equals the transitions into X (plus creations, for `OPEN`) minus the
-  transitions out of X.
-- Counter values live in `tickets.json` (`metric_counts`), so they keep counting across
-  restarts.
-- Between changes, `Scheduler.tick` re-writes the levels every `[discovery] step` without
-  touching the counters (`LocalStore.reassert_levels`). A quiet system then still looks alive;
-  a level that stops being written looks like a machine that stopped.
-- If the metrics store cannot be reached, the points are lost; the ticket change is not.
+Orchestra adds `project` and `instrument="tasks.tickets"` to every point.
+
+- **Where they come from.** The counters are cumulative, kept in `tickets.json`
+  (`metric_counts`) and moved in the same locked write as the change they count
+  (`measures.count`, from `Tickets.create_ticket` and `Tickets.transition`). The levels are
+  counted from the tickets as they stand. `Tickets.metrics_text` prints both as Prometheus text
+  (`measures.exposition`), with the pool's worktrees from `runtime.json` (the scheduler keeps the
+  number of waiting turns there, `Runtime.set_pool_waiting`).
+- **The instrument.** The plugin declares `Plugin.collectors = [Collector.collect("tickets",
+  "<python> -m tasking metrics", every_s=<[discovery] step>)]` (`tasking/web.py`, `collectors`),
+  so `orchestra run` runs `tasking metrics` every discovery step and labels every point
+  `instrument=tasks.tickets`. The same text is served at `/api/plugins/tasks/metrics`. A command,
+  not a scrape of that URL: `orchestra run` does not know the web server's port, and a port of
+  the scheduler's own would be one more thing to configure per project; the text is the same.
+- `by` is the machine whose act or responsibility moved the ticket, never `task_scheduler`. See
+  the `by` column in section 4.
+- A level and the counters are read from one record at one instant, so they balance exactly:
+  the change in `tasks_tickets{state=X}` between two reads equals the transitions into X (plus
+  creations, for `OPEN`) minus the transitions out of X.
+- Every step reads every level, so a quiet system is still seen measuring its stocks; nothing is
+  re-asserted between changes.
+- **History.** Until 2026-10-27 the scheduler wrote these points itself through
+  `orchestra.metrics`, with `machine="task_scheduler"` on every series. That label is gone and
+  `instrument` is new; the names are kept, so a store's history splits at the upgrade by label,
+  not by name. Counters kept before then carry `machine` in their key and are summed without it
+  (`measures.counters`). Orchestra's `docs/roadmap/story-placement.md` §7 item 3 lists this
+  package among those whose machines wrote their own metrics; it no longer does.
+  `tests/unit/test_measures.py` tests the text and that the scheduler writes no point.
 
 The task system never says what is a stock. Orchestra's discovery (`orchestra/sd/discover.py` in
 Orchestra) decides:
@@ -755,25 +835,25 @@ Orchestra) decides:
 ```mermaid
 flowchart LR
     subgraph tasking ["task system"]
-        CH["ticket change<br/>store/tickets.py"] --> MS["Measures.ticket_points"]
-        TK["tick, every discovery step"] --> LV["Measures.level_points"]
+        CH["ticket change<br/>store/tickets.py"] --> MC["metric_counts<br/>in tickets.json"]
+        MC --> EX["tasking metrics<br/>measures.exposition"]
+        TJ["tickets as they stand"] --> EX
     end
-    MS --> L["tasks_tickets{state}"]
-    LV --> L
-    MS --> C1["tasks_tickets_created_total{machine, by}"]
-    MS --> C2["tasks_ticket_transitions_total{from, to, machine, by}"]
+    EX -- "instrument tasks.tickets,<br/>every discovery step" --> L["tasks_tickets{state}"]
+    EX --> C1["tasks_tickets_created_total{by}"]
+    EX --> C2["tasks_ticket_transitions_total{from, to, by}"]
     EV["every event on the bus"] --> OE["orchestra_events_total{type, source}<br/>(Orchestra's collector)"]
     subgraph orch ["Orchestra discovery"]
-        BAL["balance each level by counters:<br/>Δlevel = Σ in - Σ out<br/>own machine's counters first"]
+        BAL["balance each level by counters:<br/>Δlevel = Σ in - Σ out"]
         FL["connect flows between stocks<br/>by matching ends"]
         FIT["fit each flow's rate<br/>constant, proportional, linear"]
-        ATT["attribute flow to the machine<br/>in the counter's labels"]
+        ATT["attribute each flow to a machine<br/>(a hypothesis)"]
         BAL --> FL --> FIT --> ATT
     end
     L --> BAL
     C1 --> BAL
     C2 --> BAL
-    OE -. gives way to machine counters .-> BAL
+    OE -. gives way to the instrument's counters .-> BAL
     ATT --> MODEL[("the one SD model<br/>stocks: tickets by state<br/>flows: transitions")]
 ```
 
@@ -803,10 +883,11 @@ Orchestra calls `plugin(orchestra_project)` and gets an `orchestra.plugins.Plugi
 |---|---|---|
 | `name` | `tasks` | routes under `/api/plugins/tasks`, static under `/plugins/tasks/static` |
 | `pages` | `/tickets`, "Tickets", `static/tickets.html` | a page and a navigation link |
-| `scripts` | `tasks-boot.js` | loaded on every page; it loads `tasks.js`, then `attention.js` (blocked-ticket banner), `machine-cards.js` (the scheduler's card), `tasks-panel.js` (the Dashboard panel) |
+| `scripts` | `tasks-boot.js` | loaded on every page; it loads `tasks.js`, then `attention.js` (blocked-ticket banner) and `tasks-panel.js` (the Dashboard panel, with the queue and the controls) |
 | `stylesheets` | `tasks.css` | linked on every page |
-| `machines` | `Declared("task_scheduler", "program", "continuous")` | listed on the Machines page before it is first seen |
-| `processes` | `Process("scheduler", [python, "-m", "tasking", "run", "--wait"])`, only if `orchestra.toml` has `[project]` or `[tasks]` | `orchestra run` keeps it running as `tasks.scheduler` |
+| `machines` | empty | the scheduler is no machine, so nothing is declared for the Machines page; it has no machine card |
+| `processes` | `Process("scheduler", [python, "-m", "tasking", "run", "--wait"])`, only if `orchestra.toml` has `[project]` or `[tasks]` | `orchestra run` keeps it running as `tasks.scheduler` (on the Core page) |
+| `collectors` | `Collector.collect("tickets", "<python> -m tasking metrics", every_s=<[discovery] step>)`, under the same condition | `orchestra run` runs it every step and writes its points labelled `instrument=tasks.tickets` (section 13) |
 | `router` | the routes below | mounted at `/api/plugins/tasks` |
 
 | Route | What |
@@ -815,6 +896,7 @@ Orchestra calls `plugin(orchestra_project)` and gets an `orchestra.plugins.Plugi
 | `GET /board` | the Tasks panel: tickets in flight with their assignment (instance, since, last heartbeat text) or untaken offers, counts, capacity, pause, scheduler alive |
 | `GET /attention` | the blocked tickets |
 | `GET /tickets/{id}` | one ticket with its notes |
+| `GET /metrics` | the measurements as Prometheus text (section 13) |
 | `POST /control` | the operator's controls: `{action: pause\|resume}`, `{action: capacity, workers, reviewers}` (0..64; omit both to clear), `{action: kill, ticket}` (409 if nothing holds or is offered it) |
 
 The controls are the only writes a person has (`AGENTS.md` rule 7). They publish as
@@ -823,8 +905,9 @@ writes a request into the runtime record; the scheduler releases the assignment 
 tick. Every API request re-reads `orchestra.toml`.
 
 The task system uses only Orchestra's library: `orchestra.config` (project, durations),
-`orchestra.events` and the bus, `orchestra.metrics`, `orchestra.runtime.alive`,
-`orchestra.plugins`, `orchestra.launcher.Process`.
+`orchestra.events` and the bus, `orchestra.runtime.alive`, `orchestra.plugins`,
+`orchestra.launcher.Process`, `orchestra.collect.spec.Collector`. It writes nothing through
+`orchestra.metrics`.
 
 ## 15. Event reference
 
@@ -840,36 +923,33 @@ ticket.
 
 **Attention** (section 9): `task.attention_needed` {`to`, `reason`, `ticket`?}.
 
-**Observations**, published by the task system for anyone listening:
+**Observations**, published by the task system for anyone listening (who publishes each, and
+when: section 6, "Who publishes what"):
 
 | Type | Source | Data |
 |---|---|---|
-| `orchestra.machine.started` | `task_scheduler` | `package: tasks`, `mode: continuous`, `kind: program`, `listens_for`, `log` |
-| `scheduler.stopped` | `task_scheduler` | none |
-| `ticket.created` | writer | `ticket`, `title`, `by` |
-| `ticket.updated` | writer | `ticket`, `fields` (names changed) |
-| `ticket.transitioned` | writer | `ticket`, `from`, `to`, `owner` (null when not active), `assignment` (only when a claim made it); no subject and `causationid` = the machine's event when it records another machine's step |
-| `ticket.note_added` | writer | `ticket`, `author`, `kind`; recorded steps as for `ticket.transitioned` |
-| `milestone.created` | writer | `milestone`, `name` |
-| `milestone.updated`, `milestone.closed` | writer | `milestone` |
-| `capacity.changed` | writer | `by`, `workers`, `reviewers`, `note` |
+| `orchestra.machine.started` | `worker` | once per bus: only `listens_for: [gate.conflict, gate.rejected, ticket.created]`, what makes the worker's queue act |
+| `ticket.created` | the asker; `causationid` = the request | `ticket`, `title`, `by` |
+| `milestone.created` | the asker; `causationid` = the request | `milestone`, `name` |
+| `capacity.changed` | `task_web` | `by`, `workers`, `reviewers`, `note` |
 | `pickup.paused`, `pickup.resumed` | `task_web` | `by` |
 | `kill.requested` | `task_web` | `ticket`, `by` |
-| `pipeline.paused`, `pipeline.resumed` | writer | `reason` |
-| `probe.failed` / `probe.recovered` | `task_scheduler` | `probe` (+ `output` on failed) |
+| `pipeline.paused` | `merge_gate` | `reason` |
+| `probe.failed` / `probe.recovered` | `probes` | `probe` (+ `output` on failed) |
 | `orchestra.machine.started` | `merge_gate` | code mode: `package: tasks`, `mode: continuous`, `kind: program`, `listens_for: [review.approved]`, `log` |
 | `gate.started` | `merge_gate` | `gate_run`, `ticket`; `causationid` = the approval |
 | `gate.conflict`, `gate.rejected` | `merge_gate` | `gate_run`, `ticket` |
 | `gate.landed` | `merge_gate` | `gate_run`, `ticket`, `commit` |
 | `gate.base_broken` | `merge_gate` | `gate_run` |
 | `gate.error` | `merge_gate` | `gate_run`, `error` |
-| `staging.deployed` | writer | `build`, `commit`, `local_url`, `public_url` |
-| `staging.failed` | writer | `build`, and `reason` when the health check went stale or a restart failed |
-| `staging.restarted` | `task_scheduler` | `build`, `reason` |
+| `staging.deployed` | `merge_gate` (`task_cli` for `tasking staging deploy`) | `build`, `commit`, `local_url`, `public_url` |
+| `staging.failed` | `merge_gate` (or `task_cli`) | `build`, and `reason` when the health check went stale or a restart failed |
+| `staging.restarted` | `merge_gate` | `build`, `reason` |
 
-"Writer" is the source that made the change: almost always `task_scheduler`; `merge_gate` for
-the gate's (its transitions, notes, staging deploys); `task_web` for the operator's controls;
-`task_cli` for `tasking staging deploy`.
+Nothing is published as `task_scheduler`. `ticket.transitioned`, `ticket.note_added`,
+`ticket.updated`, `milestone.updated`, `milestone.closed` and `scheduler.stopped` no longer
+exist; a ticket's state and notes are read from the record (`get_ticket`, `list_tickets`,
+`snapshot`, the Tickets page) and its moves are counted (section 13).
 
 `SPEC.md` section 3 lists which of these fields listeners may rely on. Rename any of them only
 deliberately, and say so in the commit.
@@ -878,7 +958,10 @@ deliberately, and say so in the commit.
 
 The full guide is `SPEC.md` section 6. The reference programs are
 `demo/machines/shell_worker.py` and `demo/machines/check_reviewer.py`, a few pages each. A
-machine needs Orchestra's library and nothing from this package.
+machine needs Orchestra's library and nothing from this package. Neither changed when the
+scheduler stopped being a machine (2026-10-27), and a copy of either needs no change: nothing in
+them reads an offer's or a release's source (now `worker` or `reviewer`, before
+`task_scheduler`), and who holds a turn is decided by the bus's order (`holder`).
 
 1. **Open the bus as yourself.** `Events.for_project(load_project(), source="worker/1")`
    from `orchestra.events` and `orchestra.config`. The source `<machine>/<instance>` is how the
@@ -931,8 +1014,8 @@ A planner is a machine too: it publishes requests (section 8) and listens for
   tasks/
     tickets.json        tickets, milestones, notes, id counters, metric counters
     runtime.json        scheduler pid, assignments, untaken offers, capacity (dial and ceiling),
-                        pickup pause, kill requests, worktrees, the worktree pool, gate runs, builds, pipeline,
-                        probes, staging, the desk's offset
+                        pickup pause, kill requests, worktrees, the worktree pool and the turns waiting
+                        for it, gate runs, builds, pipeline, probes, staging, the desk's offset
     .lock               one fcntl lock around every read-modify-write
     workspaces/<ticket>/          tasks mode
     worktrees/<ticket>/           code mode
@@ -942,8 +1025,9 @@ A planner is a machine too: it publishes requests (section 8) and listens for
 ```
 
 Only `tasking/store/` reads or writes the two JSON files. Each write replaces the whole file
-(write to a temp file, then rename). Events and metrics go to Orchestra's bus and metrics store,
-configured by `[events]` and `[metrics]` in `orchestra.toml`. Configuration is in `SPEC.md`
+(write to a temp file, then rename). Events go to Orchestra's bus; the metrics reach Orchestra's
+metrics store through the instrument `tasks.tickets` (section 13). Both are configured by
+`[events]` and `[metrics]` in `orchestra.toml`. Configuration is in `SPEC.md`
 section 7.
 
 ## 18. Sharp edges

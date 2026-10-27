@@ -1,11 +1,16 @@
 """The tickets half of the store: tickets, milestones, notes, and the views the pages draw. One
 JSON document (``tickets.json``) holds them with the counters behind the ids and the metric
-counters. Every change is an observation on the bus (``ticket.*``, ``milestone.*``)."""
+counters (tasking/measures.py). The record is the store: a change is published only when it is an
+act no machine announced itself, and as the machine it is for (tasking/events.py): what a planner's
+request made (``ticket.created``, ``milestone.created``, with the new id). A transition or a note
+is never published; it is read from here."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from .. import measures
+from ..events import SCHEDULER
 from ..model import (
     ACTIVE,
     Milestone,
@@ -24,8 +29,8 @@ EMPTY_TICKETS = {"tickets": {}, "milestones": {}, "notes": {}, "counters": {"tic
 
 
 class Tickets:
-    """Half of ``LocalStore`` (store/local.py), which supplies ``project``, ``events``, ``measures``,
-    ``prefix``, ``_locked`` and the runtime half's ``assignments`` and ``capacity``."""
+    """Half of ``LocalStore`` (store/local.py), which supplies ``project``, ``events``, ``prefix``,
+    ``_locked`` and the runtime half's ``assignments`` and ``capacity``."""
 
     def _t(self) -> dict:
         return read(self.project.tickets_file, EMPTY_TICKETS)
@@ -47,8 +52,9 @@ class Tickets:
     def tickets_by_id(self) -> dict[str, Ticket]:
         return {k: Ticket.from_dict(v) for k, v in self._t()["tickets"].items()}
 
-    def create_ticket(self, by: str | None = None, **fields: Any) -> Ticket:
-        """``by``: the machine whose request this is (measures.py); the writer's own when None."""
+    def create_ticket(self, by: str | None = None, src: str | None = None, cause: str | None = None, **fields: Any) -> Ticket:
+        """``by``: the machine whose request this is (measures.py; the writer's own when None);
+        ``src``: the source the creation is published as (the asker's); ``cause``: the request's id."""
         with self._locked():
             data = self._t()
             ms = data["milestones"].get(fields.get("milestone_id") or "")
@@ -63,10 +69,9 @@ class Tickets:
             tid = f"{self.prefix}-{data['counters']['ticket']}"
             t = Ticket(id=tid, **fields)
             data["tickets"][tid] = t.to_dict()
-            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.writer, by=by, created=True)
+            measures.count(data["metric_counts"], "created", {"by": by or (src or "").partition("/")[0] or self.machine})
             write(self.project.tickets_file, data)
-        self.measures.write(points)
-        self.events.emit("ticket.created", ticket=tid, title=t.title, by=t.created_by)
+        self.events.emit("ticket.created", src=src, cause=cause, ticket=tid, title=t.title, by=t.created_by)
         return t
 
     def update_ticket(self, ticket_id: str, **changes: Any) -> Ticket:
@@ -92,17 +97,15 @@ class Tickets:
             d["updated_at"] = now()
             write(self.project.tickets_file, data)
             t = Ticket.from_dict(d)
-        self.events.emit("ticket.updated", ticket=ticket_id, fields=sorted(changes))
         return t
 
     def transition(self, ticket_id: str, expected_version: int | None, to_state: State, by: str | None = None,
                    cause: dict | None = None, because: str | None = None, **fields: Any) -> Ticket:
-        """``by``: the machine whose report or request moves the ticket (measures.py); the
-        writer's own when None. ``cause``: the event (flat) that caused it, kept as the ticket's
-        ``caused_by`` and named as ``ticket.transitioned``'s causationid; when another machine
-        published it, the announcement is the record's and carries no subject (events.py).
-        ``because``: the id of an event the writer acts on (the gate: the approval), named as the
-        causationid of an announcement that keeps its subject."""
+        """Recorded, counted, never published (tasking/events.py). ``by``: the machine whose act or
+        responsibility moves the ticket (measures.py); the writer's own when None. ``cause``: the
+        event (flat) that caused it, or ``because``: its id; kept as the ticket's ``caused_by``."""
+        if by is None and self.machine == SCHEDULER:
+            raise StoreError("the scheduler is no machine: a move it records names the machine it is for (by)")
         with self._locked():
             data = self._t()
             d = data["tickets"].get(ticket_id)
@@ -124,30 +127,29 @@ class Tickets:
             d["state_since"] = now()
             d["updated_at"] = d["state_since"]
             d["version"] += 1
-            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.writer, by=by,
-                                                 src=src.value, dst=to_state.value)
+            measures.count(data["metric_counts"], "transition", {"from": src.value, "to": to_state.value, "by": by or self.machine})
             write(self.project.tickets_file, data)
             t = Ticket.from_dict(d)
-        self.measures.write(points)
-        held = {"assignment": fields["assignment"]} if fields.get("assignment") else {}   # a claim's transition names it
-        self.events.emit("ticket.transitioned", cause=cause, because=because, ticket=ticket_id, owner=t.owner, **{"from": src.value, "to": to_state.value}, **held)
         return t
 
-    def reassert_levels(self) -> None:
-        """The levels written again as they stand, without a change and without touching the
-        counters: the scheduler does this every discovery step, so a quiet system is still seen
-        measuring its stocks (tasking/measures.py)."""
-        self.measures.write(self.measures.level_points(self._t()["tickets"]))
+    def metrics_text(self) -> str:
+        """The measurements as Prometheus text, from the record as it stands (measures.py)."""
+        data = self._t()
+        pool = None
+        if self.project.config.reuse_worktrees and self.project.config.work == "code":
+            slots = self.pool().values()
+            free = sum(1 for x in slots if x["free"])
+            pool = (len(slots) - free, free, int(self._r().get("pool_waiting") or 0))
+        return measures.exposition(data["tickets"], data["metric_counts"], pool)
 
-    def add_note(self, ticket_id: str, note: Note, cause: dict | None = None) -> None:
-        """``cause``: the event (flat) the note records, as for ``transition``."""
+    def add_note(self, ticket_id: str, note: Note) -> None:
+        """Recorded, never published (tasking/events.py)."""
         with self._locked():
             data = self._t()
             if ticket_id not in data["tickets"]:
                 raise StoreError(f"no ticket {ticket_id}")
             data["notes"].setdefault(ticket_id, []).append(note.to_dict())
             write(self.project.tickets_file, data)
-        self.events.emit("ticket.note_added", cause=cause, ticket=ticket_id, author=note.author, kind=note.kind)
 
     def notes(self, ticket_id: str) -> list[dict]:
         return list(self._t()["notes"].get(ticket_id, []))
@@ -165,7 +167,7 @@ class Tickets:
     def milestones_by_id(self) -> dict[str, Milestone]:
         return {k: Milestone.from_dict(v) for k, v in self._t()["milestones"].items()}
 
-    def create_milestone(self, **fields: Any) -> Milestone:
+    def create_milestone(self, src: str | None = None, cause: str | None = None, **fields: Any) -> Milestone:
         with self._locked():
             data = self._t()
             data["counters"]["milestone"] += 1
@@ -174,7 +176,7 @@ class Tickets:
             m = Milestone(id=mid, **fields)
             data["milestones"][mid] = m.to_dict()
             write(self.project.tickets_file, data)
-        self.events.emit("milestone.created", milestone=mid, name=m.name)
+        self.events.emit("milestone.created", src=src, cause=cause, milestone=mid, name=m.name)
         return m
 
     def update_milestone(self, milestone_id: str, **changes: Any) -> Milestone:
@@ -191,7 +193,6 @@ class Tickets:
             d["version"] += 1
             write(self.project.tickets_file, data)
             m = Milestone.from_dict(d)
-        self.events.emit("milestone.updated", milestone=milestone_id)
         return m
 
     def close_milestone(self, milestone_id: str) -> Milestone:
@@ -211,7 +212,6 @@ class Tickets:
             d["version"] += 1
             write(self.project.tickets_file, data)
             m = Milestone.from_dict(d)
-        self.events.emit("milestone.closed", milestone=milestone_id)
         return m
 
     def ticket_views(self) -> dict:

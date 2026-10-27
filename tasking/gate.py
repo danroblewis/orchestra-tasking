@@ -183,7 +183,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
     run: dict = {"id": run_id, "ticket": ticket_id, "base_branch": base, "status": "running", "stages": [],
                  "started_at": now(), "finished_at": None, "summary": "", "conflict": False}
     store.save_gate_run(run)
-    events.emit("gate.started", because=because, gate_run=run_id, ticket=ticket_id)
+    events.emit("gate.started", cause=because, gate_run=run_id, ticket=ticket_id)
     gate_branch = f"orchestra/gate-{run_id}"
     path = slot or project.gate_dir / run_id
     log_dir = project.logs_dir / run_id

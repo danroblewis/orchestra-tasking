@@ -1,11 +1,17 @@
-"""The task system's metrics: levels and the counters that move them, from the same change."""
+"""The task system's metrics: levels and the counters that move them, from one record, served as
+Prometheus text for the instrument the plugin declares; the scheduler writes none itself."""
+
+import subprocess
+import sys
 
 import pytest
 from orchestra.metrics import for_project as metrics_for
 
+from tasking import measures
 from tasking.events import Events
 from tasking.model import State
-from tasking.store import LocalStore
+from tasking.store import LocalStore, StoreError
+from tasking.web import collectors
 
 
 @pytest.fixture
@@ -13,53 +19,74 @@ def store(project):
     return LocalStore(project, Events.for_project(project, source="worker/2"))
 
 
-def test_ticket_levels_and_flows_balance(store):
-    m = metrics_for(store.project.orchestra)
-    key = store.project.key
+def parsed(text: str) -> dict[tuple, float]:
+    """Prometheus text lines as {(name, labels): value}."""
+    out = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        series, value = line.rsplit(" ", 1)
+        name, _, rest = series.partition("{")
+        labels = tuple(sorted(tuple(kv.split("=", 1)) for kv in rest.rstrip("}").replace('"', "").split(",") if kv))
+        out[(name, labels)] = float(value)
+    return out
+
+
+def test_ticket_levels_and_flows_balance_and_name_no_writer(store):
     ms = store.create_milestone(name="m")
     a = store.create_ticket(title="a", milestone_id=ms.id)
     store.create_ticket(title="b", milestone_id=ms.id)
     a = store.transition(a.id, a.version, State.IN_PROGRESS)
     store.transition(a.id, a.version, State.READY_FOR_REVIEW)
-    level = lambda s: m.latest("tasks_tickets", {"project": key, "state": s, "machine": "task_scheduler"})[1]
-    assert (level("OPEN"), level("IN_PROGRESS"), level("READY_FOR_REVIEW"), level("DONE")) == (1, 0, 1, 0)
-    # the writer is the store's machine (worker/2 is the machine worker); the actor defaults to it
-    assert m.latest("tasks_tickets_created_total", {"project": key, "machine": "worker", "by": "worker"})[1] == 2
-    moved = lambda f, t, by="worker": m.latest("tasks_ticket_transitions_total", {"project": key, "from": f, "to": t, "machine": "worker", "by": by})[1]
-    assert moved("OPEN", "IN_PROGRESS") == 1 and moved("IN_PROGRESS", "READY_FOR_REVIEW") == 1
-    # the actor named by the caller: whose report or request the writer applied
-    store.transition(a.id, a.version + 1, State.IN_REVIEW, by="reviewer")
-    assert moved("READY_FOR_REVIEW", "IN_REVIEW", "reviewer") == 1
-    assert m.latest("tasks_ticket_transitions_total", {"project": key, "from": "READY_FOR_REVIEW", "to": "IN_REVIEW", "machine": "worker", "by": "worker"}) is None
+    store.transition(a.id, a.version + 1, State.IN_REVIEW, by="reviewer")     # the machine whose act it was, named by the caller
+    got = parsed(store.metrics_text())
+    level = lambda s: got[("tasks_tickets", (("state", s),))]
+    assert (level("OPEN"), level("IN_REVIEW"), level("READY_FOR_REVIEW"), level("DONE")) == (1, 1, 0, 0)
+    assert got[("tasks_tickets_created_total", (("by", "worker"),))] == 2       # the actor defaults to the store's machine
+    moved = lambda f, t, by: got.get(("tasks_ticket_transitions_total", (("by", by), ("from", f), ("to", t))))
+    assert moved("OPEN", "IN_PROGRESS", "worker") == 1 and moved("READY_FOR_REVIEW", "IN_REVIEW", "reviewer") == 1
+    assert not [k for k in got if "machine" in dict(k[1])]                       # no writer named: a measurement, nobody's
     # the counters live with the tickets, so another process (or a restart) carries on from them
     again = LocalStore(store.project, Events.for_project(store.project, source="worker/1"))
     again.create_ticket(title="c", milestone_id=ms.id)
-    assert m.latest("tasks_tickets_created_total", {"project": key, "machine": "worker", "by": "worker"})[1] == 3
+    assert parsed(again.metrics_text())[("tasks_tickets_created_total", (("by", "worker"),))] == 3
 
 
-def test_the_scheduler_reasserts_the_levels_every_discovery_step_without_a_change(project):
-    """Between changes the levels are written again, once per discovery step, so a quiet system is
-    seen measuring its stocks; no counter moves for it."""
+def test_counters_kept_with_a_writer_before_are_summed_without_it():
+    counts = {"transition|by=worker|from=OPEN|machine=task_scheduler|to=IN_PROGRESS": 3,
+              "transition|by=worker|from=OPEN|to=IN_PROGRESS": 2, "created|by=planner|machine=task_scheduler": 4}
+    got = parsed(measures.exposition({}, counts))
+    assert got[("tasks_ticket_transitions_total", (("by", "worker"), ("from", "OPEN"), ("to", "IN_PROGRESS")))] == 5
+    assert got[("tasks_tickets_created_total", (("by", "planner"),))] == 4
+
+
+def test_the_scheduler_writes_no_metrics_and_names_whose_move_it_records(project):
+    """The scheduler is no machine: it writes no point, and a move it records without naming the
+    machine it is for is refused."""
     from tasking.scheduler import Scheduler
 
     events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
-    ms = store.create_milestone(name="m")
-    store.create_ticket(title="a", milestone_id=ms.id)
-    m = metrics_for(project.orchestra)
-    labels = {"project": project.key, "state": "OPEN", "machine": "task_scheduler"}
-    created = lambda: len(m.raw("tasks_tickets_created_total", {"project": project.key, "machine": "task_scheduler"}))
-    assert len(m.raw("tasks_tickets", labels)) == 1 and created() == 1            # the one change wrote both
+    planner = LocalStore(project, Events.for_project(project, source="planner"))
+    ms = planner.create_milestone(name="m")
+    t = planner.create_ticket(title="a", milestone_id=ms.id)
     sched = Scheduler(project, store, events)
     sched.recover()
-    store.set_operator_capacity(0, 0)                                               # nothing offered: no change
+    store.set_operator_capacity(0, 0)
     sched.tick()
-    levels = m.raw("tasks_tickets", labels)
-    assert len(levels) == 2 and levels[-1][1] == 1.0 and created() == 1           # the level again, no counter
-    assert all(len(m.raw("tasks_tickets", {**labels, "state": s.value})) == 2 for s in State)   # every state's level
-    sched.tick()
-    assert len(m.raw("tasks_tickets", labels)) == 2                                # within the step: not again
-    sched.levels_at -= project.orchestra.config.discovery_step                      # a step later
-    sched.tick()
-    assert len(m.raw("tasks_tickets", labels)) == 3 and created() == 1
-    assert m.raw("tasks_ticket_transitions_total", {"project": project.key}) == []  # no transition was ever counted
+    assert metrics_for(project.orchestra).dump("tasks_", {"project": project.key}) == []
+    with pytest.raises(StoreError, match="no machine"):
+        store.transition(t.id, t.version, State.CANCELLED)
+    with pytest.raises(ValueError, match="never as task_scheduler"):
+        events.emit("anything")
+
+
+def test_the_plugin_declares_the_instrument_and_its_command_prints_the_record(project):
+    planner = LocalStore(project, Events.for_project(project, source="planner"))
+    planner.create_ticket(title="a", milestone_id=planner.create_milestone(name="m").id)
+    [c] = collectors(project)
+    assert c.name == "tickets" and c.kind == "collect" and c.every_s == project.orchestra.config.discovery_step
+    out = subprocess.run([sys.executable, "-m", "tasking", "--repo", str(project.repo_root), "metrics"], capture_output=True, text=True,
+                         check=True).stdout
+    assert parsed(out)[("tasks_tickets", (("state", "OPEN"),))] == 1
+    assert parsed(out)[("tasks_tickets_created_total", (("by", "planner"),))] == 1

@@ -7,7 +7,9 @@ inside Orchestra's web UI (an Orchestra plugin, `tasks`).
 
 How it works, with diagrams and the full contract for workers and reviewers: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-It runs no machine of its own. Whatever fills a role is another program that speaks the
+It runs no machine of its own besides the merge gate (code mode); its scheduler is no machine
+either, only the daemon that does each role's scheduling and publishes as the machine it acts for
+(SPEC.md section 3, "Who publishes what"). Whatever fills a role is another program that speaks the
 contract in `tasking/assignments.py`: the demo's are a shell runner and a file checker, each a
 page of Python using only Orchestra's library (`demo/machines/`). `SPEC.md` is the design;
 `AGENTS.md` the rules.
@@ -52,7 +54,8 @@ Each turn (a worker's, a reviewer's, a gate run's) gets a free worktree from
 removed, ignored files kept unless `worktree_clean_ignored`, and the ticket's branch checked out
 (from the base when new). A ticket that comes back gets the worktree it last used when that one
 is free. With the pool full a turn waits; the scheduler's log says so, and
-`tasks_worktrees{state="waiting"}` counts it. SPEC.md section 5 has the details.
+`tasks_worktrees{state="waiting"}` counts it (read by the instrument `tasks.tickets`, which
+`orchestra run` runs every discovery step: `tasking metrics`). SPEC.md section 5 has the details.
 
 ## Writing tickets for the demo's worker
 
@@ -80,7 +83,8 @@ change commands on feedback, so unless a planner changed the description or the 
 first it reports BLOCKED, with the reviewer's first point in the reason and the whole feedback
 quoted under it: that is what a planner reads in the banner and acts on. Any other demo that
 uses this worker (the agents' demo in orchestra-agents copies it) writes its tickets the same
-way.
+way. A copy needs no change for the scheduler no longer being a machine (2026-10-27): nothing in
+the worker reads an offer's or a release's source, and who holds a turn is the bus's order.
 
 ## Tests
 

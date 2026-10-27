@@ -6,21 +6,21 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from orchestra.events import machine_and_instance
+
 from ..config import Project
 from ..events import Events
-from ..measures import Measures
 from .files import locked
 from .runtime import Runtime
 from .tickets import Tickets
 
 
 class LocalStore(Tickets, Runtime):
-    def __init__(self, project: Project, events: Events, writer: str | None = None):
+    def __init__(self, project: Project, events: Events):
         self.project = project
         self.prefix = project.config.ticket_prefix
-        self.events = events                     # every change is an observation from this source
-        self.writer = writer or events.source    # whose record the metric counters are (measures.py): the gate's store writes the scheduler's
-        self.measures = Measures(project)
+        self.events = events                     # what it publishes goes out as this source unless the caller names another
+        self.machine = machine_and_instance(events.source)[0] or "unknown"   # the ``by`` of a change no caller names (measures.py)
         project.ensure_dirs()
 
     @contextmanager

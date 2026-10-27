@@ -18,8 +18,8 @@ def test_a_second_scheduler_on_a_project_a_live_one_holds_does_not_start(project
     events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
     store.set_scheduler(os.getppid(), time.time())                   # a live pid that is not this process
-    ms = store.create_milestone(name="m")
-    t = store.create_ticket(title="a task", milestone_id=ms.id)
+    ms = store.create_milestone(src="planner", name="m")
+    t = store.create_ticket(src="planner", title="a task", milestone_id=ms.id)
     with pytest.raises(SystemExit):
         Scheduler(project, store, events).run(once=True)
     assert store.scheduler()["pid"] == os.getppid()                  # the record is the other scheduler's still
@@ -58,8 +58,8 @@ def test_an_error_on_one_event_does_not_lose_the_rest_of_the_batch(project, monk
     store = LocalStore(project, events)
     sched = Scheduler(project, store, events)
     sched.recover()
-    ms = store.create_milestone(name="m")
-    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    ms = store.create_milestone(src="planner", name="m")
+    t = store.create_ticket(src="planner", title="a task", milestone_id=ms.id, description="x", acceptance="y")
     sched.tick()                                                     # offered
     a = [e for e in events.after(0)[0] if e["type"] == ASSIGNED][-1]
     say = lambda kind, **d: events.publish(kind, {"assignment": a["assignment"], "ticket": t.id, "role": "worker", **d},
@@ -92,8 +92,8 @@ def test_a_report_for_an_assignment_a_restart_dropped_is_ignored_with_a_line_in_
     store = LocalStore(project, events)
     first = Scheduler(project, store, events)
     first.recover()
-    ms = store.create_milestone(name="m")
-    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    ms = store.create_milestone(src="planner", name="m")
+    t = store.create_ticket(src="planner", title="a task", milestone_id=ms.id, description="x", acceptance="y")
     first.tick()
     old = [e for e in events.after(0)[0] if e["type"] == ASSIGNED][-1]
     say = lambda kind, **d: events.publish(kind, {"assignment": old["assignment"], "ticket": t.id, "role": "worker", **d},
@@ -126,7 +126,7 @@ def test_a_rewritten_ticket_does_not_inherit_the_old_backoff(project, monkeypatc
     monkeypatch.setattr(scheduler_mod, "AGAIN_FIRST_S", 0.0)          # and the pause is no wait, so each tick offers again
     events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
-    t = store.create_ticket(title="a task", milestone_id=store.create_milestone(name="m").id)
+    t = store.create_ticket(src="planner", title="a task", milestone_id=store.create_milestone(src="planner", name="m").id)
     sched = Scheduler(project, store, events)
     sched.recover()
     for _ in range(4):                                                # each tick: the offer missed, and made again
@@ -142,22 +142,25 @@ def test_a_rewritten_ticket_does_not_inherit_the_old_backoff(project, monkeypatc
 
 
 def test_an_acceptance_names_its_assignment_and_a_late_one_is_told_released(project):
-    """The claim that holds the offer is recorded by ``ticket.transitioned`` naming its assignment
-    (the record's, caused by the claim); a claim of an assignment no longer held is answered by
+    """The claim that holds the offer is recorded (the ticket held by its source, caused by the
+    claim; nothing published for it); a claim of an assignment no longer held is answered by
     ``task.released`` naming the instance, so it never starts work on a ticket it does not hold."""
     events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
     first = Scheduler(project, store, events)
     first.recover()
-    ms = store.create_milestone(name="m")
-    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    ms = store.create_milestone(src="planner", name="m")
+    t = store.create_ticket(src="planner", title="a task", milestone_id=ms.id, description="x", acceptance="y")
     first.tick()
     old = on_bus(events, ASSIGNED)[-1]["data"]["assignment"]
     accept = lambda aid: events.publish(ACCEPTED, {"assignment": aid, "ticket": t.id, "role": "worker"},
                                         source="worker/1", subject=t.id)
     accept(old)
     first.tick()
-    assert [e["data"].get("assignment") for e in on_bus(events, "ticket.transitioned", to="IN_PROGRESS")] == [old]
+    claim = [e for e in on_bus(events, ACCEPTED) if e["data"]["assignment"] == old][-1]
+    held = store.get_ticket(t.id)
+    assert held.state == State.IN_PROGRESS and held.owner == "worker/1" and held.caused_by == claim["id"]
+    assert on_bus(events, "ticket.transitioned") == []
     second = Scheduler(project, store, events)                     # a restart: the old assignment is no longer held
     second.recover()
     before = len(on_bus(events, "task.released", assignment=old))
@@ -176,8 +179,8 @@ def test_an_acceptance_claiming_another_instance_is_refused_to_its_source(projec
     store = LocalStore(project, events)
     sched = Scheduler(project, store, events)
     sched.recover()
-    ms = store.create_milestone(name="m")
-    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    ms = store.create_milestone(src="planner", name="m")
+    t = store.create_ticket(src="planner", title="a task", milestone_id=ms.id, description="x", acceptance="y")
     sched.tick()
     aid = on_bus(events, ASSIGNED)[-1]["data"]["assignment"]
     events.publish(ACCEPTED, {"assignment": aid, "ticket": t.id, "role": "worker", "instance": "worker/2"},

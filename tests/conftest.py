@@ -67,6 +67,13 @@ def on_bus(events, type_, **match):
             if e["type"] == type_ and all((e["data"] or {}).get(k) == v for k, v in match.items())]
 
 
+def moves(store) -> dict[tuple[str, str, str], int]:
+    """The record's transition counters (tasking/measures.py): {(from, to, by): count}."""
+    from tasking.measures import TRANSITIONS, counters
+    return {(d["from"], d["to"], d["by"]): n for (name, labels), n in counters(store._t()["metric_counts"]).items()
+            if name == TRANSITIONS for d in [dict(labels)]}
+
+
 def run_scheduler(project, store, events, **behaviour):
     """The scheduler until nothing is left to do, with a fake machine (tests/fake_machine.py)
     filling the roles as ``behaviour`` says; the machine, for what it saw."""

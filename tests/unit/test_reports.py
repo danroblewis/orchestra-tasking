@@ -18,8 +18,8 @@ def env(project):
     store = LocalStore(project, events)
     sched = Scheduler(project, store, events)
     sched.recover()
-    ms = store.create_milestone(name="m")
-    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    ms = store.create_milestone(src="planner", name="m")
+    t = store.create_ticket(src="planner", title="a task", milestone_id=ms.id, description="x", acceptance="y")
     return store, events, sched, t
 
 

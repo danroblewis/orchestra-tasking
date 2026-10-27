@@ -78,21 +78,7 @@ const [url, chrome] = process.argv.slice(-2);          // node -e: the arguments
     await new Promise((r) => setTimeout(r, 500));
     const got = await p.evaluate(() => ({ conn: document.getElementById("conn").textContent, nodes: document.getElementById("nodes").textContent,
                                           banner: (document.querySelector(".att-bar") || {}).textContent || "" }));
-    // the scheduler's card on the Machines page: its controls row stays inside the card at every width
-    await p.goto(url + "/machines", { waitUntil: "networkidle2" });
-    await p.waitForSelector('.panel[data-id="task_scheduler"] .tkc-ctl', { timeout: 15000 });
-    const overflow = [];
-    for (const width of [1200, 1400, 1600]) {
-      await p.setViewport({ width, height: 800 });
-      await new Promise((r) => setTimeout(r, 300));
-      const box = await p.evaluate(() => {
-        const card = document.querySelector('.panel[data-id="task_scheduler"]'), ctl = card.querySelector(".tkc-ctl");
-        const c = card.getBoundingClientRect(), k = ctl.getBoundingClientRect();
-        return { card: c.right, controls: k.right, inside: k.right <= c.right + 0.5 && k.left >= c.left - 0.5 };
-      });
-      if (!box.inside) overflow.push({ width, ...box });
-    }
-    console.log(JSON.stringify({ errors, overflow, ...got }));
+    console.log(JSON.stringify({ errors, ...got }));
   } finally { await b.close(); }
 })();
 """
@@ -112,16 +98,12 @@ def test_tickets_are_worked_reviewed_and_done_or_blocked_by_programs(demo):
     assert states(url) == {"DEMO-1": "DONE", "DEMO-2": "DONE", "DEMO-3": "BLOCKED", "DEMO-4": "BLOCKED"}
 
     # the whole path of a done ticket: the work passed between the machines, the scheduler recorded it
+    # and published none of it; nothing on the bus is the scheduler's
     evs = get(url + "/api/events")["events"]                       # the last 500: the whole demo is fewer
-    trail = [(e["data"]["from"], e["data"]["to"], e["source"], e.get("subject")) for e in evs
-             if e["type"] == "ticket.transitioned" and e["data"]["ticket"] == "DEMO-1"]
-    assert [(a, b) for a, b, _, _ in trail] == [("OPEN", "IN_PROGRESS"), ("IN_PROGRESS", "READY_FOR_REVIEW"), ("READY_FOR_REVIEW", "IN_REVIEW"),
-                                                ("IN_REVIEW", "APPROVED"), ("APPROVED", "DONE")]
-    assert {(src, subject) for _, _, src, subject in trail} == {("task_scheduler", None)}       # the record's, not an act on the ticket
-    protocol = [(e["type"], e["source"]) for e in evs if e.get("subject") == "DEMO-1" and not e["type"].startswith("ticket.")
-                and e["type"] != "task.working"]
-    assert protocol == [("task.assigned", "task_scheduler"), ("task.accepted", "worker/1"), ("review.requested", "worker/1"),
-                        ("task.accepted", "reviewer/1"), ("review.approved", "reviewer/1")]
+    assert not [e for e in evs if e["type"] in ("ticket.transitioned", "ticket.note_added") or e["source"] == "task_scheduler"]
+    protocol = [(e["type"], e["source"]) for e in evs if e.get("subject") == "DEMO-1" and e["type"] != "task.working"]
+    assert protocol == [("ticket.created", "planner"), ("task.assigned", "worker"), ("task.accepted", "worker/1"),
+                        ("review.requested", "worker/1"), ("task.accepted", "reviewer/1"), ("review.approved", "reviewer/1")]
     four = [(e["type"], e["source"], (e["data"] or {}).get("to")) for e in evs if e.get("subject") == "DEMO-4" and e["type"] == "changes.requested"]
     assert four == [("changes.requested", "reviewer/1", "worker/1")]                    # the rejection went to the worker itself
     assert [e["source"] for e in evs if e["type"] == "task.requested"] == ["planner"] * 4
@@ -137,7 +119,7 @@ def test_tickets_are_worked_reviewed_and_done_or_blocked_by_programs(demo):
     first = four["blocked_reason"].split("\n\n")[0]                 # the fact first: what the Tasks panel's card shows
     assert first.startswith("The reviewer wants what these commands never produce") and "yesterday.txt" in first
     assert four["rejected_by"] == "reviewer" and any(n["kind"] == "review" and n["text"].startswith("REJECTED") for n in four["notes"])
-    assert [e["type"] for e in evs if e["type"] == "task.attention_needed"] == ["task.attention_needed"] * 2   # the two blocked tickets, nothing routine
+    assert [(e["type"], e["source"]) for e in evs if e["type"] == "task.attention_needed"] == [("task.attention_needed", "worker")] * 2   # the two blocked tickets, nothing routine: the worker's work is stuck
 
     # blocked tickets wait for a planner: the attention endpoint every page reads
     attention = get(url + f"{API}/attention")
@@ -158,10 +140,9 @@ def test_the_tickets_page_draws_the_tickets_in_a_browser(demo):
     assert page["conn"] == "live"
     assert all(tid in page["nodes"] for tid in ids), page["nodes"]
     assert "2 tickets are blocked" in page["banner"]                  # attention.js, loaded by tasks-boot.js
-    assert page["overflow"] == []                                     # the scheduler card's controls fit the card at 1200, 1400 and 1600 px
 
 
-def test_orchestra_observes_the_scheduler_and_the_machines(demo):
+def test_orchestra_observes_the_machines_and_not_the_scheduler(demo):
     url, target = demo
     plan(target)                                                   # the planner is a machine of the demo too
     seen = {}
@@ -171,22 +152,28 @@ def test_orchestra_observes_the_scheduler_and_the_machines(demo):
         if not d.get("ok"):
             return False
         seen.update({m["id"]: m for m in d["machines"]})
-        return {"task_scheduler", "worker", "reviewer", "planner"} <= set(seen) and not any(seen[m].get("unseen") for m in ("worker", "reviewer"))
+        return {"worker", "reviewer", "planner"} <= set(seen) and not any(seen[m].get("unseen") for m in ("worker", "reviewer"))
     wait_until("the machines", observed, timeout_s=60)
-    assert seen["task_scheduler"]["package"] == "tasks" and seen["task_scheduler"]["mode"] == "continuous"
     wait_until("the tickets", lambda: settled(url), timeout_s=120)
-    edges = {(h["from"], h["via"], h["to"]) for h in get(url + "/api/machines")["handoffs"]}
-    assert {("worker", "review.requested", "reviewer"), ("reviewer", "changes.requested", "worker")} <= edges, edges
-    assert not [e for e in edges if e[0] == "reviewer" and e[2] == "task_scheduler"], edges      # no verdict goes through the scheduler
+    d = get(url + "/api/machines")
+    seen.update({m["id"]: m for m in d["machines"]})
+    assert "task_scheduler" not in seen                                                   # no machine: an implementation detail
+    assert not [e for e in d["edges"] if "task_scheduler" in (e["from"], e["to"])]
+    edges = {(h["from"], h["via"], h["to"]) for h in d["handoffs"]}
+    assert not [e for e in edges if "task_scheduler" in (e[0], e[2])], edges
+    assert {("planner", "ticket.created", "worker"), ("worker", "review.requested", "reviewer"),
+            ("reviewer", "changes.requested", "worker")} <= edges, edges
     assert seen["planner"]["mode"] == "scheduled" and seen["planner"]["kind"] == "program"
-    assert "task.accepted" in seen["task_scheduler"]["subscribes"] and "task.requested" in seen["task_scheduler"]["subscribes"]
     for m in ("worker", "reviewer"):
         assert seen[m]["mode"] == "continuous" and seen[m]["kind"] == "program" and seen[m]["package"] is None
         assert seen[m]["logs"] == ["1"], "the demo's programs say where their log is"
         assert [i["id"] for i in seen[m]["instances"]] == ["1"]
         assert "task.assigned" in seen[m]["subscribes"]
+    assert "ticket.created" in seen["worker"]["subscribes"]                             # its queue offers what a planner creates
+    # the ticket measurements arrive through the instrument the plugin declares
+    wait_until("the instrument", lambda: any(i["name"] == "tasks.tickets" and i.get("points") for i in get(url + "/api/instruments")["instruments"]),
+               timeout_s=60)
     assert get(url + "/api/plugins")["pages"] == [{"plugin": "tasks", "path": "/tickets", "title": "Tickets"}]
     html = get_text(url + "/tickets")
     assert "<title>Orchestra · Tickets</title>" in html and "/plugins/tasks/static/tasks.js" in html
-    log = get(url + "/api/machines/task_scheduler/log")
-    assert log["ok"] and any("project" in line for line in log["lines"])
+

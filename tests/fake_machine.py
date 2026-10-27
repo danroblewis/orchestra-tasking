@@ -69,6 +69,9 @@ class FakeMachine:
         self._t = threading.Thread(target=self._run, daemon=True)
 
     def __enter__(self):
+        for role in self.roles:          # what it acts on, as the demo's machines announce it
+            self.events.publish("orchestra.machine.started", {"mode": "continuous", "kind": "program", "listens_for": [*OFFERS, RELEASED]},
+                                source=self._me(role))
         self._t.start()
         return self
 

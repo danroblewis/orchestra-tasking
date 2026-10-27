@@ -1,19 +1,22 @@
 """The runtime half of the store: what the scheduler holds while it runs, in ``runtime.json``:
 assignments, the offers nobody took, worktrees, the worktree pool, gate runs, capacity, pickup, kill requests, probes, the pipeline, the
-scheduler's own record, staging and builds. The operator's changes are observations on the bus
-(``capacity.changed``, ``pickup.*``, ``kill.requested``, ``pipeline.*``)."""
+scheduler's own record, staging and builds. The operator's changes are published as the operator's
+console (``task_web``: ``capacity.changed``, ``pickup.*``, ``kill.requested``) and the gate's pause
+as the gate (``pipeline.paused``); a change a planner asked for is answered by ``request.done``
+alone, since its request already said what it asks (tasking/events.py)."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
 
+from ..events import GATE, OPERATOR
 from ..model import now
 from .files import read, write
 
 EMPTY_RUNTIME = {"assignments": {}, "untaken": {}, "worktrees": {}, "pool": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
                  "capacity": {}, "operator_capacity": {}, "pickup_paused": False, "scheduler": None, "staging": {},
-                 "pipeline": {"paused": False, "reason": None}, "desk": None}
+                 "pipeline": {"paused": False, "reason": None}, "desk": None, "pool_waiting": 0}
 
 
 class Runtime:
@@ -172,10 +175,11 @@ class Runtime:
             op["by"], op["updated_at"] = by, now()
         self._mutate_runtime(fn)
         cap = self.capacity()
-        self.events.emit("capacity.changed", by=by, workers=cap["workers"], reviewers=cap["reviewers"], note="operator ceiling")
+        self.events.emit("capacity.changed", src=OPERATOR, by=by, workers=cap["workers"], reviewers=cap["reviewers"], note="operator ceiling")
         return cap
 
     def set_capacity(self, workers: int | None, reviewers: int | None, note: str = "", by: str = "") -> dict:
+        """The planner's dial, on its request: answered by ``request.done``, not published again."""
         def fn(d):
             dial = d["capacity"]
             if workers is not None:
@@ -184,8 +188,7 @@ class Runtime:
                 dial["reviewers"] = int(reviewers)
             dial.update(note=note, by=by, updated_at=now())
             return dict(dial)
-        out = self._mutate_runtime(fn)
-        self.events.emit("capacity.changed", by=by, workers=out.get("workers"), reviewers=out.get("reviewers"), note=note)
+        self._mutate_runtime(fn)
         return self.capacity()
 
     def pickup_paused(self) -> bool:
@@ -193,11 +196,11 @@ class Runtime:
 
     def set_pickup_paused(self, paused: bool, by: str = "") -> None:
         self._mutate_runtime(lambda d: d.__setitem__("pickup_paused", bool(paused)))
-        self.events.emit("pickup.paused" if paused else "pickup.resumed", by=by)
+        self.events.emit("pickup.paused" if paused else "pickup.resumed", src=OPERATOR, by=by)
 
     def request_kill(self, ticket_id: str, by: str = "") -> None:
         self._mutate_runtime(lambda d: d["kill_requests"].__setitem__(ticket_id, {"by": by, "ts": now()}))
-        self.events.emit("kill.requested", ticket=ticket_id, by=by)
+        self.events.emit("kill.requested", src=OPERATOR, ticket=ticket_id, by=by)
 
     def take_kill_requests(self) -> list[str]:
         def fn(d):
@@ -222,9 +225,16 @@ class Runtime:
     def pipeline(self) -> dict:
         return self._r()["pipeline"]
 
-    def set_pipeline(self, paused: bool, reason: str | None = None) -> None:
+    def set_pipeline(self, paused: bool, reason: str | None = None, announce: bool = True) -> None:
+        """``announce`` False: a planner's request to resume, answered by ``request.done``."""
         self._mutate_runtime(lambda d: d.__setitem__("pipeline", {"paused": paused, "reason": reason}))
-        self.events.emit("pipeline.paused" if paused else "pipeline.resumed", reason=reason)
+        if announce:
+            self.events.emit("pipeline.paused" if paused else "pipeline.resumed", src=GATE, reason=reason)   # the pipeline is the gate's
+
+    def set_pool_waiting(self, n: int) -> None:
+        """How many turns wait for a worktree of the pool (``tasks_worktrees{state="waiting"}``)."""
+        if int(self._r().get("pool_waiting") or 0) != n:
+            self._mutate_runtime(lambda d: d.__setitem__("pool_waiting", int(n)))
 
     def scheduler(self) -> dict | None:
         """The running scheduler's record (pid, started_at), or None."""

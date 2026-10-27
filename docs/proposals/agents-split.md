@@ -20,7 +20,7 @@ the agents package works for a task system that is not ours.
 
 | | orchestra-tasking | orchestra-agents |
 |---|---|---|
-| owns | tickets and milestones, states and dependency graph, readiness, priority (aging, inheritance); roles as names with a capacity and a lease; assignment and ownership; the merge gate, worktrees and staging for code; probes; the Tickets page, the Tasks panel, the scheduler's card, the blocked-ticket banner; the ticket metrics | the AI agents: their roles, prompts, harnesses, sessions and the host that runs them |
+| owns | tickets and milestones, states and dependency graph, readiness, priority (aging, inheritance); roles as names with a capacity and a lease; assignment and ownership; the merge gate, worktrees and staging for code; probes; the Tickets page, the Tasks panel, the blocked-ticket banner; the ticket metrics (since 2026-10-27 read by an instrument the plugin declares; the scheduler's machine card is gone) | the AI agents: their roles, prompts, harnesses, sessions and the host that runs them |
 | state | `~/.orchestrator/<key>/tasks/` | `~/.orchestrator/<key>/agents/` |
 | config | `[project]`, `[tasks]`, `[build]`, `[acceptance]`, `[gate]`, `[staging]`, `[[probes]]` | `[agents]` (and `[project]` base_branch, ticket_prefix, work, read for its prompts) |
 
@@ -35,6 +35,9 @@ lesson of Beads: publish decisions, not storage changes). The ticket is the `sub
 
 - **Assignment**: `task.assigned` from the scheduler to a role; `task.accepted`, `task.working`,
   `task.reported` from the machine instance that took it; `task.released` from the scheduler.
+  (Since 2026-10-27 the scheduler is no machine: it publishes `task.assigned` and `task.released`
+  as the role's queue, `worker` or `reviewer`, and attention as the machine whose work is stuck;
+  SPEC.md section 3, "Who publishes what".)
   The table with every field is the docstring of `tasking/assignments.py`; the agents implement
   the same names in `orchestra_agents/protocol.py`.
 - **Requests**: `task.requested`, `task.change_requested`, `task.note_requested`,

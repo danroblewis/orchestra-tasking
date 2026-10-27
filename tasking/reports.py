@@ -1,9 +1,10 @@
 """How a ticket moves from what ended a turn, or did not: a worker's review request, a reviewer's
 request for changes or approval, a report (blocked, or none), a report the task system cannot
 use, a machine that went quiet, the operator's stop. The scheduler (tasking/scheduler.py)
-decides when; this decides what the ticket becomes. What another machine did is recorded with
-its event as the cause (``cause``), so the record's announcements name it and carry no subject
-(tasking/events.py). SPEC.md sections 3 and 4."""
+decides when; this decides what the ticket becomes. It is recorded, never published: what another
+machine did, it announced itself. Each move is counted ``by`` the machine whose act or
+responsibility it was (tasking/measures.py), and what needs a planner (attention) is published as
+that machine (tasking/events.py). SPEC.md sections 3 and 4."""
 
 from __future__ import annotations
 
@@ -11,9 +12,11 @@ from collections.abc import Callable
 
 from .assignments import APPROVED
 from .config import Project
-from .events import COORDINATOR, SCHEDULER, Events
+from .events import COORDINATOR, GATE, REVIEWER, SCHEDULER, WORKER, Events
 from .git import Git
 from .model import RECOVERY, Note, State, Ticket
+
+ROLE_OF = {State.IN_PROGRESS: WORKER, State.IN_REVIEW: REVIEWER, State.MERGING: GATE}   # whose turn an active state is
 from .store import LocalStore
 
 CRASH_BUDGET = 2          # worker turns that may end without a report before the ticket is blocked
@@ -47,13 +50,14 @@ def send_back(store: LocalStore, events: Events, threshold: int, t: Ticket, reje
     merge gate: the round is counted (unless ``counted`` is False: nothing was reviewed, or a
     merge conflict), and the planner (the coordinator role) is told when the round count reaches
     the threshold and at every further multiple of it, not on every rejection: it should decide
-    once, not be told 38 times. ``by`` is the machine named in the metrics (the writer's own when
-    None). Returns the ticket's review rounds."""
+    once, not be told 38 times. ``by`` is the machine whose responsibility the rejection is (the
+    reviewer's or the gate's): named in the metrics, and the attention is published as it (the
+    writer's own when None). Returns the ticket's review rounds."""
     rounds = t.review_rounds + (1 if counted else 0)
     store.transition(t.id, t.version, State.REJECTED, by=by, cause=cause, rejected_by=rejected_by, feedback=feedback,
                      review_rounds=rounds, **fields)
     if counted and threshold and rounds % threshold == 0:
-        events.attention(COORDINATOR, f"{t.id} has been rejected {rounds} times", ticket=t.id)
+        events.attention(COORDINATOR, f"{t.id} has been rejected {rounds} times", ticket=t.id, src=by)
     return rounds
 
 
@@ -100,7 +104,7 @@ class Reports:
             if self.git.is_ancestor(str(commit), self.cfg.base_branch):
                 self._block(t, "the worker asked for a review but the branch has no commits beyond the base branch")
                 return False
-        self.store.add_note(t.id, Note(author="worker", text=str(review.get("summary") or "")), cause=ev)
+        self.store.add_note(t.id, Note(author="worker", text=str(review.get("summary") or "")))
         out = review.get("test_output")
         self.store.transition(t.id, t.version, State.READY_FOR_REVIEW, by="worker", cause=ev, feedback=None,
                               reviewed_commit=commit if a.get("branch") else t.reviewed_commit,
@@ -121,9 +125,9 @@ class Reports:
             return False
         verdict = "APPROVED" if ev.get("type") == APPROVED else "REJECTED"
         self.store.add_note(t.id, Note(author="reviewer", kind="review",
-                                       text=f"{verdict}: {ev.get('summary') or ''}\n{ev.get('feedback') or ''}"), cause=ev)
+                                       text=f"{verdict}: {ev.get('summary') or ''}\n{ev.get('feedback') or ''}"))
         if verdict == "REJECTED":
-            self.reject(t.id, "reviewer", ev.get("feedback") or ev.get("summary") or "", cause=ev)
+            self.reject(t.id, REVIEWER, ev.get("feedback") or ev.get("summary") or "", cause=ev)
             return True
         t = self.store.transition(t.id, t.version, State.APPROVED, by="reviewer", cause=ev, feedback=None, rejected_by=None)   # the gate lands reviewed_commit as recorded from the worker's request
         self.log(f"{t.id}: APPROVED by {ev.get('source')}")
@@ -147,13 +151,14 @@ class Reports:
 
     def back_to_waiting(self, tid: str, note: str, feedback: str | None = None) -> None:
         """An active ticket to the waiting state before it, with a note saying why (and, for a
-        worker's turn, what the next worker is told)."""
+        worker's turn, what the next worker is told); counted as the move of the machine whose
+        turn it was (``ROLE_OF``)."""
         t = self.store.get_ticket(tid)
         if t.state not in RECOVERY:
             return
         self.store.add_note(tid, Note(author=SCHEDULER, text=f"{note}; back to {RECOVERY[t.state]}"))
         fields = {"feedback": feedback} if feedback and t.state == State.IN_PROGRESS else {}
-        self.store.transition(tid, t.version, RECOVERY[t.state], **fields)
+        self.store.transition(tid, t.version, RECOVERY[t.state], by=ROLE_OF[t.state], **fields)
         self.log(f"{tid}: {t.state} -> {RECOVERY[t.state]} ({note})")
 
     def _trailing(self, tid: str, who: str) -> int:
@@ -177,7 +182,7 @@ class Reports:
                 # workspace is kept and the ticket offered again
                 self.store.add_note(tid, Note(author=SCHEDULER, kind="crash",
                                               text=f"the worker ended without reporting (attempt {crashes}){': ' + text[-300:] if text else ''}; offered again"))
-                self.store.transition(tid, t.version, State.OPEN,
+                self.store.transition(tid, t.version, State.OPEN, by=WORKER,
                                       feedback=f"the previous worker ended without reporting; {self.workspace_kept()}")
                 self.log(f"{tid}: the worker ended without reporting; back to OPEN ({crashes})")
                 return
@@ -185,15 +190,17 @@ class Reports:
             reason += f". Last message: {text[-600:]}" if text else "."
             self._block(t, reason)
             return
-        self.store.add_note(tid, Note(author="worker", text=report.get("summary", "")), cause=cause)
-        self.store.transition(tid, t.version, State.BLOCKED, by="worker", cause=cause, blocked_reason=report["blocked_reason"])
-        self.events.attention(COORDINATOR, f"{tid} BLOCKED by worker: {report['blocked_reason'][:200]}", ticket=tid)
+        self.store.add_note(tid, Note(author="worker", text=report.get("summary", "")))
+        self.store.transition(tid, t.version, State.BLOCKED, by=WORKER, cause=cause, blocked_reason=report["blocked_reason"])
+        self.events.attention(COORDINATOR, f"{tid} BLOCKED by worker: {report['blocked_reason'][:200]}", ticket=tid, src=WORKER)
         self.log(f"{tid}: BLOCKED by worker")
 
     def _block(self, t: Ticket, reason: str) -> None:
+        """A worker's turn that cannot go on (it keeps going away, or there is nothing to review):
+        the worker's work is stuck, so the move and the attention are the worker's."""
         self.store.add_note(t.id, Note(author=SCHEDULER, kind="blocker", text=reason))
-        self.store.transition(t.id, t.version, State.BLOCKED, blocked_reason=reason)
-        self.events.attention(COORDINATOR, f"{t.id} BLOCKED: {reason[:200]}", ticket=t.id)
+        self.store.transition(t.id, t.version, State.BLOCKED, by=WORKER, blocked_reason=reason)
+        self.events.attention(COORDINATOR, f"{t.id} BLOCKED: {reason[:200]}", ticket=t.id, src=WORKER)
         self.log(f"{t.id}: BLOCKED ({reason[:80]})")
 
     def _no_verdict(self, tid: str, text: str) -> None:
@@ -207,17 +214,18 @@ class Reports:
         if tries <= NO_VERDICT_BUDGET:
             self.store.add_note(tid, Note(author=SCHEDULER, kind="crash",
                                           text=f"the reviewer ended without a verdict (attempt {tries}){': ' + text[-300:] if text else ''}; the review will be redone"))
-            self.store.transition(tid, t.version, State.READY_FOR_REVIEW)
+            self.store.transition(tid, t.version, State.READY_FOR_REVIEW, by=REVIEWER)
             self.log(f"{tid}: the reviewer ended without a verdict; the review will be redone ({tries})")
             return
         self.reject(tid, SCHEDULER, f"{tries} reviews in a row ended without a verdict; the work may be too large for a review to finish")
 
-    def reject(self, tid: str, by: str, feedback: str, counted: bool = True, cause: dict | None = None) -> None:
-        """Sent back to its worker by ``by``: the reviewer (``cause``: its ``changes.requested``),
-        or the task system (``task_scheduler``) when reviews keep ending without a verdict or the
-        work cannot be reviewed. A send-back where nothing was reviewed (``counted`` False) is not
-        a review round."""
+    def reject(self, tid: str, rejected_by: str, feedback: str, counted: bool = True, cause: dict | None = None) -> None:
+        """Sent back to its worker: by the reviewer (``cause``: its ``changes.requested``), or by
+        the task system's rules (``rejected_by`` ``task_scheduler``, on the ticket for the worker
+        to read) when reviews keep ending without a verdict or the work cannot be reviewed. Either
+        is the review's responsibility: counted, and any attention published, as the reviewer. A
+        send-back where nothing was reviewed (``counted`` False) is not a review round."""
         t = self.store.get_ticket(tid)
-        rounds = send_back(self.store, self.events, self.cfg.review_rounds_before_escalation, t, by, feedback, counted, by=by,
-                           cause=cause, reviewer_rejections=t.reviewer_rejections + (1 if by == "reviewer" else 0))
-        self.log(f"{tid}: REJECTED by {by} (round {rounds})")
+        rounds = send_back(self.store, self.events, self.cfg.review_rounds_before_escalation, t, rejected_by, feedback, counted, by=REVIEWER,
+                           cause=cause, reviewer_rejections=t.reviewer_rejections + (1 if rejected_by == REVIEWER else 0))
+        self.log(f"{tid}: REJECTED by {rejected_by} (round {rounds})")

@@ -1,10 +1,14 @@
-"""The task system's scheduler: the record, not the hub (the owner's decision D17). It offers
-waiting tickets to the roles that work them (a worker, a reviewer) over Orchestra's bus, follows
-what the machines say to each other as the work passes between them (a review requested, changes
-requested, an approval) and records it, takes back what a silent machine holds, lands approved
-code through the merge gate (``merge_gate``), and runs the probes in ``orchestra.toml``. It
-starts no machine and relays nothing: whatever fills a role answers (tasking/assignments.py).
-What an event makes of a ticket is tasking/reports.py. SPEC.md sections 3 and 4."""
+"""The task system's scheduler: the record, not the hub (the owner's decision D17), and no
+machine. One daemon stands in for each machine's own scheduler: the worker's queue (offering
+waiting tickets, taking back what a silent worker holds), the reviewer's, the merge gate
+(``merge_gate``, landing approved code), the answers to a planner's requests (tasking/requests.py)
+and the probes in ``orchestra.toml``. So it never announces itself and never publishes as itself:
+what it publishes goes out as the machine whose responsibility it implements at that moment
+(tasking/events.py; SPEC.md section 3, "Who publishes what"). It follows what the machines say to
+each other as the work passes between them (a review requested, changes requested, an approval)
+and records it, publishing nothing for it. It starts no machine and relays nothing: whatever fills
+a role answers (tasking/assignments.py). What an event makes of a ticket is tasking/reports.py.
+SPEC.md sections 3 and 4."""
 
 from __future__ import annotations
 
@@ -41,7 +45,7 @@ from .model import ACTIVE, Note, State, Ticket, TransitionError, effective_prior
 from .pool import Pool
 from .probes import Prober, config_probes
 from .reports import Reports
-from .requests import QUERY, REQUESTS, Desk
+from .requests import Desk
 from .staging import Staging
 from .store import Conflict, LocalStore, StoreError
 
@@ -51,6 +55,9 @@ OFFERED_FROM = {"worker": {State.OPEN, State.REJECTED}, "reviewer": {State.READY
 AGAIN_FIRST_S = 60.0                  # an offer nobody took within its lease goes out again after this pause,
 AGAIN_MAX_S = 900.0                   # doubled with each offer nobody took, up to this
 MACHINE_STARTED = "orchestra.machine.started"
+QUEUE_LISTENS = {"worker": ["gate.conflict", "gate.rejected", "ticket.created"]}   # what makes the worker's queue offer work
+LOOK_BACK = 200_000                   # events read at start to find an announcement already made
+PROBES = "probes"                     # the source the [[probes]] are published as: the condition checks, no other machine's
 ENDS = (REVIEW_REQUESTED, CHANGES_REQUESTED, APPROVED)    # they end the turn ``ends`` names
 FOLLOWED = (ACCEPTED, WORKING, REPORTED, *ENDS)
 SETTLED_KEPT = 1000                   # the turns lately settled, so a late claim of one is not answered (it lost)
@@ -82,17 +89,15 @@ class Scheduler:
         self.gate_thread: threading.Thread | None = None
         # the gate is a machine of its own (merge_gate): its events, and the record's changes it makes, are its
         self.gate_events = Events.for_project(project, source=GATE)
-        self.gate_store = LocalStore(project, self.gate_events, writer=SCHEDULER)   # its counters are the record's, beside the levels
+        self.gate_store = LocalStore(project, self.gate_events)
         self.settled: deque[str] = deque(maxlen=SETTLED_KEPT)
         self.stop = threading.Event()
-        self.staging = Staging(project, store, events)
-        self.prober = Prober(project, store, events)
+        self.staging = Staging(project, self.gate_store, self.gate_events)     # deploys what the gate landed: the gate's
+        self.prober = Prober(project, store, Events.for_project(project, source=PROBES))
         self.reports = Reports(project, store, events, self.git, log)
         self.pool = Pool(project, store, self.git, log)    # used only with [tasks] reuse_worktrees
         self.pool_waiting: set[tuple[str, str]] = set()     # (ticket, role or "gate") waiting for a free worktree
-        self.pool_measured: tuple | None = None
         self.offset = events.end()                   # read on from here: what the assignees say back (tasking/assignments.py)
-        self.levels_at = 0.0                        # when the levels were last re-asserted (every discovery step)
 
     def recover(self) -> None:
         """What the previous scheduler left: whoever still holds work is told to stop and every
@@ -129,11 +134,12 @@ class Scheduler:
 
     def _release(self, a: dict, reason: str, instance: str | None = None) -> None:
         """``task.released`` for an assignment (to one instance when the release is addressed to
-        it); an offer nobody accepted is dropped here, since nothing is counted for it."""
+        it), published as the role's machine, whose queue and lease this is; an offer nobody
+        accepted is dropped here, since nothing is counted for it."""
         data = {"assignment": a["id"], "ticket": a["ticket"], "role": a["role"], "reason": reason}
         if instance is not None:
             data["instance"] = instance
-        self.events.publish(RELEASED, data, subject=a["ticket"])
+        self.events.publish(RELEASED, data, source=a["role"], subject=a["ticket"])
         if a.get("instance") is None and instance is None:
             self.store.drop_assignment(a["id"])
 
@@ -162,19 +168,18 @@ class Scheduler:
         self.recover()
         self.desk = Desk(self.project, self.store, self.events, log)   # planners' requests (tasking/requests.py)
         self.desk.start()
-        # the record says the scheduler is up: by then the desk listens, so a request sent now is heard
+        # the record says the scheduler is up: by then the desk listens, so a request sent now is heard.
+        # The scheduler announces nothing of itself: it is no machine (tasking/events.py). The gate is one
         self.store.set_scheduler(os.getpid(), time.time())
-        self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
-                                                          "listens_for": sorted({*REQUESTS.values(), QUERY, *FOLLOWED, MACHINE_STARTED}),
-                                                          "log": str(LOG)})
+        self._announce_queues()
         if self.cfg.work == "code":
             self.gate_events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
                                                                    "listens_for": [APPROVED], "log": str(LOG)})
         log(f"project {self.project.key} on {self.project.repo_root}; workers={self.cfg.workers} reviewers={self.cfg.reviewers}")
         paused = self.store.pipeline()
         if paused.get("paused"):
-            self.events.attention(SUPERVISOR, f"the pipeline is paused after a restart: {paused.get('reason')}; "
-                                  "it resumes on pipeline.resume_requested")
+            self.gate_events.attention(SUPERVISOR, f"the pipeline is paused after a restart: {paused.get('reason')}; "
+                                       "it resumes on pipeline.resume_requested")
         # staging survives scheduler restarts; only bring it back if its process is gone
         if self.cfg.staging_configured and self.staging.state().get("current_build_id"):
             threading.Thread(target=self.staging.ensure_running, daemon=True, name="staging").start()
@@ -192,7 +197,19 @@ class Scheduler:
             self._finish_threads()
             self._release_all("the task system shut down")
             self.store.clear_scheduler(os.getpid())
-            self.events.emit("scheduler.stopped")
+
+    def _announce_queues(self) -> None:
+        """What makes each machine's queue act, said for it once on the bus (AGENTS.md rule 2: a
+        machine announces what it listens for; Orchestra's AGENTS.md rule 2): the worker's queue offers work when a ticket is
+        created and when the gate sends work back. Only ``listens_for``: the queue is part of the
+        machine, whose instances say what they are themselves. Not said again when the bus already
+        has it, so a restart does not make it the machine's latest announcement."""
+        end = self.events.end()
+        evs, _ = self.events.read(max(0, end - LOOK_BACK), LOOK_BACK)
+        said = {(ev.get("source"), tuple(ev.get("listens_for") or ())) for ev in evs if ev.get("type") == MACHINE_STARTED}
+        for role, listens in QUEUE_LISTENS.items():
+            if (role, tuple(listens)) not in said:
+                self.events.publish(MACHINE_STARTED, {"listens_for": listens}, source=role)
 
     def _busy(self) -> bool:
         return bool(self.store.assignments()) or bool(self.gate_thread and self.gate_thread.is_alive())
@@ -247,11 +264,6 @@ class Scheduler:
             self.prober.tick(config_probes(self.project))
         except Exception as e:  # noqa: BLE001 - a broken probe never stops the scheduler
             log(f"probes: {e!r}")
-        # the levels are written at every change; between changes they are written again every
-        # discovery step (Orchestra's [discovery] step), so a quiet system still measures its stocks
-        if time.time() - self.levels_at >= self.project.orchestra.config.discovery_step:
-            self.store.reassert_levels()
-            self.levels_at = time.time()
 
     def _start_gate(self, ordered: list[Ticket]) -> None:
         """The longest-approved ticket to the gate. With reused worktrees the gate holds one of
@@ -284,18 +296,12 @@ class Scheduler:
         return False
 
     def _measure_pool(self) -> None:
-        """``tasks_worktrees{state}``: the pool's worktrees in use and free, and the turns waiting
-        for one; written when they change and again every discovery step, like the levels."""
+        """The turns waiting for a worktree of the pool, kept in the record for
+        ``tasks_worktrees{state="waiting"}`` (tasking/measures.py; the pool's own record has the rest)."""
         if not (self.cfg.reuse_worktrees and self.cfg.work == "code"):
             return
-        slots = self.store.pool().values()
-        free = sum(1 for s in slots if s["free"])
-        waiting = {k for k in self.pool_waiting if self._still_waiting(*k)}
-        self.pool_waiting = waiting
-        values = (len(slots) - free, free, len(waiting))
-        if values != self.pool_measured or time.time() - self.levels_at >= self.project.orchestra.config.discovery_step:
-            self.pool_measured = values
-            self.store.measures.write(self.store.measures.pool_points(*values))
+        self.pool_waiting = {k for k in self.pool_waiting if self._still_waiting(*k)}
+        self.store.set_pool_waiting(len(self.pool_waiting))
 
     def _still_waiting(self, tid: str, who: str) -> bool:
         try:
@@ -408,7 +414,7 @@ class Scheduler:
                   "assigned_at": time.time(), "lease_until": time.time() + lease, "instance": None, "accepted_at": None,
                   "offered_since": untaken.get("since") or time.time()}   # the first of the offers nobody took
         self.store.put_assignment(record)
-        self.events.publish(ASSIGNED, offer, subject=t.id)
+        self.events.publish(ASSIGNED, offer, source=role, subject=t.id)     # as the role's machine: its queue offers it
         log(f"{t.id}: assigned to " + (f"{to} (the worker that did it)" if to else f"a {role}") + f" ({aid})")
         return True
 
@@ -478,9 +484,10 @@ class Scheduler:
             log(f"{ev.get('ticket')}: {kind} from {ev.get('source')} for assignment {aid} ignored: not held "
                 "(released, already settled, or never valid)")
         if kind == ACCEPTED and aid and ev.get("source") and aid not in self.settled:
+            role = ev.get("role") if ev.get("role") in OFFERED_FROM else machine_and_instance(ev["source"])[0]
             self.events.publish(RELEASED, {"assignment": aid, "ticket": ev.get("ticket"), "role": ev.get("role"),
                                            "reason": "not held (released, already settled, or never valid)",
-                                           "instance": ev["source"]}, subject=ev.get("ticket"))
+                                           "instance": ev["source"]}, source=role, subject=ev.get("ticket"))
 
     def _claim(self, a: dict, ev: dict, out: dict) -> None:
         """A claim of a held offer. The first valid one holds it (``_accept``); a later one lost

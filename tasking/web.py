@@ -1,35 +1,45 @@
 """The task system in Orchestra's web app (an Orchestra plugin, ``orchestra/plugins.py``): the
-Tickets page (the ticket graph), the Tasks panel, the scheduler's machine card, the blocked-ticket
-banner, and the API they read, at ``/api/plugins/tasks``; and the scheduler, which ``orchestra run``
-keeps running (``Plugin.processes``). The operator controls (pause pickup,
+Tickets page (the ticket graph), the Tasks panel, the blocked-ticket
+banner, and the API they read, at ``/api/plugins/tasks``; the scheduler, which ``orchestra run``
+keeps running (``Plugin.processes``) and which is no machine (tasking/events.py), so nothing is
+declared for it; and the instrument that reads the task system's measurements
+(``Plugin.collectors``: ``tasks.tickets``, tasking/measures.py), also served at ``/metrics``. The operator controls (pause pickup,
 capacity, stop whoever works a ticket) are the only writes here, published as the machine
 ``task_web``; tickets change only through the scheduler (tasking/requests.py)."""
 
 from __future__ import annotations
 
+import shlex
 import sys
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import PlainTextResponse
+from orchestra.collect.spec import Collector
 from orchestra.launcher import Process
-from orchestra.plugins import Declared, Page, Plugin
+from orchestra.plugins import Page, Plugin
 from orchestra.runtime import alive
 
 from .config import Project
-from .events import SCHEDULER, Events
+from .events import OPERATOR, Events
 from .store import LocalStore, StoreError
 
 STATIC = Path(__file__).parent / "static"
-WEB = "task_web"
+WEB = OPERATOR
 
 
 def plugin(orchestra_project) -> Plugin:
     """The plugin for the repository Orchestra serves (its entry point, in pyproject.toml)."""
     project = Project.from_orchestra(orchestra_project)
     return Plugin("tasks", [Page("/tickets", "Tickets", STATIC / "tickets.html")],
-                  STATIC, router(project), scripts=["tasks-boot.js"], stylesheets=["tasks.css"], machines=declared(),
-                  processes=processes(project))
+                  STATIC, router(project), scripts=["tasks-boot.js"], stylesheets=["tasks.css"],
+                  processes=processes(project), collectors=collectors(project))
+
+
+def set_up(project: Project) -> bool:
+    """Whether the project is set up for tasks (``tasking init`` wrote ``[project]`` or ``[tasks]``)."""
+    return bool({"project", "tasks"} & set(project.config.raw))
 
 
 def processes(project: Project) -> list[Process]:
@@ -38,15 +48,21 @@ def processes(project: Project) -> list[Process]:
     started with the Python that runs Orchestra, where the task system is installed; ``--wait``
     lets one started by hand keep the project until it stops. Orchestra names it ``tasks.scheduler``
     (its log: ``<state>/logs/machines/tasks.scheduler.log``)."""
-    if not ({"project", "tasks"} & set(project.config.raw)):
+    if not set_up(project):
         return []
     return [Process("scheduler", [sys.executable, "-m", "tasking", "run", "--wait"])]
 
 
-def declared() -> list[Declared]:
-    """The machine the task system provides, for Orchestra's Machines page before it is seen. The
-    operator's controls publish as ``task_web`` and appear there by observation once used."""
-    return [Declared(SCHEDULER, "program", "continuous")]
+def collectors(project: Project) -> list[Collector]:
+    """The instrument that measures the tickets (``tasks.tickets``): ``orchestra run`` runs
+    ``tasking metrics`` every discovery step, which prints the levels and counters from the record
+    (tasking/measures.py), and labels each point ``instrument=tasks.tickets``. A command, not a
+    scrape of ``/metrics``: the web server's port is not known to ``orchestra run``, and a port of
+    the scheduler's own would be one more to configure per project; the text is the same."""
+    if not set_up(project):
+        return []
+    step = max(1.0, float(project.orchestra.config.discovery_step))
+    return [Collector.collect("tickets", f"{shlex.quote(sys.executable)} -m tasking metrics", every_s=step, timeout_s=min(step, 10.0))]
 
 
 def router(project: Project) -> APIRouter:
@@ -96,6 +112,11 @@ def router(project: Project) -> APIRouter:
             store.request_kill(tid, by="operator")
             return {"ok": True, "ticket": tid}
         raise HTTPException(400, "unknown action")
+
+    @r.get("/metrics", response_class=PlainTextResponse)
+    async def metrics() -> str:
+        """The task system's measurements in the Prometheus text format (tasking/measures.py)."""
+        return store.metrics_text()
 
     @r.get("/tickets/{ticket_id}")
     async def ticket(ticket_id: str) -> dict:

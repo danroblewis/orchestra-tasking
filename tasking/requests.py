@@ -8,7 +8,10 @@ A request is an event named for what it asks (``task.requested`` to create a tic
 Reads are one event type, ``task.query_requested``, with the operation in ``op``. The scheduler's
 desk (``Desk``, in the scheduler's process) checks and applies each with the task system's rules
 (``api.handle``) and answers ``request.done`` with the result or ``request.refused`` with why. So
-every change to a ticket is the task system's own, and Orchestra sees who asked for what.
+every change to a ticket is made by the task system's rules, and Orchestra sees who asked for what.
+The desk stands in for the asker's own request handling, so the answer, and what the request made
+(``ticket.created``, ``milestone.created``), go out as the asker (the request's source), naming the
+request as their causationid: they are the asker's acts, done for it (tasking/events.py).
 
 The desk reads on from where the last one stopped (the offset and the ids it answered from there,
 kept in the runtime record), so a request made while no scheduler ran is answered when one
@@ -127,16 +130,18 @@ class Desk:
             result = {"ok": False, "error": "a request names who asks (by)"}
         else:
             try:
-                result = api.handle(self.project, self.store, self.events, op, args, role=by)
+                result = api.handle(self.project, self.store, self.events, op, args, role=by, source=ev.get("source"), cause=ev.get("id"))
             except Exception as e:  # noqa: BLE001 - a refused request is an answer, not a crash
                 result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         ok = bool(result.get("ok", True))
-        # the answer to a change is the task system acting on the ticket (its subject); the answer
-        # to a query acts on nothing, so it names none, and the map does not put the task system
-        # between the machines that work a ticket whenever a planner reads it
+        # published as the asker, for whom the desk answers; the answer to a change is about the
+        # ticket (its subject); the answer to a query acts on nothing, so it names none
         subject = None if query else _subject(args) or (result.get("ticket") or {}).get("id")
+        ext = {"subject": subject} if subject else {}
+        if ev.get("id"):
+            ext["causationid"] = ev["id"]
         self.events.publish(DONE if ok else REFUSED, {"request": ev.get("request"),
                                                       **({"result": result} if ok else {"error": result.get("error")})},
-                            **({"subject": subject} if subject else {}))
+                            source=ev.get("source") or "unknown", **ext)
         if op not in QUERIES or age > RESUME_S:
             self.log(f"request {op} by {by or 'someone'}: {'done' if ok else 'refused: ' + str(result.get('error'))[:80]}")

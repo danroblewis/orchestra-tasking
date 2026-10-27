@@ -8,10 +8,20 @@ broken without updating the spec and saying so in the commit.
 1. **The task system is the record, not the hub** (the owner's decision D17, 2026-10-27). Work
    passes directly between the machines that do it (a review requested, changes requested of the
    worker that did the work, an approval for the gate); the scheduler records each step, by the
-   transition table in `tasking/model.py`, and is the only writer of the record. It publishes only
-   when it acts itself: offering waiting work, taking work back, capacity, the gate (as
-   `merge_gate`), attention. Never add a path where the scheduler relays between machines, where
-   anything else writes the record, or where a machine's words are translated into another state.
+   transition table in `tasking/model.py`, and is the only writer of the record. Never add a path
+   where the scheduler relays between machines, where anything else writes the record, or where a
+   machine's words are translated into another state.
+   **The scheduler is no machine** (the owner's decision of 2026-10-27, D17 refined). It is one
+   daemon standing in for each machine's own scheduling: the worker's and the reviewer's queues,
+   the merge gate, the answers to a planner's requests. It never announces itself and never
+   publishes as `task_scheduler` (`tasking/events.py` refuses it, and the store refuses a move it
+   records without naming the machine it is for). Every event it publishes goes out as the
+   machine whose responsibility it implements at that moment, and only for an act that machine's
+   own process did not already announce: offers and releases as `worker` or `reviewer`, the gate,
+   its pause and staging as `merge_gate`, a request's answer and what it made as the asker,
+   attention as the machine whose work is stuck (SPEC section 3, "Who publishes what"). It writes
+   no metrics: an instrument the plugin declares reads them from the record. Never add an event
+   as the scheduler, a machine declared for it, or a card of its own.
 2. **No zombies.** A ticket is `IN_PROGRESS`, `IN_REVIEW` or `MERGING` only while an assignment
    with a live lease holds it, whoever offered it: the scheduler sees every claim. A lease that
    runs out, an end of a turn the task system cannot apply, the operator's stop: each releases the
@@ -26,15 +36,19 @@ broken without updating the spec and saying so in the commit.
 4. **Every crossing is on the bus.** Offers, claims, heartbeats, hand-offs, reports, releases,
    requests, answers and attention are CloudEvents through `tasking.events.Events` (over
    `orchestra.events` and `orchestra.bus`), with the machine as source and the ticket as subject
-   of every act on it; the record's announcement of another machine's step names that step as its
-   `causationid` and carries no subject, and a query and its answer carry none.
+   of every act on it; a query and its answer carry none. **No echoes**: the record is the store,
+   and nothing restates a step another machine announced (there is no `ticket.transitioned`,
+   `ticket.note_added`, `ticket.updated`, `milestone.updated`, `milestone.closed` or
+   `scheduler.stopped`); a ticket's state and notes are read from the record and its moves are
+   measured.
    The contract is the table in `tasking/assignments.py`, the names in `tasking/requests.py` and
    the observation families in SPEC section 3; another package implements the same names, so
    change them deliberately and say so.
 5. **Merging is programmatic.** No machine merges, pushes, touches the base branch or starts
    staging. Only the gate lands code; only a landing deploys staging.
 6. **State lives in `~/.orchestrator/<key>/tasks/`**, except the events (Orchestra's bus) and the
-   metrics (Orchestra's metrics store). Only `tasking/store/` reads or writes the JSON files, under
+   metrics (Orchestra's metrics store, filled by the instrument `tasks.tickets` from the counters
+   the record keeps). Only `tasking/store/` reads or writes the JSON files, under
    the file lock. Nothing else touches a backend directly.
 7. **Humans are read-only, except the operator controls.** The pages and CLI read; the only
    writes a person has are pausing pickup, the capacity ceiling and stopping whoever holds a
@@ -49,8 +63,9 @@ broken without updating the spec and saying so in the commit.
     exception is pytest's `pythonpath` in `pyproject.toml`, for the tests only, so that they can
     import `conftest`, `fake_machine` and `demo.run`. Orchestra comes from `../orchestra_2`
     (editable: a clone of github.com/danroblewis/orchestra beside this repository, named
-    `orchestra_2` as `[tool.uv.sources]` says) and the task system uses its bus, metrics store,
-    config and plugin interface, nothing else.
+    `orchestra_2` as `[tool.uv.sources]` says) and the task system uses its bus, config and
+    plugin interface (whose instrument fills the metrics store; the task system writes no metric
+    itself), nothing else.
 
 ## Conventions
 

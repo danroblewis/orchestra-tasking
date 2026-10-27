@@ -37,7 +37,7 @@ def setup(project, work: str, **tasks):
     git("commit", "-q", "--allow-empty", "-m", f"{work} mode", cwd=repo)
     events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
-    t = store.create_ticket(title="a ticket", milestone_id=store.create_milestone(name="m").id, description="x", acceptance="y")
+    t = store.create_ticket(src="planner", title="a ticket", milestone_id=store.create_milestone(src="planner", name="m").id, description="x", acceptance="y")
     return store, events, t
 
 
@@ -53,8 +53,9 @@ def until(sched, check, timeout_s=20.0):
 
 def test_rejected_work_returns_to_the_same_worker_and_the_scheduler_is_no_hub(project):
     """Worked, rejected once, reworked by the same worker instance, approved and landed. On the
-    bus the hand-offs go worker → reviewer → worker → reviewer → merge_gate; task_scheduler
-    appears only where it acted: the first offer."""
+    bus the hand-offs go planner → worker → reviewer → worker → reviewer → merge_gate; the
+    scheduler appears nowhere: what it publishes goes out as the machine it acts for (the first
+    offer as the worker's queue), and never restates another machine's act."""
     store, events, t = setup(project, "code")
     with FakeMachine(events, roles=("worker",), instance="2"):            # another worker, free all along
         m = run_scheduler(project, store, events, reject_first=True)
@@ -65,12 +66,14 @@ def test_rejected_work_returns_to_the_same_worker_and_the_scheduler_is_no_hub(pr
     rejection = on_bus(events, CHANGES_REQUESTED, ticket=t.id)
     assert len(rejection) == 1 and rejection[0]["data"]["to"] == t.worker and rejection[0]["source"] == "reviewer/1"
     assert [o["type"] for o in m.offers if o["role"] == "worker"].count(ASSIGNED) == 1      # only the first turn came from the queue
-    assert handoffs(events, t.id) == [("task_scheduler", ASSIGNED, "worker"), ("worker", REVIEW_REQUESTED, "reviewer"),
+    assert handoffs(events, t.id) == [("planner", "ticket.created", "worker"), ("worker", REVIEW_REQUESTED, "reviewer"),
                                       ("reviewer", CHANGES_REQUESTED, "worker"), ("worker", REVIEW_REQUESTED, "reviewer"),
                                       ("reviewer", APPROVED, "merge_gate")]
     evs = events.bus.read(0, limit=100000)[0]
-    acts = [e["type"] for e in evs if e.get("subject") == t.id and e["source"] == "task_scheduler"]
-    assert acts == ["ticket.created", ASSIGNED]                                           # its only acts on the ticket: the record made, the first offer
+    assert not [e for e in evs if e["source"] == "task_scheduler"]                       # no event as the scheduler, not even an announcement
+    assert not [e for e in evs if e["type"] in ("ticket.transitioned", "ticket.note_added")]   # no echo of another machine's act
+    queue = [e["type"] for e in evs if e.get("subject") == t.id and e["source"] == "worker"]
+    assert queue == [ASSIGNED]                                                            # the worker's queue: the first offer, nothing else
     assert {e["source"] for e in evs if e["type"].startswith("gate.")} == {"merge_gate"}
     started = next(e for e in evs if e["type"] == "gate.started")
     approved = on_bus(events, APPROVED, ticket=t.id)[-1]

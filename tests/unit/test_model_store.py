@@ -8,7 +8,7 @@ from tasking.store import Conflict, LocalStore, StoreError
 
 @pytest.fixture
 def store(project):
-    return LocalStore(project, Events.for_project(project, source="task_scheduler"))
+    return LocalStore(project, Events.for_project(project, source="planner"))
 
 
 def test_transitions():
@@ -27,30 +27,30 @@ def test_transitions():
 
 def test_milestone_rules_and_ids(store):
     with pytest.raises(StoreError):
-        store.create_ticket(title="x", milestone_id="M9")
-    m = store.create_milestone(name="first")
+        store.create_ticket(src="planner", title="x", milestone_id="M9")
+    m = store.create_milestone(src="planner", name="first")
     assert m.id == "M1"
-    t = store.create_ticket(title="Add thing", milestone_id=m.id)
+    t = store.create_ticket(src="planner", title="Add thing", milestone_id=m.id)
     assert t.id == "T-1" and t.state == State.OPEN
     with pytest.raises(StoreError):
         store.close_milestone(m.id)  # unfinished ticket
-    t = store.transition(t.id, t.version, State.CANCELLED)
+    t = store.transition(t.id, t.version, State.CANCELLED, by="worker")
     store.close_milestone(m.id)
     with pytest.raises(StoreError):
-        store.create_ticket(title="y", milestone_id=m.id)
+        store.create_ticket(src="planner", title="y", milestone_id=m.id)
     with pytest.raises(StoreError):
         store.update_milestone(m.id, status="open")
 
 
 def test_version_conflict_and_blocked_reason(store):
-    m = store.create_milestone(name="m")
-    t = store.create_ticket(title="a", milestone_id=m.id)
+    m = store.create_milestone(src="planner", name="m")
+    t = store.create_ticket(src="planner", title="a", milestone_id=m.id)
     with pytest.raises(Conflict):
-        store.transition(t.id, t.version + 5, State.IN_PROGRESS)          # a transition from a stale read
-    t = store.transition(t.id, t.version, State.IN_PROGRESS)
+        store.transition(t.id, t.version + 5, State.IN_PROGRESS, by="worker")          # a transition from a stale read
+    t = store.transition(t.id, t.version, State.IN_PROGRESS, by="worker")
     with pytest.raises(StoreError):
-        store.transition(t.id, t.version, State.BLOCKED)
-    store.transition(t.id, t.version, State.BLOCKED, blocked_reason="need creds")
+        store.transition(t.id, t.version, State.BLOCKED, by="worker")
+    store.transition(t.id, t.version, State.BLOCKED, blocked_reason="need creds", by="worker")
 
 
 def test_operator_capacity_is_the_ceiling_a_planner_dials_under(store):

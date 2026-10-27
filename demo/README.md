@@ -16,13 +16,14 @@ removes the state a previous run left for that path (under `~/.orchestrator/<nam
 | Process | What it is |
 |---|---|
 | `orchestra run` | Orchestra's host: the Core strip shows it up, and it rediscovers the system dynamics model from the metrics |
-| `orchestra web --port 8071` | Orchestra's web UI, with the task system's Tickets page, Tasks panel and scheduler card (its plugin) |
-| `tasking run --wait` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back. `orchestra run` starts it (the task system's plugin declares it; `tasks.scheduler` on the Core page) |
+| `orchestra web --port 8071` | Orchestra's web UI, with the task system's Tickets page and Tasks panel (its plugin) |
+| `tasking run --wait` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back. `orchestra run` starts it (the task system's plugin declares it; `tasks.scheduler` on the Core page). It is no machine: what it publishes goes out as the machine it acts for (an offer as `worker`, the worker's queue), so the Machines page does not list it |
+| `tasking metrics` | the instrument `tasks.tickets`: `orchestra run` runs it every discovery step (the plugin declares it) and writes the ticket levels and transition counters it prints to the metrics store |
 | `machines/shell_worker.py` | the machine `worker` (instance `worker/1`): runs the `sh` code blocks of a ticket's description in its workspace (the ticket's own empty folder; `ORCHESTRA_REPO` names the repository), writes RESULT.md |
 | `machines/check_reviewer.py` | the machine `reviewer` (`reviewer/1`): approves when RESULT.md exists and the acceptance text's `` `files` `` and `"lines"` are there |
 
-`run.py` starts only `orchestra run` and `orchestra web`; `orchestra run` starts the scheduler and
-the two machines (declared under `[[machines]]` in this folder's `orchestra.toml`) and keeps them
+`run.py` starts only `orchestra run` and `orchestra web`; `orchestra run` starts the scheduler, the
+instrument and the two machines (declared under `[[machines]]` in this folder's `orchestra.toml`) and keeps them
 running.
 
 The two machines are each a page of Python that imports only Orchestra (`orchestra.config`,
@@ -53,20 +54,21 @@ Nm ago", growing from the first offer.
 Where to look, at http://127.0.0.1:8071:
 
 - **Dashboard**: the Tasks panel (cards for the tickets in flight, which instance holds each or
-  what it waits for, the queue by state, the capacity and pause controls); the Machines panel
-  lists the scheduler as one line; the Core strip shows the host, bus and metrics store up.
+  what it waits for, the queue by state, the capacity and pause controls); the Core strip shows
+  the host, bus and metrics store up.
 - **Tickets**: the graph of milestones and tickets; done tickets are hidden, so click the
   milestone (2/4 done) or tick "show done tickets" to see DEMO-1 and DEMO-2. Click a ticket for
   its description, acceptance, notes (the worker's summary, the reviewer's verdict) and the
   blocker or feedback.
-- **Machines**: `task_scheduler` (package tasks, with the task queue card), `worker` and
-  `reviewer` as observed from the bus (each announces where its log is, so its dialog shows
-  it), `planner` (run.py's one-shot requests, a scheduled program) and `orchestra-host`; what
-  each publishes and listens for, and the event map between
-  them: `task.assigned` from the scheduler, `task.accepted` from the machines, `review.requested`
-  from the worker straight to the reviewer, `changes.requested` from the reviewer straight back to
-  the worker, `task.requested` from the planner, `request.done` back. `task_web` appears once an operator
-  control has been pressed.
+- **Machines**: `worker` and `reviewer` as observed from the bus (each announces where its log
+  is, so its dialog shows it), `planner` (run.py's one-shot requests, a scheduled program) and
+  `orchestra-host`; what each publishes and listens for, and the event map between them:
+  `task.requested` from the planner and `ticket.created` and `request.done` back as the planner
+  (the scheduler answers for it), the hand-off planner → worker via `ticket.created`,
+  `task.assigned` from `worker` (the worker's queue, which the scheduler runs), `task.accepted`
+  from the machines, `review.requested` from the worker straight to the reviewer,
+  `changes.requested` from the reviewer straight back to the worker. The scheduler is not
+  there: it is no machine. `task_web` appears once an operator control has been pressed.
 - **Dynamics**: no model. With four tickets every series has fewer than five events, or
   changes in fewer than five steps, which is discovery's bar for a stock or a flow (fewer
   coincide by chance), so the page shows no model; "how it was found" lists each series with
@@ -98,5 +100,6 @@ the reviewer finds `today.txt`, and DEMO-4 is DONE. DEMO-3 needs commands in its
 Logs: `run/host.log` and `run/web.log` in the target; what `orchestra run` starts writes to
 `~/.orchestrator/<name>-<hash>/logs/machines/` (`tasks.scheduler.log`, `worker.log`,
 `reviewer.log`; the Core page shows them); and
-`~/.orchestrator/<name>-<hash>/tasks/logs/scheduler.log`, the scheduler's own log, the one the
-Machines page opens.
+`~/.orchestrator/<name>-<hash>/tasks/logs/scheduler.log`, the scheduler's own log (no machine
+on the Machines page opens it, since the scheduler is none; the demo runs in tasks mode, so there
+is no `merge_gate`, whose announcement names it in code mode).

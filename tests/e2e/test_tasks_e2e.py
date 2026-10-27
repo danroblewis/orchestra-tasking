@@ -8,7 +8,7 @@ import subprocess
 import time
 
 import pytest
-from conftest import on_bus, run_scheduler, wait_for
+from conftest import moves, on_bus, run_scheduler, wait_for
 from fake_machine import FakeMachine
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -30,8 +30,8 @@ def env(project):
 
 
 def a_ticket(store):
-    ms = store.create_milestone(name="m")
-    return store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    ms = store.create_milestone(src="planner", name="m")
+    return store.create_ticket(src="planner", title="a task", milestone_id=ms.id, description="x", acceptance="y")
 
 
 def test_a_task_is_done_in_its_folder_and_reviewed_with_nothing_merged(env):
@@ -48,37 +48,40 @@ def test_a_task_is_done_in_its_folder_and_reviewed_with_nothing_merged(env):
     assert review["type"] == REVIEW_REQUESTED and review["source"] == "worker/1" and review["branch"] is None   # from the worker, not the scheduler
 
 
-def test_the_scheduler_is_a_program_and_starts_no_machine(env):
+def test_the_scheduler_is_no_machine_and_starts_none(env):
+    """It announces nothing of itself and publishes nothing as itself: its offers go out as the
+    worker's and reviewer's queues, its answers as the asker; it says only what makes the worker's
+    queue act (listens_for, nothing else)."""
     project, store, events, _repo = env
     a_ticket(store)
     run_scheduler(project, store, events)
     evs, _ = events.bus.read(0, limit=10000)
     started = {e["source"]: e["data"] for e in evs if e["type"] == "orchestra.machine.started"}
-    assert list(started) == ["task_scheduler"] and started["task_scheduler"]["kind"] == "program"
-    assert {e["source"] for e in evs} <= {"task_scheduler", "worker/1", "reviewer/1"}
+    assert started["worker"] == {"listens_for": ["gate.conflict", "gate.rejected", "ticket.created"]}
+    assert set(started) == {"worker", "worker/1", "reviewer/1"}                     # the rest are the machines' own
+    assert {e["source"] for e in evs} <= {"planner", "worker", "worker/1", "reviewer/1"}
 
 
 def test_the_work_passes_between_the_machines_and_the_scheduler_records_it(env):
-    """The scheduler offers the ticket to a role (task.assigned); the machine whose claim is
-    first holds it; the worker asks the reviewers itself (review.requested), a reviewer claims
-    that and approves (review.approved). The scheduler records every step, naming the event that
-    caused it, and its records carry no subject: on the ticket, only the machines act."""
+    """The worker's queue offers the ticket (task.assigned, as ``worker``); the machine whose
+    claim is first holds it; the worker asks the reviewers itself (review.requested), a reviewer
+    claims that and approves (review.approved). The scheduler records every step in its store,
+    naming the event that caused it, and publishes none of them: on the ticket only the machines act."""
     project, store, events, _repo = env
     t = a_ticket(store)
     run_scheduler(project, store, events)
     every = events.bus.read(0, limit=10000)[0]
     evs = [e for e in every if e.get("subject") == t.id]
     assert [(e["type"], e["source"], (e["data"] or {}).get("role")) for e in evs if e["type"] not in ("task.working", "ticket.created")] == [
-        ("task.assigned", "task_scheduler", "worker"), ("task.accepted", "worker/1", "worker"), ("review.requested", "worker/1", "reviewer"),
+        ("task.assigned", "worker", "worker"), ("task.accepted", "worker/1", "worker"), ("review.requested", "worker/1", "reviewer"),
         ("task.accepted", "reviewer/1", "reviewer"), (APPROVED, "reviewer/1", "reviewer")]
+    assert not [e for e in every if e["type"] in ("ticket.transitioned", "ticket.note_added")]       # no echoes
     by_id = {e["id"]: e for e in every}
-    records = [e for e in every if e["type"] in ("ticket.transitioned", "ticket.note_added") and (e["data"] or {}).get("ticket") == t.id]
-    assert records and all(e["source"] == "task_scheduler" and "subject" not in e for e in records)   # only the scheduler records
-    assert all(by_id[e["causationid"]]["source"] in ("worker/1", "reviewer/1") for e in records)     # what it records is the machines'
-    transitions = [(e["data"]["to"], e["data"]["owner"], by_id[e["causationid"]]["type"]) for e in records if e["type"] == "ticket.transitioned"]
-    assert transitions == [("IN_PROGRESS", "worker/1", ACCEPTED), ("READY_FOR_REVIEW", None, REVIEW_REQUESTED),
-                           ("IN_REVIEW", "reviewer/1", ACCEPTED), ("APPROVED", None, APPROVED), ("DONE", None, APPROVED)]
-    assert store.get_ticket(t.id).caused_by == records[-1]["causationid"]
+    assert by_id[store.get_ticket(t.id).caused_by]["type"] == APPROVED                 # the record names what moved it last
+    assert moves(store) == {("OPEN", "IN_PROGRESS", "worker"): 1, ("IN_PROGRESS", "READY_FOR_REVIEW", "worker"): 1,
+                            ("READY_FOR_REVIEW", "IN_REVIEW", "reviewer"): 1, ("IN_REVIEW", "APPROVED", "reviewer"): 1,
+                            ("APPROVED", "DONE", "reviewer"): 1}
+    assert [n["author"] for n in store.notes(t.id)] == ["worker", "reviewer"]
     assert store.get_ticket(t.id).state.value == "DONE" and store.get_ticket(t.id).owner is None
     assert store.assignments() == {}
 
@@ -106,7 +109,7 @@ def test_an_offer_nobody_accepts_is_offered_again_and_counted_against_no_one(env
     sched.tick()
     assert store.assignments() == {}
     assert store.notes(t.id) == []                                                        # no crash: nobody was at fault
-    assert on_bus(events, "ticket.transitioned") == []                                    # an offer is not a transition
+    assert moves(store) == {}                                                             # an offer is not a transition
     assert store.get_ticket(t.id).worker_turns == 0 and store.get_ticket(t.id).owner is None   # and not a turn
     assert on_bus(events, "task.attention_needed") == []
     assert sum("nobody took the worker's offer" in line for line in scheduler_mod.LOG.read_text().splitlines()) == 1
@@ -121,7 +124,7 @@ def test_an_offer_nobody_accepts_is_offered_again_and_counted_against_no_one(env
         sched.tick()
         t = store.get_ticket(t.id)
         assert t.state == State.IN_PROGRESS and t.worker_turns == 1 and t.owner == "worker/1"   # the acceptance is the transition
-        assert [(e["data"]["from"], e["data"]["to"]) for e in on_bus(events, "ticket.transitioned")] == [("OPEN", "IN_PROGRESS")]
+        assert moves(store) == {("OPEN", "IN_PROGRESS", "worker"): 1}
     assert store.untaken() == {}                                                          # taken: forgotten
 
 
@@ -246,9 +249,9 @@ def test_the_operator_withdraws_an_offer_nobody_took_yet(env):
     released = on_bus(events, RELEASED, assignment=aid)
     assert released and released[0]["data"]["reason"] == "the operator stopped it"
     assert aid not in store.assignments() and len(store.assignments()) == 1               # withdrawn, and offered again
-    assert store.notes(t.id) == [] and on_bus(events, "ticket.transitioned") == []
+    assert store.notes(t.id) == [] and moves(store) == {}
     assert store.get_ticket(t.id).state == State.OPEN and store.get_ticket(t.id).worker_turns == 0
-    done = store.transition(t.id, store.get_ticket(t.id).version, State.CANCELLED)        # nothing held: a kill has nothing to stop
+    done = store.transition(t.id, store.get_ticket(t.id).version, State.CANCELLED, by="planner")        # nothing held: a kill has nothing to stop
     assert done.state == State.CANCELLED
     sched.tick()                                                                          # the standing offer is withdrawn: the ticket moved on
     assert store.assignments() == {} and on_bus(events, RELEASED)[-1]["data"]["reason"] == "the ticket is CANCELLED"
@@ -312,7 +315,7 @@ def test_a_stopped_scheduler_leaves_nothing_held(env):
     assert store.assignments() == {}
     assert store.get_ticket(t.id).state == State.OPEN
     assert on_bus(events, RELEASED)[-1]["data"]["reason"] == "the task system shut down"
-    assert [e["type"] for e in events.bus.read(0, limit=10000)[0] if e["type"].startswith("scheduler.")] == ["scheduler.stopped"]
+    assert not [e for e in events.bus.read(0, limit=10000)[0] if e["source"] == "task_scheduler"]   # nor does it say it stopped: no machine
 
 
 def test_a_worker_that_cannot_act_on_feedback_blocks_instead_of_arguing(env):

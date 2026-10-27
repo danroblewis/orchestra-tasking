@@ -5,7 +5,6 @@ survive a reset unless the stricter setting is on, and a worktree a crash left d
 
 import pytest
 from conftest import git, run_scheduler
-from orchestra.metrics import for_project as metrics_for
 
 from tasking.assignments import ACCEPTED, ASSIGNED
 from tasking.config import Config
@@ -31,7 +30,7 @@ def pool_env(project):
         git("commit", "-qm", "code mode, reused worktrees", cwd=repo)
         events = Events.for_project(project, source="task_scheduler")
         store = LocalStore(project, events)
-        return project, store, events, store.create_milestone(name="m"), repo
+        return project, store, events, store.create_milestone(src="planner", name="m"), repo
     return make
 
 
@@ -50,7 +49,7 @@ def test_five_tickets_in_a_row_use_at_most_two_worktrees_each_clean_on_its_branc
     project, store, events, ms, repo = pool_env(pool=2)
     ts = []
     for i in range(5):                                       # in a row: each depends on the one before
-        ts.append(store.create_ticket(title=f"ticket {i}", milestone_id=ms.id, depends_on=[ts[-1].id] if ts else []))
+        ts.append(store.create_ticket(src="planner", title=f"ticket {i}", milestone_id=ms.id, depends_on=[ts[-1].id] if ts else []))
     seen = []
     run_scheduler(project, store, events, look=lambda a, p: seen.append(looked(a, p)))
     assert all(store.get_ticket(t.id).state == State.DONE for t in ts)
@@ -73,9 +72,11 @@ def test_untracked_files_never_leak_and_ignored_ones_stay_unless_cleaned(pool_en
     ignored cache; the second ticket's worker finds the cache (warm) but not the file, or neither
     with ``worktree_clean_ignored``. The second waits for the worktree, and says so."""
     project, store, events, ms, _repo = pool_env(pool=1, clean_ignored=clean_ignored)
-    t1 = store.create_ticket(title="first", milestone_id=ms.id, priority=1)
-    t2 = store.create_ticket(title="second", milestone_id=ms.id, priority=2)
-    seen = []
+    t1 = store.create_ticket(src="planner", title="first", milestone_id=ms.id, priority=1)
+    t2 = store.create_ticket(src="planner", title="second", milestone_id=ms.id, priority=2)
+    seen, waited = [], []
+    record = store.set_pool_waiting
+    store.set_pool_waiting = lambda n: (waited.append(n), record(n))[1]            # what the record is told waits
     run_scheduler(project, store, events, litter=True, look=lambda a, p: seen.append(looked(a, p)))
     assert store.get_ticket(t1.id).state == store.get_ticket(t2.id).state == State.DONE
     assert {s["path"] for s in seen} == {str(project.pool_dir / "1")}
@@ -84,8 +85,8 @@ def test_untracked_files_never_leak_and_ignored_ones_stay_unless_cleaned(pool_en
     assert second["cache"] == ([] if clean_ignored else [t1.id])
     log = (project.logs_dir / "scheduler.log").read_text()
     assert f"{t2.id}: the worktree pool is full (1 in use); the worker waits for a free one" in log
-    waiting = metrics_for(project.orchestra).raw("tasks_worktrees", {"project": project.key, "state": "waiting"})
-    assert max(v for _t, v in waiting) >= 1 and waiting[-1][1] == 0
+    assert max(waited) >= 1 and waited[-1] == 0                                     # tasks_worktrees{state="waiting"}, served from the record
+    assert 'tasks_worktrees{state="waiting"} 0' in store.metrics_text() and 'tasks_worktrees{state="free"} 1' in store.metrics_text()
 
 
 def test_a_worktree_a_crash_left_dirty_is_reset_and_the_ticket_gets_it_back(pool_env):
@@ -93,7 +94,7 @@ def test_a_worktree_a_crash_left_dirty_is_reset_and_the_ticket_gets_it_back(pool
     the assignment, and the ticket's next turn has the same worktree, reset: tracked changes
     discarded, untracked and staged files gone, the ignored cache kept."""
     project, store, events, ms, _repo = pool_env(pool=2)
-    t = store.create_ticket(title="interrupted", milestone_id=ms.id)
+    t = store.create_ticket(src="planner", title="interrupted", milestone_id=ms.id)
     first = Scheduler(project, store, events)
     first.recover()
     first.tick()
@@ -121,7 +122,7 @@ def test_a_worktree_a_crash_left_dirty_is_reset_and_the_ticket_gets_it_back(pool
 
 def test_a_rejected_ticket_gets_its_worktree_back_with_its_work(pool_env):
     project, store, events, ms, _repo = pool_env(pool=2)
-    t = store.create_ticket(title="twice", milestone_id=ms.id)
+    t = store.create_ticket(src="planner", title="twice", milestone_id=ms.id)
     seen = []
     run_scheduler(project, store, events, reject_first=True, look=lambda a, p: seen.append(looked(a, p)))
     t = store.get_ticket(t.id)
@@ -135,7 +136,7 @@ def test_the_gate_works_in_the_pool_and_checks_the_base_in_the_same_worktree(poo
     """A gate run that fails checks the base alone; with reused worktrees both happen in the one
     worktree the gate holds, and nothing is made under the gate's own directory."""
     project, store, events, ms, repo = pool_env(pool=1)
-    t = store.create_ticket(title="breaks the build first", milestone_id=ms.id)
+    t = store.create_ticket(src="planner", title="breaks the build first", milestone_id=ms.id)
     run_scheduler(project, store, events, break_first=True)
     assert store.get_ticket(t.id).state == State.DONE
     runs = store.gate_runs()

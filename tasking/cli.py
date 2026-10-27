@@ -47,6 +47,15 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_metrics(args) -> int:
+    """The task system's measurements as Prometheus text, from the record (tasking/measures.py):
+    the instrument the plugin declares runs this (tasking/web.py)."""
+    project = _project(args)
+    store, _ = _store(project)
+    sys.stdout.write(store.metrics_text())
+    return 0
+
+
 def cmd_status(args) -> int:
     from . import status as st
 
@@ -206,6 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--wait", action="store_true", help="when another scheduler runs this project, wait for it to stop instead of exiting "
                                                        "(how orchestra run starts it)")
     s.set_defaults(fn=cmd_run)
+
+    s = sub.add_parser("metrics", help="the measurements (ticket levels and transition counters) as Prometheus text, for the instrument")
+    s.set_defaults(fn=cmd_metrics)
 
     s = sub.add_parser("status", help="one screen: what needs a decision, the scheduler, who holds what, the queue, the gate, staging")
     s.add_argument("--json", action="store_true", help="the same as JSON")

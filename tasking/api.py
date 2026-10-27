@@ -23,7 +23,10 @@ def _ticket_view(store: LocalStore, ticket_id: str) -> dict:
     return t
 
 
-def handle(project: Project, store: LocalStore, events: Events, command: str, args: dict[str, Any], role: str = "") -> dict:
+def handle(project: Project, store: LocalStore, events: Events, command: str, args: dict[str, Any], role: str = "",
+           source: str | None = None, cause: str | None = None) -> dict:
+    """``source``: the machine that asked (the request's source), as which what the request made is
+    published; ``cause``: the request's id."""
     a = args or {}
     author = role
 
@@ -47,7 +50,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
         return {"ok": True, "milestones": out}
 
     if command == "create_milestone":
-        m = store.create_milestone(name=a["name"], description=a.get("description", ""))
+        m = store.create_milestone(src=source, cause=cause, name=a["name"], description=a.get("description", ""))
         return {"ok": True, "milestone": m.to_dict()}
 
     if command == "update_milestone":
@@ -70,7 +73,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
 
     if command == "create_ticket":
         t = store.create_ticket(
-            by=machine_and_instance(author)[0] or "unknown", title=a["title"], description=a.get("description", ""), acceptance=a.get("acceptance", ""),
+            by=machine_and_instance(source or author)[0] or "unknown", src=source, cause=cause, title=a["title"], description=a.get("description", ""), acceptance=a.get("acceptance", ""),
             objective=a.get("objective", ""), verification=a.get("verification", ""),
             milestone_id=a["milestone_id"], priority=int(a.get("priority") or 5),
             depends_on=list(a.get("depends_on") or []), created_by=author,
@@ -93,7 +96,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
         if t.state in ACTIVE:
             raise StoreError(f"{t.id} is {t.state}: someone holds it; wait for it to settle, then cancel")
         store.add_note(t.id, Note(author=author, text=f"cancelled: {a.get('reason', '')}"))
-        t = store.transition(t.id, t.version, State.CANCELLED, by=machine_and_instance(author)[0] or "unknown")
+        t = store.transition(t.id, t.version, State.CANCELLED, by=machine_and_instance(source or author)[0] or "unknown")
         return {"ok": True, "ticket": t.to_dict()}
 
     if command == "unblock_ticket":
@@ -101,7 +104,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
         if t.state != State.BLOCKED:
             raise StoreError(f"{t.id} is {t.state}, not BLOCKED")
         store.add_note(t.id, Note(author=author, text=f"unblocked: {a.get('note', '')}"))
-        t = store.transition(t.id, t.version, State.OPEN, by=machine_and_instance(author)[0] or "unknown", blocked_reason=None, rejected_by=None,   # the planner's word replaces the rejection's
+        t = store.transition(t.id, t.version, State.OPEN, by=machine_and_instance(source or author)[0] or "unknown", blocked_reason=None, rejected_by=None,   # the planner's word replaces the rejection's
                              feedback=f"the blocker was resolved by {author}: {a.get('note', '')}")
         return {"ok": True, "ticket": t.to_dict()}
 
@@ -128,7 +131,7 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
         return {"ok": True, "staging": st.state(), "log_tail": st.logs(3000)}
 
     if command == "resume_pipeline":
-        store.set_pipeline(False, None)
+        store.set_pipeline(False, None, announce=False)
         return {"ok": True}
 
     raise StoreError(f"unknown command {command}")

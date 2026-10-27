@@ -17,8 +17,8 @@ def test_escalation_fires_at_the_threshold_and_its_multiples(project):
     store = LocalStore(project, events)
     sched = Scheduler(project, store, events)
     sched.recover()
-    m = store.create_milestone(name="m")
-    t = store.create_ticket(title="hard", milestone_id=m.id)
+    m = store.create_milestone(src="planner", name="m")
+    t = store.create_ticket(src="planner", title="hard", milestone_id=m.id)
 
     def turn(role: str, kind: str, **fields) -> None:
         """One tick records what stands (an offer from the queue, or one a machine made); the

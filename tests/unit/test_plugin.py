@@ -15,14 +15,15 @@ def test_orchestra_serves_the_task_pages_and_api(project):
     assert d["scripts"] == ["/plugins/tasks/static/tasks-boot.js"]            # one loader; it loads the rest after tasks.js
     assert "tasks.js" in c.get("/tickets").text
     assert '<link rel="stylesheet" href="/plugins/tasks/static/tasks.css">' in c.get("/").text   # the look, on every page
-    for f in ("tasks-boot.js", "tasks.js", "attention.js", "machine-cards.js", "tasks-panel.js", "tasks.css"):
+    for f in ("tasks-boot.js", "tasks.js", "attention.js", "tasks-panel.js", "tasks.css"):
         assert c.get(f"/plugins/tasks/static/{f}").status_code == 200
     state = c.get("/api/plugins/tasks/state").json()
     assert set(state) == {"tickets", "milestones", "counts", "scheduler"} and state["tickets"] == []
     assert c.get("/api/plugins/tasks/board").json()["tickets"] == []
     assert c.get("/api/plugins/tasks/attention").json() == {"ok": True, "blocked": [], "count": 0}
     machines = {m["id"]: m for m in c.get("/api/machines").json()["machines"]}
-    assert machines["task_scheduler"]["package"] == "tasks" and "task_web" not in machines     # declared: the scheduler only
+    assert "task_scheduler" not in machines and "task_web" not in machines     # the scheduler is no machine: nothing declared
+    assert "tasks_tickets{" in c.get("/api/plugins/tasks/metrics").text       # the measurements, as the instrument reads them
 
 
 def test_the_capacity_ceiling_follows_orchestra_toml(project):

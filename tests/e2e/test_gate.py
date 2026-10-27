@@ -20,9 +20,9 @@ from tasking.store import LocalStore
 
 @pytest.fixture
 def env(project):
-    events = Events.for_project(project, source="task_scheduler")
+    events = Events.for_project(project, source="merge_gate")      # the gate runs as the machine it is, as the scheduler runs it
     store = LocalStore(project, events)
-    ms = store.create_milestone(name="m")
+    ms = store.create_milestone(src="planner", name="m")
     return project, store, events, ms, project.repo_root
 
 
@@ -36,7 +36,7 @@ def set_config(project, repo, toml: str):
 def merging_ticket(store, ms, repo, title, mutate, base="main"):
     """A ticket in MERGING with a branch off `base` whose content `mutate` produced,
     walked through the same transitions the scheduler uses."""
-    t = store.create_ticket(title=title, milestone_id=ms.id)
+    t = store.create_ticket(src="planner", title=title, milestone_id=ms.id)
     branch = f"orchestra/{t.id}"
     wt = repo.parent / f"wt-{t.id}"
     git("worktree", "add", "-q", "-b", branch, str(wt), base, cwd=repo)
@@ -45,11 +45,11 @@ def merging_ticket(store, ms, repo, title, mutate, base="main"):
     git("commit", "-qm", f"{t.id}: work", cwd=wt)
     head = git("rev-parse", "HEAD", cwd=wt).strip()
     git("worktree", "remove", "--force", str(wt), cwd=repo)
-    t = store.transition(t.id, t.version, State.IN_PROGRESS, branch=branch)
-    t = store.transition(t.id, t.version, State.READY_FOR_REVIEW, reviewed_commit=head)
-    t = store.transition(t.id, t.version, State.IN_REVIEW)
-    t = store.transition(t.id, t.version, State.APPROVED)
-    return store.transition(t.id, t.version, State.MERGING)
+    t = store.transition(t.id, t.version, State.IN_PROGRESS, branch=branch, by="worker")
+    t = store.transition(t.id, t.version, State.READY_FOR_REVIEW, reviewed_commit=head, by="worker")
+    t = store.transition(t.id, t.version, State.IN_REVIEW, by="worker")
+    t = store.transition(t.id, t.version, State.APPROVED, by="worker")
+    return store.transition(t.id, t.version, State.MERGING, by="worker")
 
 
 def event_types(events):
@@ -96,8 +96,8 @@ def test_a_gate_rejection_reaching_the_threshold_tells_the_coordinator(env):
     the coordinator is told when the rounds reach review_rounds_before_escalation (3)."""
     project, store, events, ms, repo = env
     t = merging_ticket(store, ms, repo, "breaks tests again", lambda wt: (wt / "BROKEN").write_text("x"))
-    t = store.transition(t.id, t.version, State.APPROVED)          # two rounds already behind it
-    t = store.transition(t.id, t.version, State.MERGING, review_rounds=2)
+    t = store.transition(t.id, t.version, State.APPROVED, by="reviewer")          # two rounds already behind it
+    t = store.transition(t.id, t.version, State.MERGING, review_rounds=2, by="worker")
     assert asked(events, "coordinator") == []
     assert run_gate(project, store, events, t.id)["status"] == "rejected"
     assert store.get_ticket(t.id).review_rounds == 3

@@ -1,101 +1,94 @@
-"""The task system's measurements, written to Orchestra's metrics store, named for what they
-measure (Orchestra's discovery decides what is a stock and what is a flow):
+"""The task system's measurements, served in the Prometheus text format and read by an instrument
+(rule 7: the metrics store is filled by instruments; the scheduler writes none itself). Named for
+what they measure (Orchestra's discovery decides what is a stock and what is a flow):
 
-- ``tasks_tickets{state}``: tickets in each state, every state written at every change, and
-  written again, unchanged, every discovery step while the scheduler runs (``level_points``);
-- ``tasks_tickets_created_total{machine, by}``: tickets created;
-- ``tasks_ticket_transitions_total{from, to, machine, by}``: state changes;
+- ``tasks_tickets{state}``: tickets in each state, every state;
+- ``tasks_tickets_created_total{by}``: tickets created;
+- ``tasks_ticket_transitions_total{from, to, by}``: state changes;
 - ``tasks_worktrees{state}``: with reused worktrees (tasking/pool.py), the pool's worktrees
   ``in_use`` and ``free``, and the turns ``waiting`` for one because the pool is full.
 
-On the counters ``machine`` is the writer, the machine whose record this is (the scheduler's,
-``task_scheduler``: Orchestra's discovery balances a level with its own machine's counters
-first), and ``by`` is the actor, the machine whose report or request the writer applied: the
-``worker`` that reported READY_FOR_REVIEW, the ``reviewer`` whose verdict approved it, the
-planner machine that asked for the ticket or cancelled it, or ``task_scheduler`` itself for its
-own moves (a lease run out, a rejection for no verdict). Discovery puts a label's differing
-values into a flow's name, so a flow reads "ticket transitions (IN_PROGRESS, READY_FOR_REVIEW,
-worker)" and the machine that did the work is on the flow.
+``by`` is the machine whose act or responsibility moved the ticket: the ``worker`` that asked for
+a review or whose turn ran out, the ``reviewer`` whose verdict it was, the ``merge_gate`` that
+landed it, the planner machine that asked for it or cancelled it. Never ``task_scheduler``: the
+scheduler is no machine, only the daemon that stands in for each machine's own scheduler
+(tasking/events.py). Discovery puts a label's differing values into a flow's name, so a flow reads
+"ticket transitions (IN_PROGRESS, READY_FOR_REVIEW, worker)".
 
-A level and the counters that move it are taken from the same change, at the same instant, so
-they balance exactly (a level sampled now and then would be off by whatever moved in between).
-Between changes the levels are re-asserted without the counters, so a reader can tell a quiet
-system from one whose writer is gone: a level that is not written for a while looks like a
-machine that stopped. Counters are cumulative across processes and restarts: their values are
-kept with the tickets (or the runtime record) under the store's lock. A metrics store that
-cannot be reached loses the points, never a ticket change."""
+Where they come from: the counters are cumulative across processes and restarts, kept with the
+tickets in the record (``metric_counts``) under the store's lock and moved in the same write as
+the change they count, so a level and the counters read from one record balance exactly. The
+plugin declares the instrument (``Plugin.collectors``, tasking/web.py): ``orchestra run`` runs
+``tasking metrics`` every discovery step, which prints them from the record, and labels every
+point ``instrument=tasks.tickets``. The same text is served at the plugin's ``/metrics``
+(``/api/plugins/tasks/metrics``) for anyone to read.
+
+Until 2026-10-27 the scheduler wrote these points itself, with ``machine="task_scheduler"`` on
+every series. That label is gone (the scheduler is no machine), and ``instrument`` is new; the
+series' names are kept, so a store's history splits at the upgrade by label, not by name. Counters
+kept before then carry ``machine`` in their key and are summed without it."""
 
 from __future__ import annotations
 
-import sys
-import time
-from typing import TYPE_CHECKING
-
-from orchestra.events import machine_and_instance
-from orchestra.metrics import Point
-from orchestra.metrics import for_project as metrics_for
-
 from .model import State
 
-if TYPE_CHECKING:
-    from .config import Project
+CREATED, TRANSITIONS = "tasks_tickets_created_total", "tasks_ticket_transitions_total"
+LEVELS, WORKTREES = "tasks_tickets", "tasks_worktrees"
+HELP = {LEVELS: ("gauge", "tickets in each state"),
+        CREATED: ("counter", "tickets created, by the machine that asked for them"),
+        TRANSITIONS: ("counter", "ticket state changes, by the machine whose act or responsibility moved the ticket"),
+        WORKTREES: ("gauge", "the worktree pool: worktrees in use and free, and turns waiting for one")}
+_KEYS = {"created": CREATED, "transition": TRANSITIONS}
 
 
-class Measures:
-    def __init__(self, project: Project):
-        self.project = project
-        self._store = None
+def count(counts: dict, kind: str, labels: dict) -> None:
+    """Add one to a cumulative counter kept in ``counts`` (a dict saved with the tickets, under the
+    store's lock). ``kind``: created | transition."""
+    key = kind + "|" + "|".join(f"{k}={v}" for k, v in sorted(labels.items()))
+    counts[key] = counts.get(key, 0) + 1
 
-    def _metrics(self):
-        if self._store is None:
-            self._store = metrics_for(self.project.orchestra)
-        return self._store
 
-    def write(self, points: list[Point]) -> None:
-        if not points:
-            return
-        try:
-            self._metrics().write(points)
-        except Exception as e:  # noqa: BLE001 - measuring never breaks the work
-            print(f"tasking: metrics not written ({type(e).__name__}: {e})", file=sys.stderr)
+def counters(counts: dict) -> dict[tuple[str, tuple], int]:
+    """The kept counters by (series name, labels), a ``machine`` kept before 2026-10-27 left out
+    and its counts summed."""
+    out: dict[tuple[str, tuple], int] = {}
+    for key, n in counts.items():
+        kind, *parts = key.split("|")
+        if kind not in _KEYS:
+            continue
+        labels = tuple(sorted((k, v) for k, _, v in (p.partition("=") for p in parts) if k != "machine"))
+        out[(_KEYS[kind], labels)] = out.get((_KEYS[kind], labels), 0) + int(n)
+    return out
 
-    def _labels(self, **labels: str) -> dict[str, str]:
-        return {"project": self.project.key, **labels}
 
-    @staticmethod
-    def count(counts: dict, name: str, labels: dict) -> int:
-        """Add one to a cumulative counter kept in ``counts`` (a dict saved under the store's lock)."""
-        key = name + "|" + "|".join(f"{k}={v}" for k, v in sorted(labels.items()))
-        counts[key] = counts.get(key, 0) + 1
-        return counts[key]
+def levels(tickets: dict) -> dict[str, int]:
+    """Every state's count, as the tickets (id -> record) stand."""
+    by_state = {s.value: 0 for s in State}
+    for d in tickets.values():
+        by_state[d["state"]] = by_state.get(d["state"], 0) + 1
+    return by_state
 
-    def ticket_points(self, tickets: dict, counts: dict, *, source: str | None, by: str | None = None, created: bool = False,
-                      src: str | None = None, dst: str | None = None) -> list[Point]:
-        """The points for one ticket change, from the ticket data as it now stands (``tickets``:
-        id -> record); ``source`` is the writer's, ``by`` the actor's machine (the writer's own
-        when None). ``counts`` is updated in place and must be saved with the tickets."""
-        t = time.time()
-        machine = machine_and_instance(source)[0] or "unknown"
-        by = by or machine
-        out = []
-        if created:
-            labels = {"machine": machine, "by": by}
-            out.append(Point("tasks_tickets_created_total", float(self.count(counts, "created", labels)), t, self._labels(**labels)))
-        if src and dst:
-            labels = {"from": src, "to": dst, "machine": machine, "by": by}
-            out.append(Point("tasks_ticket_transitions_total", float(self.count(counts, "transition", labels)), t, self._labels(**labels)))
-        return out + self.level_points(tickets, t)
 
-    def pool_points(self, in_use: int, free: int, waiting: int) -> list[Point]:
-        t = time.time()
-        return [Point("tasks_worktrees", float(n), t, self._labels(state=s, machine="task_scheduler"))
-                for s, n in (("in_use", in_use), ("free", free), ("waiting", waiting))]
+def _line(name: str, labels: tuple | dict, value: float) -> str:
+    items = labels.items() if isinstance(labels, dict) else labels
+    inner = ",".join(f'{k}="{_escape(str(v))}"' for k, v in items)
+    return f"{name}{{{inner}}} {value:g}" if inner else f"{name} {value:g}"
 
-    def level_points(self, tickets: dict, t: float | None = None) -> list[Point]:
-        """The levels as the tickets stand (``tickets``: id -> record): every state's count, no
-        counter touched."""
-        t = time.time() if t is None else t
-        by_state = {s.value: 0 for s in State}
-        for d in tickets.values():
-            by_state[d["state"]] = by_state.get(d["state"], 0) + 1
-        return [Point("tasks_tickets", float(n), t, self._labels(state=s, machine="task_scheduler")) for s, n in by_state.items()]
+
+def _escape(v: str) -> str:
+    return v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def exposition(tickets: dict, counts: dict, pool: tuple[int, int, int] | None = None) -> str:
+    """The measurements as Prometheus text: the levels, the counters, and, when the pool is used
+    (``pool``: in use, free, waiting), the worktrees."""
+    lines: list[str] = []
+    series: dict[str, list[str]] = {LEVELS: [_line(LEVELS, {"state": s}, n) for s, n in levels(tickets).items()]}
+    for (name, labels), n in sorted(counters(counts).items()):
+        series.setdefault(name, []).append(_line(name, labels, n))
+    if pool is not None:
+        series[WORKTREES] = [_line(WORKTREES, {"state": s}, n) for s, n in zip(("in_use", "free", "waiting"), pool, strict=True)]
+    for name, rows in series.items():
+        kind, text = HELP[name]
+        lines += [f"# HELP {name} {text}", f"# TYPE {name} {kind}", *rows]
+    return "\n".join(lines) + "\n"

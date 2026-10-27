@@ -2,7 +2,10 @@
 the task system reads of it (SPEC.md section 3; the owner's decision D17).
 
 The task system does not start the machines that do the work, and it does not relay between
-them. It offers waiting work to a role; a worker that has finished asks the reviewers directly; a
+them. Its scheduler is no machine: it stands in for each role's own queue, so what it publishes
+here goes out as that role's machine (``worker``, ``reviewer``), never as ``task_scheduler``
+(tasking/events.py), and nothing reads an offer's or a release's source: a claim is decided by
+the bus's order (``holder``). It offers waiting work to a role; a worker that has finished asks the reviewers directly; a
 reviewer that rejects asks the worker that did the work directly; a reviewer that approves tells
 the gate. The task system reads all of it, records it, and takes back what a silent machine
 holds. The ticket is every event's subject; ``assignment`` is the id of one turn of work.
@@ -15,7 +18,7 @@ instance) when only that instance may take it.
 
 | Event | From | For | Also |
 |---|---|---|---|
-| ``task.assigned`` | task_scheduler | its role; or ``to``: rejected work returned to the worker that did it | |
+| ``task.assigned`` | the role's queue, published as the role's machine (``worker``, ``reviewer``) | its role; or ``to``: rejected work returned to the worker that did it | |
 | ``review.requested`` | the worker instance holding the work | the reviewer role | ends ✓ (the worker's assignment, which this ends), review.commit ✓ (code: the branch head, beyond the base), review.summary ✓, review.test_output ✓ (the worker's run of unit_command) |
 | ``changes.requested`` | the reviewer instance holding the review | to ✓: the worker instance that did the work | ends ✓, feedback ✓, summary ✓, commit ✓ (the commit reviewed; another than the recorded one is no verdict); brief.feedback and brief.rejected_by set |
 
@@ -27,7 +30,7 @@ instance) when only that instance may take it.
 | ``task.working`` | the holder | assignment ✓, ticket, role, text ✓ if sent: what it is doing now, in a line. At least every HEARTBEAT_S |
 | ``review.approved`` | the reviewer holding the review | ends ✓, ticket, role, summary ✓, commit ✓. For the gate (merge_gate) in code mode; done in tasks mode |
 | ``task.reported`` | the holder | assignment ✓, report ✓ (a worker's: state BLOCKED with blocked_reason, summary; null when the turn ended without one), failed ✓ (true: it went away or ran out its lease), text ✓ (its last words), commit, ticket, role. Work that passes to no machine: READY_FOR_REVIEW or a verdict here is unusable |
-| ``task.released`` | task_scheduler | assignment, ticket, role, reason; instance, when addressed to one. An offer nobody claimed within its lease (or an addressed one within the return timeout), a holder silent for the lease, the operator, a restart or shutdown, or a claim the task system cannot record (not held, the ticket moved on, an instance that is not the source). The machine stops |
+| ``task.released`` | the role's queue, as ``worker`` or ``reviewer`` | assignment, ticket, role, reason; instance, when addressed to one. An offer nobody claimed within its lease (or an addressed one within the return timeout), a holder silent for the lease, the operator, a restart or shutdown, or a claim the task system cannot record (not held, the ticket moved on, an instance that is not the source). The machine stops |
 
 Every event a machine publishes in a turn names the offer that opened it as its CloudEvents
 ``causationid``; an offer that ends a turn names the offer of the turn it ends.
