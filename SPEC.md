@@ -78,14 +78,15 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | `APPROVED` | `DONE` | tasks mode: nothing to merge |
 | `APPROVED` | `MERGING` | code mode: the gate takes it |
 | `MERGING` | `DONE` | the gate landed it |
-| `MERGING` | `REJECTED` | the gate's tests failed, or the branch conflicts (`rejected_by = merge_gate`) |
+| `MERGING` | `REJECTED` | the gate's tests failed (`review_rounds` + 1), or the branch conflicts (not a review round); `rejected_by = merge_gate` |
 | `MERGING` | `APPROVED` | the base branch itself is broken, or the gate hit an error: nothing attributed, the pipeline pauses |
 | `BLOCKED` | `OPEN` | a planner unblocks it |
 | any waiting state | `CANCELLED` | a planner cancels it (an active ticket must settle first) |
 
 An offer nobody accepts is only a released assignment: no transition, nothing counted. When
-`review_rounds` reaches `review_rounds_before_escalation` (and every multiple of it), the
-coordinator role is asked to decide; nothing fails automatically. On start and on shutdown the
+`review_rounds` reaches `review_rounds_before_escalation` (and every multiple of it), whether a
+reviewer, the task system or the gate sent it back (`reports.send_back`, the one place a
+rejection is counted), the coordinator role is asked to decide; nothing fails automatically. On start and on shutdown the
 scheduler tells whoever holds work to stop (`task.released`), drops every assignment and moves
 every active ticket to the waiting state before it, with a note: no zombies.
 

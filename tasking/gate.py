@@ -23,6 +23,7 @@ from .config import Project, TestSpec
 from .events import COORDINATOR, SUPERVISOR, Events
 from .git import Git, GitError
 from .model import Note, State, now
+from .reports import send_back
 from .staging import Staging, build_python
 from .store import LocalStore
 
@@ -172,10 +173,9 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
         store.add_note(ticket_id, Note(author="merge_gate", kind="gate", text=reason[-4000:]))
         # a merge conflict is routine: the branch simply needs the base merged in. It goes straight
         # back to the ticket's worker and does not count as a review round, so it never triggers
-        # the repeated-rejection escalation
-        rounds = t.review_rounds if conflict else t.review_rounds + 1
-        store.transition(ticket_id, t.version, State.REJECTED, rejected_by="merge_gate", feedback=reason[-8000:],
-                         review_rounds=rounds, gate_rejections=t.gate_rejections + 1)
+        # the repeated-rejection escalation; a failed stage counts, and escalates like a reviewer's
+        send_back(store, events, cfg.review_rounds_before_escalation, t, "merge_gate", reason[-8000:], counted=not conflict,
+                  gate_rejections=t.gate_rejections + 1)
         run["conflict"] = conflict
 
     def error(what: str) -> dict:

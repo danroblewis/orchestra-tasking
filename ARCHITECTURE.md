@@ -436,7 +436,9 @@ resets the count.
 | no verdict (quiet, unusable, or `commit` differs from `reviewed_commit`) | crash note; `READY_FOR_REVIEW` to be reviewed again. The fourth in a row is `REJECTED` by `task_scheduler` (`NO_VERDICT_BUDGET` = 3) |
 
 On a counted rejection, when `review_rounds` is a multiple of
-`review_rounds_before_escalation` (default 3), the `coordinator` role gets attention. Nothing
+`review_rounds_before_escalation` (default 3), the `coordinator` role gets attention. Every
+rejection, the gate's included, goes through `reports.send_back`, which counts the round and
+escalates, so the two paths cannot drift. Nothing
 fails automatically.
 
 **Not counted at all:** an operator stop, a restart, a shutdown (`back_to_waiting`), and an
@@ -495,7 +497,7 @@ these unless a planner machine listens.
 |---|---|---|
 | a worker reports `BLOCKED` | `coordinator` | `Reports._worker` |
 | the task system blocks a ticket (crashes, no report, no commits) | `coordinator` | `Reports._block` |
-| `review_rounds` reaches a multiple of the threshold on a counted rejection | `coordinator` | `Reports.reject` |
+| `review_rounds` reaches a multiple of the threshold on a counted rejection (reviewer, task system or gate) | `coordinator` | `reports.send_back` (from `Reports.reject` and `run_gate.reject`) |
 | a landing changed `orchestra.toml` but the repository root did not follow | `coordinator` | `run_gate` |
 | the base branch fails the gate; the pipeline pauses | `supervisor` | `run_gate` |
 | the gate hit an error; the pipeline pauses | `supervisor` | `run_gate.error` |
@@ -584,7 +586,8 @@ Details:
 - **A conflict** goes back to the worker with git's output as feedback. It does not count as a
   review round, so it never triggers escalation. `gate_rejections` + 1.
 - **A failed stage** checks the base alone in a second worktree. If the base passes, the ticket
-  is `REJECTED` with the failing output; this counts as a review round and `gate_rejections` + 1.
+  is `REJECTED` with the failing output; this counts as a review round (and escalates at the
+  threshold, like a reviewer's rejection) and `gate_rejections` + 1.
   If the base fails too, the ticket goes back to `APPROVED`, the pipeline pauses, and the
   supervisor is told. Nothing is blamed on the ticket.
 - **Landing** (`Git.land`). The base ref must not have moved since the run started. If the
@@ -839,10 +842,6 @@ section 7.
 
 Behaviour of the code at `7495e9a` that is easy to miss:
 
-- **Gate rejections count as review rounds but never escalate.** A failed gate stage adds one to
-  `review_rounds` in `run_gate.reject`, which does not check the escalation threshold. Only
-  `Reports.reject` does. A gate rejection that lands `review_rounds` on a multiple of the
-  threshold sends no attention.
 - **Report transitions are labelled with the role, acceptances with the machine.** In the
   metrics, `by` is the holder's machine name on `OPEN → IN_PROGRESS`, but the literal `worker`
   or `reviewer` on the report's transition. They coincide only when the machine is named after

@@ -38,6 +38,22 @@ def unusable(role: str, report: dict | None) -> str | None:
     return "the report had no verdict" if verdict is None else f"the report's verdict {verdict!r} is not APPROVED or REJECTED"
 
 
+def send_back(store: LocalStore, events: Events, threshold: int, t: Ticket, rejected_by: str, feedback: str,
+              counted: bool = True, by: str | None = None, **fields) -> int:
+    """The one way a ticket is rejected back to its worker, by a reviewer, the task system or the
+    merge gate: the round is counted (unless ``counted`` is False: nothing was reviewed, or a
+    merge conflict), and the planner (the coordinator role) is told when the round count reaches
+    the threshold and at every further multiple of it, not on every rejection: it should decide
+    once, not be told 38 times. ``by`` is the machine named in the metrics (the writer's own when
+    None). Returns the ticket's review rounds."""
+    rounds = t.review_rounds + (1 if counted else 0)
+    store.transition(t.id, t.version, State.REJECTED, by=by, rejected_by=rejected_by, feedback=feedback,
+                     review_rounds=rounds, **fields)
+    if counted and threshold and rounds % threshold == 0:
+        events.attention(COORDINATOR, f"{t.id} has been rejected {rounds} times", ticket=t.id)
+    return rounds
+
+
 class Reports:
     def __init__(self, project: Project, store: LocalStore, events: Events, git: Git, log: Callable[[str], None]):
         self.project, self.store, self.events, self.git, self.log = project, store, events, git, log
@@ -170,12 +186,6 @@ class Reports:
         when reviews keep ending without a verdict or the work cannot be reviewed. A send-back
         where nothing was reviewed (``counted`` False) is not a review round."""
         t = self.store.get_ticket(tid)
-        rounds = t.review_rounds + (1 if counted else 0)
-        self.store.transition(tid, t.version, State.REJECTED, by=by, rejected_by=by, feedback=feedback, review_rounds=rounds,
-                              reviewer_rejections=t.reviewer_rejections + (1 if by == "reviewer" else 0))
+        rounds = send_back(self.store, self.events, self.cfg.review_rounds_before_escalation, t, by, feedback, counted, by=by,
+                           reviewer_rejections=t.reviewer_rejections + (1 if by == "reviewer" else 0))
         self.log(f"{tid}: REJECTED by {by} (round {rounds})")
-        # the planner is told when the threshold is crossed, and at every further multiple of it,
-        # not on every rejection: it should decide once, not be told 38 times
-        th = self.cfg.review_rounds_before_escalation
-        if counted and th and rounds % th == 0:
-            self.events.attention(COORDINATOR, f"{tid} has been rejected {rounds} times", ticket=tid)

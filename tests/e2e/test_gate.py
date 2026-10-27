@@ -91,6 +91,20 @@ def test_failing_tests_reject_the_ticket(env):
     assert "gate.rejected" in event_types(events)
 
 
+def test_a_gate_rejection_reaching_the_threshold_tells_the_coordinator(env):
+    """A failed stage is a review round like a reviewer's rejection, and escalates the same way:
+    the coordinator is told when the rounds reach review_rounds_before_escalation (3)."""
+    project, store, events, ms, repo = env
+    t = merging_ticket(store, ms, repo, "breaks tests again", lambda wt: (wt / "BROKEN").write_text("x"))
+    t = store.transition(t.id, t.version, State.APPROVED)          # two rounds already behind it
+    t = store.transition(t.id, t.version, State.MERGING, review_rounds=2)
+    assert asked(events, "coordinator") == []
+    assert run_gate(project, store, events, t.id)["status"] == "rejected"
+    assert store.get_ticket(t.id).review_rounds == 3
+    told = asked(events, "coordinator")
+    assert len(told) == 1 and told[0]["ticket"] == t.id and "rejected 3 times" in told[0]["reason"]
+
+
 def test_broken_base_pauses_pipeline_and_keeps_ticket_approved(env):
     project, store, events, ms, repo = env
     (repo / "BROKEN").write_text("x")
