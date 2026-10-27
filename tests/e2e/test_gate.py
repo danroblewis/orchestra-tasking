@@ -274,3 +274,43 @@ def test_an_orchestra_toml_conflict_that_is_not_two_appended_tables_goes_back_to
     assert run_gate(project, store, events, a2.id)["status"] == "landed"
     c = merging_ticket(store, ms, repo, "C", both("c"), base=base2)
     assert run_gate(project, store, events, c.id)["status"] == "conflict"
+
+
+def _insert_before(anchor: str, text: str):
+    return lambda wt: (wt / "orchestra.toml").write_text((wt / "orchestra.toml").read_text().replace(anchor, text + anchor, 1))
+
+
+def test_two_tickets_that_each_insert_a_collector_before_the_same_table_both_land(env):
+    """Both add a [[collect]] entry at the same place mid-file: git takes the [[collect]] header
+    they share as context and the conflict starts at the keys (the live demo, DEMO-8). Each side
+    is still a whole entry under that header, so both are kept, each with its own header."""
+    import tomllib
+    project, store, events, ms, repo = env
+    tail = '[[collect]]\nname = "tail"\ncommand = "machines/tail.sh"\n'
+    first = merging_ticket(store, ms, repo, "tail", _append("\n" + tail))
+    assert run_gate(project, store, events, first.id)["status"] == "landed"
+    base = git("rev-parse", "main", cwd=repo).strip()
+    a = merging_ticket(store, ms, repo, "load", _insert_before(tail, '[[collect]]\nname = "load"\ncommand = "machines/load.py"\nevery = "30s"\n\n'))
+    assert run_gate(project, store, events, a.id)["status"] == "landed"
+    b = merging_ticket(store, ms, repo, "disk",
+                       _insert_before(tail, '[[collect]]\nname = "disk"\ncommand = "machines/disk.py"\n\n[[collect]]\nname = "commits"\ncommand = "machines/commits.py"\n\n'),
+                       base=base)
+    run = run_gate(project, store, events, b.id)
+    assert run["status"] == "landed" and run["conflict"] is False, run
+    toml = tomllib.loads(git("show", "main:orchestra.toml", cwd=repo))
+    assert sorted(c["name"] for c in toml["collect"]) == ["commits", "disk", "load", "tail"]
+    assert {c["name"]: c.get("every") for c in toml["collect"]}["load"] == "30s"
+
+
+def test_keys_added_under_a_shared_plain_table_header_stay_a_conflict(env):
+    """Only an array-of-tables header ([[...]]) may be given to each side: two sides adding keys
+    under one [section] would put both into one table."""
+    project, store, events, ms, repo = env
+    sect = '[section]\nkeep = 1\n'
+    first = merging_ticket(store, ms, repo, "sect", _append("\n" + sect))
+    assert run_gate(project, store, events, first.id)["status"] == "landed"
+    base = git("rev-parse", "main", cwd=repo).strip()
+    a = merging_ticket(store, ms, repo, "A", _insert_before("keep = 1\n", "alpha = 1\n"))
+    assert run_gate(project, store, events, a.id)["status"] == "landed"
+    b = merging_ticket(store, ms, repo, "B", _insert_before("keep = 1\n", "beta = 2\n"), base=base)
+    assert run_gate(project, store, events, b.id)["status"] == "conflict"

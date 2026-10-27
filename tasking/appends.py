@@ -6,7 +6,9 @@ keeping both, the base branch's first, is what both tickets meant.
 Only that case, and nothing that merely looks like it: the conflicted files are exactly
 ``orchestra.toml``; in every conflicted region the common ancestor has nothing (both sides only
 added lines there); each side's addition is whole tables (its first line that is not blank or a
-comment is a table header, so no key lands in the other side's table); and the result parses as
+comment is a table header, so no key lands in the other side's table), or both sides began with
+the same array-of-tables header (``[[collect]]``) just above the region, which git took as
+context, in which case each side gets its own copy of that header; and the result parses as
 TOML. Anything else stays a conflict, sent back to the ticket's worker as before. The gate's
 stages then run on the merged result, as on any merge."""
 
@@ -23,6 +25,27 @@ CONFIG = "orchestra.toml"
 def _whole_tables(lines: list[str]) -> bool:
     first = next((ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")), None)
     return first is None or first.startswith("[")
+
+
+def _ended(lines: list[str]) -> list[str]:
+    """``lines`` with a newline at the end of the last one."""
+    return [*lines[:-1], lines[-1] + "\n"] if lines and not lines[-1].endswith("\n") else lines
+
+
+def _spaced(lines: list[str]) -> list[str]:
+    """``lines``, ending with a newline and then a blank line, so a table header can follow."""
+    lines = _ended(lines)
+    return lines if not lines or not lines[-1].strip() else [*lines, "\n"]
+
+
+def _last_text(lines: list[str]) -> str | None:
+    return next((ln.strip() for ln in reversed(lines) if ln.strip()), None)
+
+
+def _drop_last_text(lines: list[str]) -> list[str]:
+    """``lines`` without their last line that is not blank, nor the blank lines after it."""
+    i = max(i for i, ln in enumerate(lines) if ln.strip())
+    return lines[:i]
 
 
 def union_of_appends(merged: str) -> str | None:
@@ -44,12 +67,25 @@ def union_of_appends(merged: str) -> str | None:
                 return None                          # no ancestor part: not diff3 output, cannot tell
             part = "theirs"
         elif part == "theirs" and mark == ">>>>>>>":
-            if any(ln.strip() for ln in sides["base"]) or not (_whole_tables(sides["ours"]) and _whole_tables(sides["theirs"])):
+            if any(ln.strip() for ln in sides["base"]):
                 return None
-            ours = sides["ours"]
-            if ours and not ours[-1].endswith("\n"):
-                ours = [*ours[:-1], ours[-1] + "\n"]
-            out += ours + sides["theirs"]
+            ours, theirs = _ended(sides["ours"]), sides["theirs"]
+            if _whole_tables(ours) and _whole_tables(theirs):
+                out += ours + theirs
+            else:
+                # both sides began their entries with the [[...]] header just above, and git took
+                # that header as context: each side's first entry is keys under it
+                header = out[-1] if out and out[-1].strip().startswith("[[") else None
+                if header is None:
+                    return None
+                tail = [_last_text(s) == header.strip() for s in (ours, theirs)]
+                if all(tail):                    # each side also ends with the header the context after it lacks
+                    ours, theirs = _ended(_drop_last_text(ours)), _drop_last_text(theirs)
+                    out += _spaced(ours) + [header] + _ended(theirs) + [header]
+                elif not any(tail):              # the context after the region brings its own header
+                    out += _spaced(ours) + [header] + theirs
+                else:
+                    return None
             part = None
         elif part is not None:
             sides[part].append(line)
