@@ -149,14 +149,15 @@ is `ticket.created`; `ticket.requested` is a candidate name at the next contract
 
 **Observations.** The task system also publishes what happened, for Orchestra and anyone
 listening, in families named up to the first dot (Orchestra's event map groups them so):
-`ticket.created`, `ticket.updated`, `ticket.transitioned` {from, to, owner}, `ticket.note_added`,
+`ticket.created`, `ticket.updated`, `ticket.transitioned` {from, to, owner, assignment}, `ticket.note_added`,
 `milestone.created`/`updated`/`closed`, `capacity.changed`, `pickup.paused`/`resumed`,
 `kill.requested`, `pipeline.paused`/`resumed`, `probe.failed`/`recovered`,
 `gate.started`/`conflict`/`landed`/`base_broken`/`rejected`/`error`,
 `staging.deployed`/`failed`/`restarted`, `scheduler.stopped` (Orchestra has no
 `machine.stopped`; that the scheduler stopped is a fact nothing else says). Orchestra never reads
 their data. These families and the fields named here are part of what listeners may rely on,
-like the assignment table and the request names: `ticket.transitioned` {ticket, from, to, owner},
+like the assignment table and the request names: `ticket.transitioned` {ticket, from, to, owner,
+and `assignment` when an acceptance made it},
 `ticket.created` {ticket}, `gate.base_broken` {gate_run}, `probe.failed`/`probe.recovered`
 {probe}, `scheduler.stopped`; rename them deliberately and say so in the commit.
 
@@ -294,9 +295,11 @@ event types of section 3. The demo's `demo/machines/shell_worker.py` and
    with `listens_for` naming `task.assigned`). To accept, publish `task.accepted` {assignment, ticket, role} with
    `subject=ticket`: the holder is the event's source; `instance`, if sent, must equal it (an
    acceptance whose instance is not its source is refused, and the offer stays open). If
-   another instance was first you get `task.released` naming your instance: stop. If you won,
-   `ticket.transitioned` for the ticket names your instance as its `owner` (to `IN_PROGRESS` or
-   `IN_REVIEW`). A machine whose work costs something (a model's tokens, a build) waits for one
+   another instance was first, or the assignment is no longer held, you get `task.released`
+   naming your instance: stop. If you won, `ticket.transitioned` for the ticket names your
+   instance as its `owner` and your `assignment` (to `IN_PROGRESS` or `IN_REVIEW`); match on the
+   assignment, not only the ticket and owner, since an instance that accepted two offers for one
+   ticket sees a transition for each. A machine whose work costs something (a model's tokens, a build) waits for one
    of the two before it starts, so losing the race costs nothing.
 5. **Work, and say so**: do the task in the workspace; publish `task.working` {assignment}
    well within the offer's `lease_s` (`HEARTBEAT_S`, 30 s; the demo's worker says it every sixth
