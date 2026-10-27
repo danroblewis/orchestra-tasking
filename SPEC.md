@@ -294,7 +294,8 @@ event types of section 3. The demo's `demo/machines/shell_worker.py` and
    is offered again after a pause, or at once when your machine announces (`orchestra.machine.started`
    with `listens_for` naming `task.assigned`). To accept, publish `task.accepted` {assignment, ticket, role} with
    `subject=ticket`: the holder is the event's source; `instance`, if sent, must equal it (an
-   acceptance whose instance is not its source is refused, and the offer stays open). If
+   acceptance whose instance is not its source is refused by `task.released` naming the source, and
+   the offer stays open). If
    another instance was first, or the assignment is no longer held, you get `task.released`
    naming your instance: stop. If you won, `ticket.transitioned` for the ticket names your
    instance as its `owner` and your `assignment` (to `IN_PROGRESS` or `IN_REVIEW`); match on the

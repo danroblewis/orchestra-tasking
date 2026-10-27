@@ -441,7 +441,9 @@ class Scheduler:
         meanwhile) is released to the instance and the offer dropped. True while the offer stands."""
         holder, claimed = ev["source"], ev.get("instance")
         if claimed is not None and claimed != holder:
-            self._release(a, f"instance must be the event's source ({holder})", instance=claimed)
+            # told under the source, the machine that sent it: one that filters releases by its own name hears it
+            self._release(a, f"the acceptance claimed instance {claimed}, but an instance must be the event's source ({holder})",
+                          instance=holder)
             return True
         t = self.store.get_ticket(a["ticket"])
         fields = ({"worker_turns": t.worker_turns + 1, **({"branch": a["branch"]} if a.get("branch") else {})}

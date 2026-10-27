@@ -118,7 +118,7 @@ def test_an_offer_nobody_accepts_is_offered_again_and_counted_against_no_one(env
 
 def test_an_acceptance_names_its_source_as_the_instance(env):
     """``instance`` in task.accepted is the machine's own source; one that says otherwise is
-    refused and the offer stays open for whoever answers correctly."""
+    refused (to its source) and the offer stays open for whoever answers correctly."""
     project, store, events, _repo = env
     t = a_ticket(store)
     sched = Scheduler(project, store, events)
@@ -129,8 +129,8 @@ def test_an_acceptance_names_its_source_as_the_instance(env):
         wait_for(lambda: on_bus(events, ACCEPTED, assignment=aid, instance="w1"))
         sched.tick()
         told = on_bus(events, RELEASED, assignment=aid)
-        assert len(told) == 1 and told[0]["data"]["instance"] == "w1"
-        assert told[0]["data"]["reason"] == "instance must be the event's source (worker/1)"
+        assert len(told) == 1 and told[0]["data"]["instance"] == "worker/1"      # told under its source, the name it listens by
+        assert told[0]["data"]["reason"] == "the acceptance claimed instance w1, but an instance must be the event's source (worker/1)"
         assert store.assignments()[aid]["instance"] is None and store.get_ticket(t.id).state == State.OPEN   # the offer stands
         with FakeMachine(events, roles=("worker",), instance="2", heartbeat=0.05) as two:     # answers correctly
             wait_for(lambda: on_bus(events, ACCEPTED, assignment=aid, instance="worker/2"))

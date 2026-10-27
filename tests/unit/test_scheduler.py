@@ -166,3 +166,24 @@ def test_an_acceptance_names_its_assignment_and_a_late_one_is_told_released(proj
     late = on_bus(events, "task.released", assignment=old)[before:]
     assert len(late) == 1 and late[0]["data"]["instance"] == "worker/1"
     assert store.get_ticket(t.id).state == State.OPEN               # it changed nothing
+
+
+def test_an_acceptance_claiming_another_instance_is_refused_to_its_source(project):
+    """``task.accepted`` from worker/1 claiming worker/2 is refused, and the refusal names worker/1,
+    the machine that sent it: a machine that filters releases by its own name hears it. The offer
+    stays open."""
+    events = Events.for_project(project, source="task_scheduler")
+    store = LocalStore(project, events)
+    sched = Scheduler(project, store, events)
+    sched.recover()
+    ms = store.create_milestone(name="m")
+    t = store.create_ticket(title="a task", milestone_id=ms.id, description="x", acceptance="y")
+    sched.tick()
+    aid = on_bus(events, ASSIGNED)[-1]["data"]["assignment"]
+    events.publish(ACCEPTED, {"assignment": aid, "ticket": t.id, "role": "worker", "instance": "worker/2"},
+                   source="worker/1", subject=t.id)
+    sched.tick()
+    refused = on_bus(events, "task.released", assignment=aid)
+    assert len(refused) == 1 and refused[0]["data"]["instance"] == "worker/1"
+    assert "worker/2" in refused[0]["data"]["reason"]
+    assert store.get_ticket(t.id).state == State.OPEN and store.assignments()[aid].get("instance") is None

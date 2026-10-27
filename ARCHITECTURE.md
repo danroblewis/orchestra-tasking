@@ -335,7 +335,8 @@ already the values the ticket will have once accepted.
 ### Rules the scheduler applies (`Scheduler._follow`, `_accept`)
 
 - **The holder is the event's `source`.** If `instance` is sent and differs from `source`, the
-  acceptance is refused: `task.released` naming the claimed `instance`, and the offer stays open.
+  acceptance is refused: `task.released` naming the `source` (the machine that sent it; the
+  reason mentions the claimed instance), and the offer stays open.
 - **First acceptance wins.** It moves the ticket to `IN_PROGRESS` or `IN_REVIEW` with
   `owner = source`, and the store publishes `ticket.transitioned` with `owner` and `assignment`.
   That event is the winner's confirmation.
@@ -358,7 +359,7 @@ already the values the ticket will have once accepted.
 | no word from `<instance>` for 180 s | no | crash (section 7) |
 | the operator stopped it | no | back to waiting, not counted |
 | already taken by `<holder>` | yes | none |
-| instance must be the event's source | yes (the claimed instance) | none; offer stays open |
+| the acceptance claimed instance `<claimed>`, but an instance must be the event's source | yes (the event's `source`) | none; offer stays open |
 | not held (released or already settled) | yes | none |
 | the ticket cannot be worked/reviewed now | yes | none; offer dropped |
 | the ticket is `<state>` | no | none (it moved on before anyone accepted) |
@@ -846,9 +847,6 @@ Behaviour of the code at `7495e9a` that is easy to miss:
   metrics, `by` is the holder's machine name on `OPEN → IN_PROGRESS`, but the literal `worker`
   or `reviewer` on the report's transition. They coincide only when the machine is named after
   its role, as in the demo.
-- **A refused `instance` is told under the claimed name.** When `task.accepted` says an
-  `instance` other than its `source`, the `task.released` names the claimed instance, not the
-  source. A machine that filters releases by its own source will not see it.
 - **Unaccepted offers use capacity.** A role nobody fills keeps its slots full of offers for
   the lease, then rests them.
 - **A reviewer's lease running out counts toward the no-verdict budget**, like a report
