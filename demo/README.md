@@ -17,9 +17,13 @@ removes the state a previous run left for that path (under `~/.orchestrator/<nam
 |---|---|
 | `orchestra run` | Orchestra's host: the Core strip shows it up, and it rediscovers the system dynamics model from the metrics |
 | `orchestra web --port 8071` | Orchestra's web UI, with the task system's Tickets page, Tasks panel and scheduler card (its plugin) |
-| `tasking run` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back |
+| `tasking run --wait` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back. `orchestra run` starts it (the task system's plugin declares it; `tasks.scheduler` on the Core page) |
 | `machines/shell_worker.py` | the machine `worker` (instance `worker/1`): runs the `sh` code blocks of a ticket's description in its workspace (the ticket's own empty folder; `ORCHESTRA_REPO` names the repository), writes RESULT.md |
 | `machines/check_reviewer.py` | the machine `reviewer` (`reviewer/1`): approves when RESULT.md exists and the acceptance text's `` `files` `` and `"lines"` are there |
+
+`run.py` starts only `orchestra run` and `orchestra web`; `orchestra run` starts the scheduler and
+the two machines (declared under `[[machines]]` in this folder's `orchestra.toml`) and keeps them
+running.
 
 The two machines are each a page of Python that imports only Orchestra (`orchestra.config`,
 `orchestra.events`) and speaks the contract in `tasking/assignments.py`. They are the example of
@@ -90,7 +94,8 @@ the worker again, the worker runs the same commands (the ticket changed, so it d
 the reviewer finds `today.txt`, and DEMO-4 is DONE. DEMO-3 needs commands in its description
 (`update_ticket` with a `description`) before an unblock would get anywhere.
 
-Logs: `run/host.log`, `run/web.log`, `run/scheduler.log` (the scheduler's stdout),
-`run/worker.log`, `run/reviewer.log` in the target; and
+Logs: `run/host.log` and `run/web.log` in the target; what `orchestra run` starts writes to
+`~/.orchestrator/<name>-<hash>/logs/machines/` (`tasks.scheduler.log`, `worker.log`,
+`reviewer.log`; the Core page shows them); and
 `~/.orchestrator/<name>-<hash>/tasks/logs/scheduler.log`, the scheduler's own log, the one the
 Machines page opens.

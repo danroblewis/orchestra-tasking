@@ -35,7 +35,7 @@ def main(instance: str) -> None:
     me = f"{ROLE}/{instance}"
     events = Events.for_project(load_project(), source=me)
     events.publish("orchestra.machine.started", {"mode": "continuous", "kind": "program", "listens_for": [ASSIGNED],
-                                                 **({"log": os.environ["ORCHESTRA_LOG"]} if os.environ.get("ORCHESTRA_LOG") else {})})
+                                                 **({"log": os.environ["ORCHESTRA_MACHINE_LOG"]} if os.environ.get("ORCHESTRA_MACHINE_LOG") else {})})
     print(f"{me}: waiting for {ROLE} assignments", flush=True)
     offset = events.end()
     while True:

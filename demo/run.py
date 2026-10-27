@@ -4,10 +4,12 @@
 
 It copies the template beside it (orchestra.toml, README.md, machines/) to the target, makes it
 a git repository (Orchestra wants orchestra.toml at a repository root), removes any state a
-previous run left for it, starts Orchestra's host and web UI, the task system's scheduler and the
-two machines, creates a milestone and four tickets as a planner would (requests over the bus,
-tasking/requests.py), prints the URL and stops everything on Ctrl-C. The processes' output goes
-to run/*.log in the target. The e2e tests use the same functions against a temporary directory
+previous run left for it, starts Orchestra's host (`orchestra run`, which starts the task
+system's scheduler, declared by its plugin, and the two machines, declared in the template's
+orchestra.toml) and web UI, creates a milestone and four tickets as a planner would (requests over
+the bus, tasking/requests.py), prints the URL and stops everything on Ctrl-C. The host's and the
+web UI's output goes to run/*.log in the target; what the host starts logs to
+``~/.orchestrator/<key>/logs/machines/<name>.log``. The e2e tests use the same functions against a temporary directory
 and a free port (tests/e2e/test_demo_e2e.py)."""
 
 from __future__ import annotations
@@ -61,19 +63,17 @@ def make_project(target: Path) -> Path:
 
 
 def start(target: Path, port: int, env: dict[str, str] | None = None) -> dict[str, subprocess.Popen]:
-    """Orchestra's host and web UI, the scheduler and the two machines, each with its log in run/
-    (the machines are told where theirs is, ORCHESTRA_LOG, so they can announce it)."""
-    env = {**os.environ, **(env or {}), "ORCHESTRA_REPO": str(target), "PYTHONUNBUFFERED": "1"}
+    """Orchestra's host and web UI, each with its log in run/. The host starts the rest. This
+    environment's Python comes first on the PATH, so the template's `python machines/…` commands
+    run where Orchestra is installed."""
+    path = f"{Path(PYTHON).parent}{os.pathsep}{os.environ.get('PATH', '')}"
+    env = {**os.environ, **(env or {}), "ORCHESTRA_REPO": str(target), "PYTHONUNBUFFERED": "1", "PATH": path}
     (target / "run").mkdir(exist_ok=True)
-    commands = {"host": [PYTHON, "-m", "orchestra", "run"], "web": [PYTHON, "-m", "orchestra", "web", "--port", str(port)],
-                "scheduler": [PYTHON, "-m", "tasking", "run"],
-                "worker": [PYTHON, str(target / "machines" / "shell_worker.py")],
-                "reviewer": [PYTHON, str(target / "machines" / "check_reviewer.py")]}
+    commands = {"host": [PYTHON, "-m", "orchestra", "run"], "web": [PYTHON, "-m", "orchestra", "web", "--port", str(port)]}
     procs = {}
     for name, cmd in commands.items():
-        log_path = target / "run" / f"{name}.log"
-        with log_path.open("ab") as log:
-            procs[name] = subprocess.Popen(cmd, cwd=target, env={**env, "ORCHESTRA_LOG": str(log_path)}, stdout=log, stderr=subprocess.STDOUT)
+        with (target / "run" / f"{name}.log").open("ab") as log:
+            procs[name] = subprocess.Popen(cmd, cwd=target, env=env, stdout=log, stderr=subprocess.STDOUT)
     return procs
 
 
@@ -163,7 +163,7 @@ def main() -> None:
         wait_for(url, procs)
         ids = plan(target)
         print(f"\nThe demo runs at {url}\n  project:  {target}\n  tickets:  {', '.join(ids)}  ({url}/tickets)\n"
-              f"  machines: {url}/machines\n  logs:     {target / 'run'}/*.log\nCtrl-C stops everything.", flush=True)
+              f"  machines: {url}/machines\n  logs:     {target / 'run'}/*.log and the Core page\nCtrl-C stops everything.", flush=True)
         while all(p.poll() is None for p in procs.values()):
             time.sleep(1)
         print("a process exited; see run/*.log", flush=True)

@@ -1,8 +1,10 @@
 """The demo, end to end through a real Orchestra: the template copied to a temporary directory,
-`orchestra run` and `orchestra web` on a free port, `tasking run` and the two machines as
-processes (demo/run.py's own functions), the tickets created as a planner would (requests over
-the bus), and the rest read over HTTP: the task system's API, Orchestra's /api/machines, and the
-Tickets page executed in a headless Chrome when one is at hand."""
+and `orchestra run` and `orchestra web` started on a free port (demo/run.py's own functions).
+`orchestra run` starts the rest: the task system's scheduler, which the plugin declares
+(``Plugin.processes``), and the two machines, which the template's orchestra.toml declares
+(``[[machines]]``); demo/run.py starts neither. The tickets are created as a planner would
+(requests over the bus), and the rest is read over HTTP: the task system's API, Orchestra's
+/api/machines, and the Tickets page executed in a headless Chrome when one is at hand."""
 
 import json
 import os

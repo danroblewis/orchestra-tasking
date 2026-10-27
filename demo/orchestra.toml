@@ -1,6 +1,17 @@
 # The task system's demo project: Orchestra, the task system, and two programs that fill the
 # worker and reviewer roles (machines/). demo/run.py copies this folder to a fresh git repository
-# and starts everything; see README.md.
+# and starts `orchestra run` and `orchestra web`; `orchestra run` starts the task system's
+# scheduler (the plugin declares it) and the two machines below. See README.md.
+
+# The worker accepts every offer (it is the only worker here) and blocks what it cannot do; in a
+# project with another worker, `--only-commands` leaves the tickets without commands to it.
+[[machines]]
+name = "worker"
+command = "python machines/shell_worker.py"
+
+[[machines]]
+name = "reviewer"
+command = "python machines/check_reviewer.py"
 
 [events]
 url = "file"             # Orchestra's bus: a JSONL file in ~/.orchestrator/<key>/
