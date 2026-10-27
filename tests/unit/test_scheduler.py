@@ -27,6 +27,32 @@ def test_a_second_scheduler_on_a_project_a_live_one_holds_does_not_start(project
     assert on_bus(events, "task.released") == [] and on_bus(events, "orchestra.machine.started") == []
 
 
+def test_with_wait_a_second_scheduler_takes_over_when_the_first_stops(project):
+    """How orchestra run starts it: a scheduler already running (one started by hand) keeps the
+    project; the launched one waits, offering nothing, and takes over when that one is gone."""
+    import subprocess
+    import threading
+
+    events = Events.for_project(project, source="task_scheduler")
+    store = LocalStore(project, events)
+    other = subprocess.Popen(["sleep", "60"])
+    store.set_scheduler(other.pid, time.time())
+    s = Scheduler(project, store, events)
+    th = threading.Thread(target=s.run, kwargs={"wait": True}, daemon=True)
+    th.start()
+    time.sleep(1.0)
+    assert th.is_alive() and store.scheduler()["pid"] == other.pid and on_bus(events, "orchestra.machine.started") == []
+    other.kill()
+    other.wait()
+    deadline = time.time() + 10
+    while (store.scheduler() or {}).get("pid") != os.getpid() and time.time() < deadline:
+        time.sleep(0.1)
+    assert store.scheduler()["pid"] == os.getpid()
+    s.stop.set()
+    th.join(timeout=10)
+    assert not th.is_alive()
+
+
 def test_an_error_on_one_event_does_not_lose_the_rest_of_the_batch(project, monkeypatch):
     events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
@@ -88,3 +114,27 @@ def test_a_report_for_an_assignment_a_restart_dropped_is_ignored_with_a_line_in_
     offers = [e["data"]["assignment"] for e in on_bus(events, ASSIGNED)]
     assert len(offers) == 2 and offers[0] == old["assignment"] and offers[1] in store.assignments()
     assert any("task.reported from worker/1" in ln and old["assignment"] in ln and "ignored" in ln for ln in lines)
+
+
+def test_a_rewritten_ticket_does_not_inherit_the_old_backoff(project, monkeypatch):
+    """Offers nobody took pause longer each time; a planner's rewrite of the ticket starts the
+    count (and the age of the first offer) over."""
+    from tasking import scheduler as scheduler_mod
+
+    monkeypatch.setattr(scheduler_mod, "LEASE_S", 0.0)                # nobody answers in time
+    monkeypatch.setattr(scheduler_mod, "AGAIN_FIRST_S", 0.0)          # and the pause is no wait, so each tick offers again
+    events = Events.for_project(project, source="task_scheduler")
+    store = LocalStore(project, events)
+    t = store.create_ticket(title="a task", milestone_id=store.create_milestone(name="m").id)
+    sched = Scheduler(project, store, events)
+    sched.recover()
+    for _ in range(4):                                                # each tick: the offer missed, and made again
+        sched.tick()
+    rec = store.untaken()[f"{t.id}/worker"]
+    assert rec["misses"] >= 2
+    first_since = rec["since"]
+    time.sleep(0.05)
+    store.update_ticket(t.id, description="rewritten so a machine can take it")
+    sched.tick()                                     # the offer made before the rewrite is missed, and a new one made
+    rec = store.untaken()[f"{t.id}/worker"]
+    assert rec["misses"] == 1 and rec["since"] > first_since and rec["version"] == store.get_ticket(t.id).version

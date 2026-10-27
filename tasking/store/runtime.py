@@ -1,5 +1,5 @@
 """The runtime half of the store: what the scheduler holds while it runs, in ``runtime.json``:
-assignments, worktrees, gate runs, capacity, pickup, kill requests, probes, the pipeline, the
+assignments, the offers nobody took, worktrees, gate runs, capacity, pickup, kill requests, probes, the pipeline, the
 scheduler's own record, staging and builds. The operator's changes are observations on the bus
 (``capacity.changed``, ``pickup.*``, ``kill.requested``, ``pipeline.*``)."""
 
@@ -11,7 +11,7 @@ from typing import Any
 from ..model import now
 from .files import read, write
 
-EMPTY_RUNTIME = {"assignments": {}, "worktrees": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
+EMPTY_RUNTIME = {"assignments": {}, "untaken": {}, "worktrees": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
                  "capacity": {}, "operator_capacity": {}, "pickup_paused": False, "scheduler": None, "staging": {},
                  "pipeline": {"paused": False, "reason": None}, "desk": None}
 
@@ -48,6 +48,24 @@ class Runtime:
 
     def drop_assignment(self, aid: str) -> dict | None:
         return self._mutate_runtime(lambda d: d["assignments"].pop(aid, None))
+
+    def untaken(self) -> dict[str, dict]:
+        """The offers nobody took within their lease, by ``<ticket>/<role>``: ticket, role, since
+        (the first of them), misses (how many), version (the ticket's, when last offered) and
+        again_at (when the next offer may go out)."""
+        return dict(self._r()["untaken"])
+
+    def set_untaken(self, ticket_id: str, role: str, rec: dict | None) -> None:
+        """Record an untaken offer, or (``rec`` None) forget it: it was taken, or the ticket moved on."""
+        key = f"{ticket_id}/{role}"
+        self._mutate_runtime(lambda d: d["untaken"].__setitem__(key, rec) if rec else d["untaken"].pop(key, None))
+
+    def offer_untaken_now(self) -> None:
+        """Every untaken offer may go out again at once (a machine that may take it has started)."""
+        self._mutate_runtime(lambda d: [r.__setitem__("again_at", 0.0) for r in d["untaken"].values()])
+
+    def forget_untaken(self) -> None:
+        self._mutate_runtime(lambda d: d.__setitem__("untaken", {}))
 
     def set_worktree(self, ticket_id: str, path: str, branch: str) -> None:
         self._mutate_runtime(lambda d: d["worktrees"].__setitem__(

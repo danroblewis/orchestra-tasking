@@ -3,7 +3,8 @@
 // state colour, with its id, title, worker-turns badge and state, and a lane that says which
 // machine instance holds it now, since when and what it last said it was doing (the scheduler
 // offers it: worker/1 takes it, then reviewer/1, then a worker again after a rejection), that it
-// is offered and to whom, or what it waits for. Above the cards, the queue by state and the operator's capacity and pause controls.
+// is offered and to whom, that its offers were not taken (no machine serving the role took it
+// within the lease: it goes out again after a pause), or what it waits for. Above the cards, the queue by state and the operator's capacity and pause controls.
 // A card opens the ticket.
 (function () {
   if (!window.Orchestra || !Orchestra.panels) return;
@@ -21,13 +22,18 @@
 
   Orchestra.panels.register({ id: "tasks", title: "Tasks", size: { w: 12, h: 9 }, mount(body, ui) {
     let D = null;
-    const ago = (ts) => { const s = Math.max(0, Math.round(D.now - ts)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`; };
+    const span = (secs) => { const s = Math.max(0, Math.round(secs)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`; };
+    const ago = (ts) => span(D.now - ts);
     window.TasksPanel = { ...taskControlActions(() => D, refresh), ticket: openTicket };
 
     function render() {
       if (!D) return;
       const says = (t) => {   // one line: a blocker's first paragraph, without its markdown backticks (the drawer has it whole)
-        if (t.assignment) return t.assignment.instance ? `${t.assignment.instance} · since ${ago(t.assignment.since)}${t.assignment.text ? " · " + t.assignment.text : ""}` : `offered to a ${t.assignment.role} ${ago(t.assignment.since)} ago`;
+        const a = t.assignment, u = t.untaken;
+        if (a && a.instance) return `${a.instance} · since ${ago(a.since)}${a.text ? " · " + a.text : ""}`;
+        if (u) return `offered, not taken: no ${u.role} took it in ${u.misses} offer${u.misses === 1 ? "" : "s"} since ${ago(u.since)} ago · `
+          + (a ? "offered again now" : `offered again in ${span(u.again_at - D.now)}, or when the ticket changes`);
+        if (a) return `offered to a ${a.role} ${ago(a.since)} ago`;
         return t.state === "BLOCKED" ? (t.blocked_reason || t.waiting || "").split(/\n\s*\n/)[0].replace(/`/g, "") : t.waiting || ""; };
       const q = ORDER.filter((s) => D.counts[s]).map((s) => `<span style="white-space:nowrap"><span class="pill" style="--c:${color(s)}">${esc(s.replace(/_/g, " "))}</span> <b class="num">${D.counts[s]}</b></span>`).join(" ");
       const cards = D.tickets.map((t) => `<div class="work" style="--c:${color(t.state)}" onclick="TasksPanel.ticket('${esc(t.id)}')" title="Open the ticket">

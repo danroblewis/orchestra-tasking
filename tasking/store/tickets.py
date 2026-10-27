@@ -217,6 +217,7 @@ class Tickets:
         by_id = {x.id: x for x in tickets}
         milestones = {k: Milestone.from_dict(v) for k, v in data["milestones"].items()}
         offered = {a["ticket"] for a in self.assignments().values() if a.get("role") == "worker"}   # held or offered to a worker
+        untaken = {r["ticket"]: r for r in self.untaken().values() if r["role"] == "worker"}
         cap = self.capacity()
         eff = effective_priorities(by_id, self.project.config.aging_days_per_level)
 
@@ -230,7 +231,10 @@ class Tickets:
                 d["ready"] = not waiting and ms is not None and ms.status == MilestoneStatus.OPEN
                 d["why_waiting"] = (f"waiting on {', '.join(waiting)}" if waiting
                                     else "milestone is closed" if ms is None or ms.status != MilestoneStatus.OPEN
+                                    else "offered to a worker; not taken yet" if x.id in offered and x.id in untaken
                                     else "offered to a worker" if x.id in offered
+                                    else f"offered, not taken: no worker took it in {untaken[x.id]['misses']} offer(s); "
+                                         "offered again soon, or when it changes" if x.id in untaken
                                     else "ready; worker capacity is 0" if cap["workers"] == 0
                                     else f"ready; waiting for a worker slot ({len(offered)}/{cap['workers']} in use)" if len(offered) >= cap["workers"]
                                     else "ready")

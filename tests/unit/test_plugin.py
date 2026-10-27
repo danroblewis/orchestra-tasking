@@ -1,4 +1,7 @@
-"""The task system appears in Orchestra's web app through its entry point (pyproject.toml)."""
+"""The task system appears in Orchestra's web app through its entry point (pyproject.toml), and asks
+`orchestra run` to keep its scheduler running."""
+
+import subprocess
 
 from fastapi.testclient import TestClient
 from orchestra.config import load_project as load_orchestra_project
@@ -29,3 +32,17 @@ def test_the_capacity_ceiling_follows_orchestra_toml(project):
     toml = project.repo_root / "orchestra.toml"
     toml.write_text(toml.read_text().replace("workers = 2", "workers = 5"))
     assert c.get("/api/plugins/tasks/board").json()["capacity"]["max_workers"] == 5
+
+
+def test_orchestra_run_is_asked_to_keep_the_scheduler_running_in_a_project_set_up_for_tasks(project, tmp_path):
+    import sys
+
+    from tasking.web import plugin
+
+    p = plugin(load_orchestra_project(project.repo_root))
+    assert [(x.name, x.argv(), x.restart) for x in p.processes] == [("scheduler", [sys.executable, "-m", "tasking", "run", "--wait"], "always")]
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=bare, check=True)
+    (bare / "orchestra.toml").write_text('[events]\nurl = "file"\n')
+    assert plugin(load_orchestra_project(bare)).processes == []        # not set up for tasks: no scheduler

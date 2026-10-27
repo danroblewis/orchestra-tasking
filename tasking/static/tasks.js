@@ -40,16 +40,20 @@ function turnsText(t) {
 function taskSummary(D, { finished = true } = {}) {
   const c = D.counts || {}, n = (s) => c[s] || 0;
   const offers = D.tickets.filter((t) => t.assignment && !t.assignment.instance);
+  const resting = D.tickets.filter((t) => t.untaken && !t.assignment);     // offered, not taken: the next offer waits
+  const of = (list, role) => list.filter((t) => (t.assignment || t.untaken).role === role).length;
   const k = {
     working: D.tickets.filter((t) => t.assignment && t.assignment.instance).length,
     offered: offers.length,
+    untaken: resting.length,
     blocked: n("BLOCKED"),
-    start: n("OPEN") + n("REJECTED") - offers.filter((t) => t.assignment.role === "worker").length,
-    review: n("READY_FOR_REVIEW") - offers.filter((t) => t.assignment.role === "reviewer").length,
+    start: n("OPEN") + n("REJECTED") - of(offers, "worker") - of(resting, "worker"),
+    review: n("READY_FOR_REVIEW") - of(offers, "reviewer") - of(resting, "reviewer"),
     landing: n("APPROVED") + n("MERGING"),
     done: n("DONE"), cancelled: n("CANCELLED") };
   const parts = [`${k.working} being worked`];
   if (k.offered) parts.push(`${k.offered} offered`);
+  if (k.untaken) parts.push(`${k.untaken} offered, not taken`);
   if (k.blocked) parts.push(`${k.blocked} blocked`);
   parts.push(`${k.start} waiting to start`);
   if (k.review) parts.push(`${k.review} waiting for review`);

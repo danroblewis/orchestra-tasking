@@ -107,10 +107,12 @@ lease (`LEASE_S`, 180 s without a word) runs out, when the operator stops the wo
 instance already holds it, or when it restarts or shuts down. The first instance to accept holds
 the ticket, which moves to `IN_PROGRESS` or `IN_REVIEW` with that instance as its `owner`; a
 heartbeat or report from any other source is ignored. An offer nobody accepts within the lease
-is released and offered again, and changed nothing: a role nobody fills is re-offered every
-lease, visible as `task.assigned`/`task.released` pairs on the bus and as the growing "offered
-to a worker Nm ago" on the Tasks panel (the age is the first offer's, kept by the scheduler in
-memory, so a restart starts it over). The lease and the heartbeat are fixed, and every offer
+is released, and changed nothing. It goes out again after a pause (`AGAIN_FIRST_S`, 60 s,
+doubling with each offer nobody took, up to `AGAIN_MAX_S`, 15 min), or at once when the ticket
+changes (a planner rewrote it; the count then starts over) or a machine that announces it listens
+for `task.assigned` starts. The scheduler keeps these offers in its runtime record (`untaken`: how
+many, since when, when the next goes out), shown on the Tasks panel as "offered, not taken"; a
+restart starts them over. The lease and the heartbeat are fixed, and every offer
 says its `lease_s`: a machine accepts only what it can do within them.
 
 **Requests** (`tasking/requests.py`). A planner changes tickets only by asking: `task.requested`
@@ -160,8 +162,11 @@ like the assignment table and the request names: `ticket.transitioned` {ticket, 
 
 ## 4. The scheduler (`tasking/scheduler.py`, `tasking run`)
 
-One process per project: a second `tasking run` for the same project exits, naming the pid that
-runs it. On start it recovers (above). Every tick (`[tasks] tick`, 3 s by default) it:
+`orchestra run` starts it: the plugin declares it in `Plugin.processes` (`tasking/web.py`), so
+Orchestra's launcher keeps `tasking run --wait` running as `tasks.scheduler` while the project's
+`orchestra.toml` has a `[project]` or `[tasks]` section, and restarts it when it exits. One process
+per project: a second `tasking run` for the same project exits, naming the pid that runs it; with
+`--wait` (as `orchestra run` starts it) it waits for that one to stop and then takes over. On start it recovers (above). Every tick (`[tasks] tick`, 3 s by default) it:
 
 1. reloads `orchestra.toml`, reaps finished threads, and for any ticket the operator asked to
    stop releases the assignment and sends the ticket back at once, counting it against no one;
@@ -169,9 +174,9 @@ runs it. On start it recovers (above). Every tick (`[tasks] tick`, 3 s by defaul
    active state and starts the lease, a heartbeat extends it, a report is applied to the ticket
    and then the assignment is dropped (a report that cannot be applied still frees the ticket:
    back to waiting, with a note); then every lease that ran out is released: a holder that went
-   quiet is a crash, an offer nobody took is dropped and offered again (every lease, for as
-   long as nobody fills the role: `task.assigned`/`task.released` pairs on the bus, and the
-   Tasks panel's "offered to a worker Nm ago" grows from the first offer);
+   quiet is a crash, an offer nobody took is dropped and rests before it is offered again (§3:
+   a pause that doubles, cut short when the ticket changes or a machine that listens for
+   `task.assigned` starts);
 3. **offers work**: reviews first (finished work lands before new work starts), then, unless
    pickup is paused, ready `OPEN` and `REJECTED` tickets in effective-priority order, up to the
    role's capacity. Capacity is the operator's ceiling from the Dashboard if set, otherwise
@@ -275,8 +280,9 @@ event types of section 3. The demo's `demo/machines/shell_worker.py` and
    that is the only kind on its role may accept work it cannot do and report `BLOCKED`, so a
    planner hears of it (the demo's worker does this for a ticket without commands); where
    several kinds of machine serve one role, each accepts only what it can do, and the first to
-   accept holds it. An offer nobody accepts is visible only as `task.released` on the bus and
-   is re-offered each lease. To accept, publish `task.accepted` {assignment, ticket, role} with
+   accept holds it. An offer nobody accepts is visible only as `task.released` on the bus, and
+   is offered again after a pause, or at once when your machine announces (`orchestra.machine.started`
+   with `listens_for` naming `task.assigned`). To accept, publish `task.accepted` {assignment, ticket, role} with
    `subject=ticket`: the holder is the event's source; `instance`, if sent, must equal it (an
    acceptance whose instance is not its source is refused, and the offer stays open). If
    another instance was first you get `task.released` naming your instance: stop.
@@ -434,7 +440,7 @@ These controls are the only writes a person has; tickets change only through the
 | Command | What |
 |---|---|
 | `tasking init [--prefix P] [--unit-command C]` | write the task system's sections into `orchestra.toml` and register the project with Orchestra |
-| `tasking run [--once]` | the scheduler |
+| `tasking run [--once] [--wait]` | the scheduler (`orchestra run` starts it with `--wait`; §4) |
 | `tasking status [--json]` | one screen: what needs a decision, scheduler, who holds what, queue; the gate in code mode, staging when configured |
 | `tasking ticket list\|show ID`, `tasking milestone list\|show ID` | read the store |
 | `tasking api [--as ROLE] OP [--args JSON]` | one request over the bus, answered by the running scheduler |

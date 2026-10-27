@@ -40,6 +40,9 @@ from .store import Conflict, LocalStore, StoreError
 LOG: Path | None = None               # <state>/logs/scheduler.log once a scheduler starts
 LOG_MAX = 5_000_000                   # bytes; the file is rotated to .1 past this
 OFFERED_FROM = {"worker": {State.OPEN, State.REJECTED}, "reviewer": {State.READY_FOR_REVIEW}}   # the states an offer is made from
+AGAIN_FIRST_S = 60.0                  # an offer nobody took within its lease goes out again after this pause,
+AGAIN_MAX_S = 900.0                   # doubled with each offer nobody took, up to this
+MACHINE_STARTED = "orchestra.machine.started"
 
 
 def log(msg: str) -> None:
@@ -72,13 +75,13 @@ class Scheduler:
         self.prober = Prober(project, store, events)
         self.reports = Reports(project, store, events, self.git, log)
         self.offset = events.end()                   # read on from here: what the assignees say back (tasking/assignments.py)
-        self.unanswered: dict[tuple[str, str], float] = {}   # (ticket, role) -> when an offer nobody has answered yet was first made
         self.levels_at = 0.0                        # when the levels were last re-asserted (every discovery step)
 
     def recover(self) -> None:
         """What the previous scheduler left: whoever still holds work is told to stop and every
         active ticket goes back to waiting (no zombies); the gate's leftovers are removed."""
         self._release_all("the task system restarted")
+        self.store.forget_untaken()                  # whoever serves the roles now gets fresh offers
         for run in self.store.gate_runs():
             if run.get("status") == "running":
                 run["status"] = "aborted"
@@ -114,12 +117,14 @@ class Scheduler:
         if a.get("instance") is None and instance is None:
             self.store.drop_assignment(a["id"])
 
-    def run(self, once: bool = False) -> None:
-        rec = self.store.scheduler() or {}
-        if rec.get("pid") and rec["pid"] != os.getpid() and alive(rec["pid"]):     # one process per project
-            log(f"a scheduler (pid {rec['pid']}) already runs {self.project.key}; not starting")
-            raise SystemExit(1)
+    def _other(self) -> int | None:
+        """The pid of another live scheduler of this project, if one runs."""
+        pid = (self.store.scheduler() or {}).get("pid")
+        return pid if pid and pid != os.getpid() and alive(pid) else None
 
+    def run(self, once: bool = False, wait: bool = False) -> None:
+        """One scheduler per project: with another running, exit (or, ``wait``, as when
+        ``orchestra run`` starts it, wait until that one stops and take over)."""
         def _stop(_sig, _frame):
             self.stop.set()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -127,6 +132,13 @@ class Scheduler:
                 signal.signal(sig, _stop)
             except ValueError:  # not the main thread (tests)
                 pass
+        if (other := self._other()) is not None:
+            log(f"a scheduler (pid {other}) already runs {self.project.key}; " + ("waiting for it to stop" if wait else "not starting"))
+            if not wait:
+                raise SystemExit(1)
+            while self._other() is not None:
+                if self.stop.wait(2):
+                    return
         self.recover()
         self.desk = Desk(self.project, self.store, self.events, log)   # planners' requests (tasking/requests.py)
         self.desk.start()
@@ -186,15 +198,16 @@ class Scheduler:
         out = self.store.assignments().values()
         busy = {r: sum(1 for a in out if a["role"] == r) for r in ("worker", "reviewer")}
         taken = {a["ticket"] for a in out}
+        resting = self._resting(tickets)
         # review before pick: finished work lands before new work starts
         for t in ordered:
             if t.state == State.READY_FOR_REVIEW and busy["reviewer"] < cap["reviewers"] and t.id not in taken \
-                    and self._assign(t, "reviewer"):
+                    and (t.id, "reviewer") not in resting and self._assign(t, "reviewer"):
                 busy["reviewer"] += 1
         for t in ordered:
             if paused or busy["worker"] >= cap["workers"]:
                 break
-            if t.id in taken:
+            if t.id in taken or (t.id, "worker") in resting:
                 continue
             if (t.state == State.REJECTED or (t.state == State.OPEN and is_ready(t, tickets, milestones))) \
                     and self._assign(t, "worker"):
@@ -218,6 +231,19 @@ class Scheduler:
         if time.time() - self.levels_at >= self.project.orchestra.config.discovery_step:
             self.store.reassert_levels()
             self.levels_at = time.time()
+
+    def _resting(self, tickets: dict[str, Ticket]) -> set[tuple[str, str]]:
+        """The (ticket, role) offers that nobody took and that wait out their pause before going
+        out again. One whose ticket changed since (a planner rewrote it) goes out at once; one
+        whose ticket moved on is forgotten."""
+        out, now_t = set(), time.time()
+        for rec in self.store.untaken().values():
+            t = tickets.get(rec["ticket"])
+            if t is None or t.state not in OFFERED_FROM[rec["role"]]:
+                self.store.set_untaken(rec["ticket"], rec["role"], None)
+            elif rec["again_at"] > now_t and rec.get("version") == t.version:
+                out.add((t.id, rec["role"]))
+        return out
 
     def _service_kills(self) -> None:
         """The operator stops whoever works a ticket: its assignment is released (the machine
@@ -283,7 +309,7 @@ class Scheduler:
             offer["unit_command"] = self.cfg.unit[0].command
         record = {"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch,
                   "assigned_at": time.time(), "lease_until": time.time() + LEASE_S, "instance": None, "accepted_at": None,
-                  "offered_since": self.unanswered.get((t.id, role), time.time())}   # the first of the offers nobody answered
+                  "offered_since": (self.store.untaken().get(f"{t.id}/{role}") or {}).get("since") or time.time()}   # the first of the offers nobody took
         if role == "reviewer" and not tasks:
             # verifying is the task system's: the unit tests run on the branch before the review is
             # offered, so the lease starts when the offer goes out; until then the record is held
@@ -330,11 +356,16 @@ class Scheduler:
         holder and moves the ticket, a heartbeat extends the lease, a report is applied to the
         ticket; anything from a machine that does not hold the assignment is ignored. Then every
         lease that ran out is released: a holder that went quiet counts as a crash; an offer
-        nobody took is dropped and offered again."""
+        nobody took is dropped and offered again after a pause (``_untaken``), or as soon as a
+        machine that listens for offers starts."""
         out = self.store.assignments()
         evs, self.offset = self.events.after(self.offset)
         for ev in evs:
             try:
+                if ev.get("type") == MACHINE_STARTED and ASSIGNED in (ev.get("listens_for") or []) and self.store.untaken():
+                    self.store.offer_untaken_now()
+                    log(f"{ev.get('source')} started and listens for {ASSIGNED}: the offers nobody took go out again now")
+                    continue
                 aid = ev.get("assignment")
                 if ev.get("type") not in (ACCEPTED, WORKING, REPORTED):
                     continue
@@ -369,22 +400,34 @@ class Scheduler:
         now_t = time.time()
         for aid, a in self.store.assignments().items():
             if a.get("instance") is None:
-                state = self.store.get_ticket(a["ticket"]).state
+                t = self.store.get_ticket(a["ticket"])
                 if a["lease_until"] < now_t:
-                    reason = f"nobody filled the role {a['role']} within {int(LEASE_S)} s"
-                    self._release(a, reason)
-                    # re-offered every lease: the age shown stays that of the first offer, and the
-                    # release is logged once, since the later ones are the same fact
-                    if (a["ticket"], a["role"]) not in self.unanswered:
-                        self.unanswered[(a["ticket"], a["role"])] = a["assigned_at"]
-                        log(f"{a['ticket']}: assignment {aid} released: {reason}")
-                elif state not in OFFERED_FROM[a["role"]]:                                # cancelled meanwhile
-                    self._release(a, f"the ticket is {state}")
-                    self.unanswered.pop((a["ticket"], a["role"]), None)
+                    self._untaken(a, t, now_t)
+                elif t.state not in OFFERED_FROM[a["role"]]:                              # cancelled meanwhile
+                    self._release(a, f"the ticket is {t.state}")
+                    self.store.set_untaken(a["ticket"], a["role"], None)
             elif a["lease_until"] < now_t:
                 self._release(a, f"no word from {a['instance']} for {int(LEASE_S)} s")
                 log(f"{a['ticket']}: {a['role']} assignment {aid} released: the lease ran out")
                 self._settle(a, lambda a=a: self.reports.apply(a, None, "", True, None))
+
+    def _untaken(self, a: dict, t: Ticket, now_t: float) -> None:
+        """An offer nobody took within its lease: withdrawn, and made again after a pause that
+        doubles with each offer nobody took (``AGAIN_FIRST_S`` up to ``AGAIN_MAX_S``), so a ticket
+        no machine serving the role will take neither holds a slot for ever nor fills the bus. It
+        changed nothing: no turn, no note, no transition. The record keeps when it was first
+        offered, for the Tasks panel's "offered, not taken". A ticket rewritten since the last of
+        them starts over: its first offer is this one, and none were missed before it."""
+        rec = self.store.untaken().get(f"{a['ticket']}/{a['role']}")
+        if rec is None or rec.get("version") != t.version:
+            rec = {"ticket": a["ticket"], "role": a["role"], "misses": 0,
+                   "since": a["assigned_at"] if rec else a.get("offered_since") or a["assigned_at"]}
+        misses = rec["misses"] + 1
+        pause = min(AGAIN_FIRST_S * 2 ** (misses - 1), AGAIN_MAX_S)
+        self._release(a, f"nobody filled the role {a['role']} within {int(LEASE_S)} s")
+        self.store.set_untaken(a["ticket"], a["role"], {**rec, "misses": misses, "version": t.version, "again_at": now_t + pause})
+        log(f"{a['ticket']}: nobody took the {a['role']}'s offer {a['id']} within {int(LEASE_S)} s ({misses} offer(s) not taken); "
+            f"offered again in {int(pause)} s, or when the ticket changes or a machine that listens for {ASSIGNED} starts")
 
     def _accept(self, a: dict, ev: dict) -> bool:
         """The first acceptance of an offer: the holder is the event's source (an ``instance``
@@ -407,7 +450,7 @@ class Scheduler:
             log(f"{t.id}: {holder} accepted {a['id']} but {e}; released")
             return False
         self.store.update_assignment(a["id"], instance=holder, accepted_at=time.time(), lease_until=time.time() + LEASE_S)
-        self.unanswered.pop((a["ticket"], a["role"]), None)
+        self.store.set_untaken(a["ticket"], a["role"], None)
         log(f"{t.id}: held by {holder}")
         return True
 

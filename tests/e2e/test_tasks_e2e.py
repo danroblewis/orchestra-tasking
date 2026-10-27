@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tasking import scheduler as scheduler_mod
-from tasking.assignments import ACCEPTED, RELEASED, REPORTED
+from tasking.assignments import ACCEPTED, ASSIGNED, RELEASED, REPORTED
 from tasking.events import Events
 from tasking.model import State
 from tasking.scheduler import Scheduler
@@ -75,6 +75,9 @@ def test_work_is_assigned_over_the_bus_and_the_machine_that_accepts_holds_it(env
 
 
 def test_an_offer_nobody_accepts_is_offered_again_and_counted_against_no_one(env, monkeypatch):
+    """An offer nobody takes within its lease is withdrawn and rests (AGAIN_FIRST_S, doubling)
+    before it goes out again, or goes out at once when a machine that listens for offers starts.
+    Nobody is at fault: no note, no transition, no turn."""
     project, store, events, _repo = env
     lease = scheduler_mod.LEASE_S
     monkeypatch.setattr(scheduler_mod, "LEASE_S", 0.0)                                    # nobody answers in time: released at once
@@ -84,17 +87,25 @@ def test_an_offer_nobody_accepts_is_offered_again_and_counted_against_no_one(env
     sched.tick()                                                                          # offered
     first = set(store.assignments())
     assert store.get_ticket(t.id).state == State.OPEN and store.assignments()[next(iter(first))]["instance"] is None
-    sched.tick()                                                                          # the lease ran out: released, offered again
+    sched.tick()                                                                          # the lease ran out: released, and it rests
     released = on_bus(events, RELEASED)
     assert released and released[0]["data"]["assignment"] in first
     assert released[0]["data"]["reason"] == "nobody filled the role worker within 0 s" and "instance" not in released[0]["data"]
-    assert not first & set(store.assignments()) and len(store.assignments()) == 1          # the old offer is gone, a new one stands
+    rec = store.untaken()[f"{t.id}/worker"]
+    assert rec["misses"] == 1 and rec["again_at"] > time.time()                           # offered again only after the pause
+    assert store.assignments() == {}                                                      # so no offer stands meanwhile
+    sched.tick()
+    assert store.assignments() == {}
     assert store.notes(t.id) == []                                                        # no crash: nobody was at fault
     assert on_bus(events, "ticket.transitioned") == []                                    # an offer is not a transition
     assert store.get_ticket(t.id).worker_turns == 0 and store.get_ticket(t.id).owner is None   # and not a turn
     assert on_bus(events, "task.attention_needed") == []
-    assert sum("nobody filled the role" in line for line in scheduler_mod.LOG.read_text().splitlines()) == 1
+    assert sum("nobody took the worker's offer" in line for line in scheduler_mod.LOG.read_text().splitlines()) == 1
     monkeypatch.setattr(scheduler_mod, "LEASE_S", lease)
+    Events.for_project(project, source="worker/1").publish(                               # a machine that takes offers starts
+        "orchestra.machine.started", {"mode": "continuous", "kind": "program", "listens_for": [ASSIGNED, RELEASED]})
+    sched.tick()                                                                          # the offer goes out again at once
+    assert len(store.assignments()) == 1 and not first & set(store.assignments())
     with FakeMachine(events, roles=("worker",), heartbeat=10.0):                          # now a machine accepts
         aid = next(iter(store.assignments()))
         wait_for(lambda: on_bus(events, ACCEPTED, assignment=aid))
@@ -102,6 +113,7 @@ def test_an_offer_nobody_accepts_is_offered_again_and_counted_against_no_one(env
         t = store.get_ticket(t.id)
         assert t.state == State.IN_PROGRESS and t.worker_turns == 1 and t.owner == "worker/1"   # the acceptance is the transition
         assert [(e["data"]["from"], e["data"]["to"]) for e in on_bus(events, "ticket.transitioned")] == [("OPEN", "IN_PROGRESS")]
+    assert store.untaken() == {}                                                          # taken: forgotten
 
 
 def test_an_acceptance_names_its_source_as_the_instance(env):

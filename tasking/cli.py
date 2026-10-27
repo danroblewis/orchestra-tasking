@@ -43,7 +43,7 @@ def cmd_run(args) -> int:
 
     project = _project(args)
     store, events = _store(project, source=SCHEDULER)
-    Scheduler(project, store, events).run(once=args.once)
+    Scheduler(project, store, events).run(once=args.once, wait=args.wait)
     return 0
 
 
@@ -193,6 +193,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("run", help="run the scheduler: offer ready tickets to the roles, apply their reports, land approved code")
     s.add_argument("--once", action="store_true", help="one tick, wait for its work, exit")
+    s.add_argument("--wait", action="store_true", help="when another scheduler runs this project, wait for it to stop instead of exiting "
+                                                       "(how orchestra run starts it)")
     s.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("status", help="one screen: what needs a decision, the scheduler, who holds what, the queue, the gate, staging")
