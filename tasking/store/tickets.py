@@ -253,6 +253,7 @@ class Tickets:
                 "capacity": self.capacity(),
                 "assignments": list(self.assignments().values()),
                 "worktrees": list(self.worktrees().values()),
+                "worktree_pool": list(self.pool().values()),
                 "gate_runs": self.gate_runs()[-20:],
                 "pipeline": self.pipeline(),
                 "pickup_paused": self.pickup_paused(),

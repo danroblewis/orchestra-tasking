@@ -38,6 +38,9 @@ class Config:
     tick: float = 3.0            # how often the scheduler looks at the queue and the bus, in seconds
     review_rounds_before_escalation: int = 3
     aging_days_per_level: float = 2.0
+    reuse_worktrees: bool = False      # code mode: keep a pool of worktrees and reset one per turn (tasking/pool.py)
+    worktree_pool: int = 3             # how many worktrees the pool may hold, the gate's included; never more
+    worktree_clean_ignored: bool = False   # a reset also removes ignored files (git clean -x): no warm caches
     build_command: str | None = None
     build_artifact: str | None = None
     build_timeout: float = 600.0
@@ -81,6 +84,9 @@ class Config:
             tick=parse_duration(a.get("tick"), 3.0),
             review_rounds_before_escalation=int(a.get("review_rounds_before_escalation", 3)),
             aging_days_per_level=float(a.get("aging_days_per_level", 2.0)),
+            reuse_worktrees=bool(a.get("reuse_worktrees", False)),
+            worktree_pool=max(1, int(a.get("worktree_pool", int(a.get("workers", 1)) + int(a.get("reviewers", 1)) + 1))),
+            worktree_clean_ignored=bool(a.get("worktree_clean_ignored", False)),
             build_command=b.get("command"),
             build_artifact=b.get("artifact"),
             build_timeout=parse_duration(b.get("timeout"), 600.0),
@@ -113,6 +119,9 @@ reviewers = 1
 # tick = "3s"            # how often the scheduler looks at the queue and the bus
 review_rounds_before_escalation = 3
 aging_days_per_level = 2        # a ticket gains one priority level per N days of age; 0 disables
+# reuse_worktrees = true         # code mode: reuse a pool of worktrees instead of one per ticket
+# worktree_pool = 2              # at most this many (default workers + reviewers + 1); a turn waits for a free one
+# worktree_clean_ignored = false # true: a reset also removes ignored files (build caches, node_modules)
 
 # [build]
 # command = "uv build"
@@ -177,6 +186,10 @@ class Project:
     @property
     def worktrees_dir(self) -> Path:
         return self.state_dir / "worktrees"
+
+    @property
+    def pool_dir(self) -> Path:
+        return self.state_dir / "pool"
 
     @property
     def workspaces_dir(self) -> Path:

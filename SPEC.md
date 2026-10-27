@@ -183,7 +183,9 @@ per project: a second `tasking run` for the same project exits, naming the pid t
    role's capacity. Capacity is the operator's ceiling from the Dashboard if set, otherwise
    `[tasks] workers`/`reviewers`, with a planner's dial (`set_capacity`) under it;
 4. in code mode, starts a gate run for the oldest `APPROVED` ticket if none runs and the
-   pipeline is not paused, and drops the worktrees of cancelled tickets;
+   pipeline is not paused (with reused worktrees, section 5, this comes before step 3, so the
+   gate's claim on the pool comes before any offer's), and drops the worktrees of cancelled
+   tickets;
 5. keeps staging running (section 5) and runs the due **probes** (`tasking/probes.py`:
    `[[probes]]` commands on an interval; `probe.failed`/`probe.recovered` fire on the transition);
 6. once per discovery step, writes the ticket levels again as they stand (section 8).
@@ -209,8 +211,8 @@ No verdict is not a rejection: the review is redone, up to three times, before t
 back by the task system (`rejected_by` `task_scheduler`); the merge gate's send-backs say
 `merge_gate`. In code mode a review whose preparation fails (the unit tests cannot run, git
 fails) is not offered: the record is dropped and the ticket, still `READY_FOR_REVIEW`, is offered
-again. A ticket whose folder or worktree is gone at review time is rejected by the task system
-without a review round, since nothing was reviewed. On shutdown the scheduler lets a gate run
+again. A ticket whose folder or worktree (with reused worktrees, its branch) is gone at review
+time is rejected by the task system without a review round, since nothing was reviewed. On shutdown the scheduler lets a gate run
 finish before it releases anything.
 
 **Requests** are served by the desk, a thread in the same process (section 3). It reads on from
@@ -239,6 +241,45 @@ its report.
 done or cancelled. A code worker's offer names the project's first `[[gate.unit]]` command. Before
 a review is offered, the scheduler runs the unit specs on the branch and puts the output and the
 commit in the offer (`review.test_output`, `review.commit`), so the reviewer sees the facts.
+
+**Reused worktrees** (`[tasks] reuse_worktrees = true`, code mode; `tasking/pool.py`). For a
+repository whose checkout is large, the task system keeps a pool of at most `worktree_pool`
+worktrees at `<state>/pool/<n>/` instead of one per ticket, and resets one for each turn: a
+worker's, a reviewer's and a gate run's. Off (the default), nothing here applies.
+
+- *Reset*: an unfinished merge or rebase is aborted, tracked changes are discarded (`git reset
+  --hard`), untracked files are removed (`git clean -ffd`), and the ticket's branch is checked
+  out: created from `base_branch` when new, the ticket's own branch with its commits when it
+  comes back. Ignored files (build caches, `node_modules`: the reason to reuse) are kept, or
+  removed too with `worktree_clean_ignored = true` (`-x`). A worktree that is not clean after
+  this is an error, and the turn is not offered.
+- *Free*: a worktree is free when no recorded assignment holds it and no gate run does. The store's
+  record of the pool (`runtime.json`) names each worktree's holder, an assignment's id or the
+  gate's; an assignment that is dropped, for whatever reason (a report, a lease run out, a
+  restart, the operator), frees its worktree with it, so a crash never leaves one held. A
+  worktree a crash left dirty is reset like any other before its next turn.
+- *The work is on the branch, not in the worktree*: between turns a ticket holds no worktree. A
+  worker's `READY_FOR_REVIEW` commits what it left (as without the pool), and its reviewer gets
+  a worktree reset to the branch. A turn that ends without a report loses what its worker did
+  not commit; the next worker's feedback says so.
+- *Rework*: a ticket's next turn (a review, a rejection back to its worker, a crash retry) gets
+  the worktree it last used if that one is free, so its caches are warm; otherwise the one
+  claimed longest ago. A preference, never a wait.
+- *The gate uses the pool too*: a gate worktree is as large as a worker's, and the pool's size is
+  the number of checkouts on disk, which is the point. The scheduler claims the gate's worktree
+  before it makes any offer in a tick, so landing comes before new work; the base check after a
+  failure runs in the same worktree, reset to the base. The gate's temporary branches are deleted
+  as before; a worktree left on one by a crash is detached when the next scheduler starts.
+- *Pool full*: the turn is not offered; it waits for a worktree, never a new one beyond the
+  size. The scheduler's log says so once per ticket (`<ticket>: the worktree pool is full (N in
+  use); the worker waits for a free one`) and `tasks_worktrees{state="waiting"}` counts the turns
+  waiting (section 8). It is back-pressure like capacity, not a question for a planner, so no
+  attention is asked. A pool smaller than workers plus reviewers plus one makes turns wait; the
+  default is that sum.
+- `tasking doctor` reports pool directories the record does not know (`--fix` removes them) and a
+  pool larger than its size (after `worktree_pool` was lowered; the extra worktrees stay until
+  removed by hand). Turning the option off leaves the pool's worktrees on disk; turning it on
+  while tickets have their own worktrees leaves those until the tickets land.
 
 **The merge gate** (`tasking/gate.py`) lands approved code, one ticket per run: a gate
 worktree on a temporary branch from the base head, `git merge --no-ff` of the reviewed commit (a
@@ -341,6 +382,9 @@ workers = 2              # tickets offered to workers at once
 reviewers = 1
 review_rounds_before_escalation = 3
 aging_days_per_level = 2 # a ticket gains one priority level per N days of age; 0 disables
+reuse_worktrees = false  # code: keep a pool of worktrees and reset one per turn (section 5)
+worktree_pool = 4        # the pool's size, the gate's included (default workers + reviewers + 1)
+worktree_clean_ignored = false   # a reset also removes ignored files (build caches)
 
 [build]                  # code, optional: the artifact the gate builds
 command = "uv build"
@@ -392,11 +436,12 @@ in one place. Capacity and the config are re-read every tick, so a change is liv
   tasks/                               # the task system's
     tickets.json                       # tickets, milestones, notes, counters, the metric counters
     runtime.json                       # scheduler pid, assignments, capacity, pause, kill requests,
-                                       # worktrees, gate runs, builds, pipeline, probes, staging,
+                                       # worktrees, the worktree pool, gate runs, builds, pipeline, probes, staging,
                                        # where the desk reads requests from next
     .lock                              # one file lock around every read-modify-write
     workspaces/<ticket>/               # tasks mode
     worktrees/<ticket>/                # code mode
+    pool/<n>/                          # code mode with reused worktrees
     gate/<run>/  artifacts/<run>/  staging/
     logs/scheduler.log  logs/<run>/<stage>-<spec>.log  logs/review/<ticket>/
 ```
@@ -410,6 +455,9 @@ and `by` the actor whose report or request it applied (`worker`, `reviewer`, a p
 machine, or `task_scheduler` for its own moves). Between changes the scheduler writes the levels again every
 discovery step (Orchestra's `[discovery] step`, 30 s by default), the counters untouched, so a
 quiet system is seen measuring its stocks rather than taken for one whose writer is gone.
+With reused worktrees (section 5) the scheduler also writes `tasks_worktrees{state}`: the pool's
+worktrees `in_use` and `free`, and the turns `waiting` for one, when they change and again every
+discovery step.
 
 ## 9. The plugin: pages and API (`tasking/web.py`, `tasking/static/`)
 

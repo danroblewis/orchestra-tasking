@@ -64,7 +64,13 @@ class Reports:
         counting."""
         role = a["role"]
         self.back_to_waiting(a["ticket"], f"the {role} was stopped by the operator",
-                             "the previous worker's turn was stopped by the operator; the workspace is as it left it" if role == "worker" else None)
+                             f"the previous worker's turn was stopped by the operator; {self.workspace_kept()}" if role == "worker" else None)
+
+    def workspace_kept(self) -> str:
+        """What the next worker finds of an interrupted turn, for its feedback."""
+        if self.cfg.work == "code" and self.cfg.reuse_worktrees:
+            return "worktrees are reused, so only what it committed on the branch is kept"
+        return "the workspace is as it left it"
 
     def back_to_waiting(self, tid: str, note: str, feedback: str | None = None) -> None:
         """An active ticket to the waiting state before it, with a note saying why (and, for a
@@ -99,7 +105,7 @@ class Reports:
                 self.store.add_note(tid, Note(author=SCHEDULER, kind="crash",
                                               text=f"the worker ended without reporting (attempt {crashes}){': ' + text[-300:] if text else ''}; offered again"))
                 self.store.transition(tid, t.version, State.OPEN,
-                                      feedback="the previous worker ended without reporting; the workspace is as it left it")
+                                      feedback=f"the previous worker ended without reporting; {self.workspace_kept()}")
                 self.log(f"{tid}: the worker ended without reporting; back to OPEN ({crashes})")
                 return
             reason = "the worker went away or ran out its lease repeatedly" if failed else "the worker finished without a report"

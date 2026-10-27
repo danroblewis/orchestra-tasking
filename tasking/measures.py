@@ -4,7 +4,9 @@ measure (Orchestra's discovery decides what is a stock and what is a flow):
 - ``tasks_tickets{state}``: tickets in each state, every state written at every change, and
   written again, unchanged, every discovery step while the scheduler runs (``level_points``);
 - ``tasks_tickets_created_total{machine, by}``: tickets created;
-- ``tasks_ticket_transitions_total{from, to, machine, by}``: state changes.
+- ``tasks_ticket_transitions_total{from, to, machine, by}``: state changes;
+- ``tasks_worktrees{state}``: with reused worktrees (tasking/pool.py), the pool's worktrees
+  ``in_use`` and ``free``, and the turns ``waiting`` for one because the pool is full.
 
 On the counters ``machine`` is the writer, the machine whose record this is (the scheduler's,
 ``task_scheduler``: Orchestra's discovery balances a level with its own machine's counters
@@ -83,6 +85,11 @@ class Measures:
             labels = {"from": src, "to": dst, "machine": machine, "by": by}
             out.append(Point("tasks_ticket_transitions_total", float(self.count(counts, "transition", labels)), t, self._labels(**labels)))
         return out + self.level_points(tickets, t)
+
+    def pool_points(self, in_use: int, free: int, waiting: int) -> list[Point]:
+        t = time.time()
+        return [Point("tasks_worktrees", float(n), t, self._labels(state=s, machine="task_scheduler"))
+                for s, n in (("in_use", in_use), ("free", free), ("waiting", waiting))]
 
     def level_points(self, tickets: dict, t: float | None = None) -> list[Point]:
         """The levels as the tickets stand (``tickets``: id -> record): every state's count, no

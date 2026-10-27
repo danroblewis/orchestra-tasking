@@ -6,6 +6,7 @@ tasking/reports.py. SPEC.md section 4."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import threading
@@ -31,6 +32,7 @@ from .events import SCHEDULER, SUPERVISOR, Events
 from .gate import run_gate, run_specs
 from .git import Git, GitError
 from .model import ACTIVE, State, Ticket, TransitionError, effective_priorities, is_ready, now
+from .pool import Pool
 from .probes import Prober, config_probes
 from .reports import Reports
 from .requests import QUERY, REQUESTS, Desk
@@ -74,6 +76,9 @@ class Scheduler:
         self.staging = Staging(project, store, events)
         self.prober = Prober(project, store, events)
         self.reports = Reports(project, store, events, self.git, log)
+        self.pool = Pool(project, store, self.git, log)    # used only with [tasks] reuse_worktrees
+        self.pool_waiting: set[tuple[str, str]] = set()     # (ticket, role or "gate") waiting for a free worktree
+        self.pool_measured: tuple | None = None
         self.offset = events.end()                   # read on from here: what the assignees say back (tasking/assignments.py)
         self.levels_at = 0.0                        # when the levels were last re-asserted (every discovery step)
 
@@ -88,11 +93,14 @@ class Scheduler:
                 run["summary"] = "the task system restarted during the run"
                 run["finished_at"] = run.get("finished_at") or now()
                 self.store.save_gate_run(run)
+        self.store.release_gate_slots()
         for p in self.project.gate_dir.glob("*"):
             self.git.worktree_remove(p)
         self.git.run("worktree", "prune", check=False)
-        for b in self.git.run("branch", "--list", "orchestra/gate-*", check=False).stdout.split():
-            self.git.branch_delete(b.strip("* "))
+        for b in self.git.run("branch", "--list", "--format=%(refname:short)", "orchestra/gate-*", check=False).stdout.split():
+            with contextlib.suppress(GitError):
+                self.pool.release_branch(b)          # a reused worktree a gate run left on it
+            self.git.branch_delete(b)
 
     def _release_all(self, reason: str) -> None:
         """Every assignment released and settled, then every ticket still active sent back: the
@@ -102,7 +110,7 @@ class Scheduler:
             self._release(a, reason)
             if a.get("instance") is not None:
                 self._settle(a, lambda a=a: self.reports.back_to_waiting(a["ticket"], f"{reason} during the {a['role']}'s turn",
-                                                                       f"{reason} during the previous turn; the workspace is as it was left"))
+                                                                       f"{reason} during the previous turn; {self.reports.workspace_kept()}"))
         for t in self.store.list_tickets():
             if t.state in ACTIVE:
                 self.reports.back_to_waiting(t.id, reason)
@@ -199,6 +207,9 @@ class Scheduler:
         busy = {r: sum(1 for a in out if a["role"] == r) for r in ("worker", "reviewer")}
         taken = {a["ticket"] for a in out}
         resting = self._resting(tickets)
+        gate = self.cfg.work == "code" and self.gate_thread is None and not self.store.pipeline().get("paused")
+        if gate and self.cfg.reuse_worktrees:       # its worktree claimed before any offer's: landing comes first
+            self._start_gate(ordered)
         # review before pick: finished work lands before new work starts
         for t in ordered:
             if t.state == State.READY_FOR_REVIEW and busy["reviewer"] < cap["reviewers"] and t.id not in taken \
@@ -212,15 +223,12 @@ class Scheduler:
             if (t.state == State.REJECTED or (t.state == State.OPEN and is_ready(t, tickets, milestones))) \
                     and self._assign(t, "worker"):
                 busy["worker"] += 1
-        if self.cfg.work == "code" and self.gate_thread is None and not self.store.pipeline().get("paused"):
-            approved = [t for t in ordered if t.state == State.APPROVED]
-            if approved:
-                approved.sort(key=lambda t: t.state_since)
-                self.gate_thread = threading.Thread(target=self._gate, args=(approved[0].id,), daemon=True)
-                self.gate_thread.start()
+        if gate and not self.cfg.reuse_worktrees:
+            self._start_gate(ordered)
         for t in ordered:
             if self.cfg.work == "code" and t.state == State.CANCELLED and self.store.worktree(t.id):
                 self._drop_worktree(t)
+        self._measure_pool()
         self.staging.ensure_running()
         try:
             self.prober.tick(config_probes(self.project))
@@ -231,6 +239,57 @@ class Scheduler:
         if time.time() - self.levels_at >= self.project.orchestra.config.discovery_step:
             self.store.reassert_levels()
             self.levels_at = time.time()
+
+    def _start_gate(self, ordered: list[Ticket]) -> None:
+        """The longest-approved ticket to the gate. With reused worktrees the gate holds one of
+        the pool's, claimed here before any offer is made, so landing comes before new work; with
+        the pool full it waits like any other turn."""
+        approved = sorted((t for t in ordered if t.state == State.APPROVED), key=lambda t: t.state_since)
+        if not approved:
+            return
+        tid, slot = approved[0].id, None
+        if self.cfg.reuse_worktrees:
+            try:
+                slot = self.pool.claim(f"gate:{tid}", tid, prefer=tid)
+            except GitError as e:
+                log(f"gate: {tid}: no worktree from the pool: {e}")
+                return
+            if not self._pool_got(slot, tid, "gate"):
+                return
+        self.gate_thread = threading.Thread(target=self._gate, args=(tid, slot), daemon=True)
+        self.gate_thread.start()
+
+    def _pool_got(self, path: Path | None, tid: str, who: str) -> bool:
+        """Whether the pool gave a worktree; when it did not, the turn waits, said once in the log
+        until it gets one (the series ``tasks_worktrees`` shows how many wait)."""
+        if path is not None:
+            self.pool_waiting.discard((tid, who))
+            return True
+        if (tid, who) not in self.pool_waiting:
+            self.pool_waiting.add((tid, who))
+            log(f"{tid}: the worktree pool is full ({self.cfg.worktree_pool} in use); the {who} waits for a free one")
+        return False
+
+    def _measure_pool(self) -> None:
+        """``tasks_worktrees{state}``: the pool's worktrees in use and free, and the turns waiting
+        for one; written when they change and again every discovery step, like the levels."""
+        if not (self.cfg.reuse_worktrees and self.cfg.work == "code"):
+            return
+        slots = self.store.pool().values()
+        free = sum(1 for s in slots if s["free"])
+        waiting = {k for k in self.pool_waiting if self._still_waiting(*k)}
+        self.pool_waiting = waiting
+        values = (len(slots) - free, free, len(waiting))
+        if values != self.pool_measured or time.time() - self.levels_at >= self.project.orchestra.config.discovery_step:
+            self.pool_measured = values
+            self.store.measures.write(self.store.measures.pool_points(*values))
+
+    def _still_waiting(self, tid: str, who: str) -> bool:
+        try:
+            state = self.store.get_ticket(tid).state
+        except StoreError:
+            return False
+        return state in ({State.APPROVED} if who == "gate" else OFFERED_FROM[who])
 
     def _resting(self, tickets: dict[str, Ticket]) -> set[tuple[str, str]]:
         """The (ticket, role) offers that nobody took and that wait out their pause before going
@@ -263,8 +322,12 @@ class Scheduler:
         if self.gate_thread and not self.gate_thread.is_alive():
             self.gate_thread = None
 
-    def _worktree(self, t: Ticket) -> tuple[Path, str]:
+    def _worktree(self, t: Ticket, aid: str) -> tuple[Path | None, str]:
+        """The worker's worktree on the ticket's branch: its own (made once, kept until it lands),
+        or with reused worktrees one of the pool's reset for it (None: the pool is full)."""
         branch = t.branch or f"orchestra/{t.id}-{t.slug}"
+        if self.cfg.reuse_worktrees:
+            return self.pool.claim_for(aid, t.id, branch), branch
         path = self.project.worktrees_dir / t.id
         if not path.exists() or self.git.worktree_branch(path) != branch:
             self.git.worktree_remove(path)
@@ -285,12 +348,24 @@ class Scheduler:
         takes it; the ticket moves (IN_PROGRESS, IN_REVIEW) and gets its owner when one accepts
         (``_follow``), so an offer nobody takes changes nothing."""
         tasks = self.cfg.work != "code"
+        aid = new_id(t.id, role)
         try:
             if role == "worker":
-                path, branch = (self._workspace(t), None) if tasks else self._worktree(t)
+                path, branch = (self._workspace(t), None) if tasks else self._worktree(t, aid)
+                if path is None:
+                    return self._pool_got(None, t.id, role)
             else:
                 if tasks:
                     path, branch = self.project.workspaces_dir / t.id, None
+                elif self.cfg.reuse_worktrees:
+                    # the work is on the branch: a reviewer gets any worktree reset to it
+                    if not (t.branch and self.git.branch_exists(t.branch)):
+                        self.reports.reject(t.id, SCHEDULER, "the ticket's branch is missing at review time; "
+                                            "the work has to be done again", counted=False)
+                        return False
+                    path, branch = self.pool.claim_for(aid, t.id, t.branch), t.branch
+                    if path is None:
+                        return self._pool_got(None, t.id, role)
                 else:
                     wt = self.store.worktree(t.id)
                     path, branch = (Path(wt["path"]), wt.get("branch")) if wt else (None, None)
@@ -301,7 +376,8 @@ class Scheduler:
         except (Conflict, StoreError, GitError) as e:
             log(f"{t.id}: cannot assign a {role}: {e}")
             return False
-        aid = new_id(t.id, role)
+        if self.cfg.reuse_worktrees and not tasks:
+            self._pool_got(path, t.id, role)
         turns = {"worker_turns": t.worker_turns + 1, "branch": branch} if role == "worker" else {}   # as the ticket will read once accepted
         offer = {"assignment": aid, "role": role, "ticket": t.id, "workspace": str(path), "branch": branch,
                  "lease_s": LEASE_S, "brief": {**brief(t), **turns}}
@@ -471,15 +547,18 @@ class Scheduler:
         finally:
             self.store.drop_assignment(a["id"])
 
-    def _gate(self, ticket_id: str) -> None:
+    def _gate(self, ticket_id: str, slot: Path | None = None) -> None:
         try:
             t = self.store.get_ticket(ticket_id)
             self.store.transition(ticket_id, t.version, State.MERGING)
             log(f"gate: {ticket_id}")
-            run = run_gate(self.project, self.store, self.events, ticket_id)
+            run = run_gate(self.project, self.store, self.events, ticket_id, slot=slot)
             log(f"gate {run['id']}: {run['status']} {run.get('summary', '')}")
         except (Conflict, StoreError, TransitionError) as e:
             log(f"gate: {e}")
+        finally:
+            if slot is not None:
+                self.store.release_slot(f"gate:{ticket_id}")
 
     def _drop_worktree(self, t: Ticket) -> None:
         wt = self.store.worktree(t.id)

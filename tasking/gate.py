@@ -23,6 +23,7 @@ from .config import Project, TestSpec
 from .events import COORDINATOR, SUPERVISOR, Events
 from .git import Git, GitError
 from .model import Note, State, now
+from .pool import Pool
 from .staging import Staging, build_python
 from .store import LocalStore
 
@@ -152,9 +153,27 @@ def _stages(project: Project, cwd: Path, log_dir: Path, run: dict) -> bool:
     return True
 
 
-def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str) -> dict:
+def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str, slot: Path | None = None) -> dict:
+    """One gate run for ``ticket_id``. Its worktrees are made for the run and removed after it, or,
+    with ``slot`` (a worktree of the pool the scheduler claimed for it: tasking/pool.py), that one
+    worktree is reset for the run and, if the base needs checking alone, again for that."""
     cfg = project.config
     git = Git(project.repo_root)
+    pool = Pool(project, store, git) if slot is not None else None
+
+    def make(branch: str, where: Path) -> None:
+        if pool:
+            pool.reset(where, branch)
+        else:
+            git.worktree_add(branch, where, base)
+
+    def drop(branch: str, where: Path) -> None:
+        if pool:
+            pool.detach(where)
+        else:
+            git.worktree_remove(where)
+        git.branch_delete(branch)
+
     run_id = uuid.uuid4().hex[:10]
     base = cfg.base_branch
     run: dict = {"id": run_id, "ticket": ticket_id, "base_branch": base, "status": "running", "stages": [],
@@ -162,7 +181,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
     store.save_gate_run(run)
     events.emit("gate.started", gate_run=run_id, ticket=ticket_id)
     gate_branch = f"orchestra/gate-{run_id}"
-    path = project.gate_dir / run_id
+    path = slot or project.gate_dir / run_id
     log_dir = project.logs_dir / run_id
 
     def reject(reason: str, conflict: bool = False) -> None:
@@ -195,7 +214,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
     try:
         base_commit = git.rev_parse(base)
         run["base_commit"] = base_commit
-        git.worktree_add(gate_branch, path, base)
+        make(gate_branch, path)
         t = store.get_ticket(ticket_id)
         p = git.merge_no_ff(t.reviewed_commit or t.branch or "", path, f"Merge {ticket_id}: {t.title}")
         if p.returncode != 0 and resolve_appends(git, path):
@@ -229,6 +248,9 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
                 git.worktree_remove(Path(wt["path"]))
                 store.remove_worktree(ticket_id)
             if t.branch:
+                if pool:
+                    with contextlib.suppress(GitError):      # a reused worktree that last served it may still have it
+                        pool.release_branch(t.branch)
                 git.branch_delete(t.branch)
             run["status"] = "landed"
             run["summary"] = (f"landed {ticket_id} on {base} at {gate_commit[:10]}" + (f" ({run['resolved']})" if run.get("resolved") else "")
@@ -246,16 +268,15 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
         # failure: is the base itself broken?
         failed = [s for s in run["stages"] if s["status"] == "failed"]
         failure_text = "\n\n".join(f"[{s['stage']}:{s['name']}] exit {s.get('returncode')}\n{s.get('tail', '')}" for s in failed)
-        base_path = project.gate_dir / f"{run_id}-base"
+        base_path = path if pool else project.gate_dir / f"{run_id}-base"
         base_ok = True
         try:
-            git.worktree_add(f"orchestra/gate-{run_id}-base", base_path, base)
+            make(f"orchestra/gate-{run_id}-base", base_path)
             base_run = {"id": run_id, "stages": []}
             base_ok = _stages(project, base_path, log_dir / "base", base_run)
             run["base_check"] = base_run["stages"]
         finally:
-            git.worktree_remove(base_path)
-            git.branch_delete(f"orchestra/gate-{run_id}-base")
+            drop(f"orchestra/gate-{run_id}-base", base_path)
         if not base_ok:
             t = store.get_ticket(ticket_id)
             store.transition(ticket_id, t.version, State.APPROVED)
@@ -275,7 +296,6 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
     except Exception as e:  # noqa: BLE001 - whatever failed, the ticket must not stay MERGING
         return error(repr(e))
     finally:
-        git.worktree_remove(path)
-        git.branch_delete(gate_branch)
+        drop(gate_branch, path)
         run["finished_at"] = now()
         store.save_gate_run(run)
