@@ -5,6 +5,8 @@ tickets to the `worker` and `reviewer` roles over Orchestra's event bus and appl
 machines that take them report, a merge gate for code, and the Tickets page and Tasks panel
 inside Orchestra's web UI (an Orchestra plugin, `tasks`).
 
+How it works, with diagrams and the full contract for workers and reviewers: [ARCHITECTURE.md](ARCHITECTURE.md).
+
 It runs no machine of its own. Whatever fills a role is another program that speaks the
 contract in `tasking/assignments.py`: the demo's are a shell runner and a file checker, each a
 page of Python using only Orchestra's library (`demo/machines/`). `SPEC.md` is the design;
