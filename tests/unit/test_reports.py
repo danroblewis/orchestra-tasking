@@ -2,8 +2,9 @@
 machine. A report the task system cannot use never leaves a ticket held by nobody."""
 
 import pytest
+from conftest import claim, end, standing
 
-from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, WORKING
+from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, REVIEW_REQUESTED, WORKING
 from tasking.events import Events
 from tasking.model import State
 from tasking.reports import NO_VERDICT_BUDGET, unusable
@@ -37,20 +38,22 @@ def answer(events, a: dict, report, **more) -> None:
 
 
 def test_unusable_reports():
+    """A report is for work that passes to no machine: a worker's BLOCKED, or none at all.
+    Finished work and verdicts pass on directly (review.requested, changes.requested,
+    review.approved), so in a report they are unusable."""
     assert unusable("worker", None) is None and unusable("reviewer", None) is None
-    assert unusable("worker", {"state": "READY_FOR_REVIEW"}) is None
     assert unusable("worker", {"state": "BLOCKED", "blocked_reason": "x"}) is None
+    assert unusable("worker", {"state": "READY_FOR_REVIEW"}) == "a worker passes finished work on with review.requested, not task.reported"
     assert unusable("worker", {}) == "the report had no state"
     assert "blocked_reason" in unusable("worker", {"state": "BLOCKED", "summary": "x"})
     assert "DONE" in unusable("worker", {"state": "DONE"})
-    assert unusable("reviewer", {"verdict": "APPROVED"}) is None
-    assert unusable("reviewer", {}) == "the report had no verdict"
-    assert "MAYBE" in unusable("reviewer", {"verdict": "MAYBE"})
+    assert unusable("reviewer", {"verdict": "APPROVED"}) == "a reviewer's verdict is changes.requested or review.approved, not task.reported"
     assert unusable("reviewer", "yes") == "the report was not an object"
 
 
 @pytest.mark.parametrize("report, why", [({}, "the report had no state"),
-                                         ({"state": "BLOCKED", "summary": "x"}, "BLOCKED without a blocked_reason")])
+                                         ({"state": "BLOCKED", "summary": "x"}, "BLOCKED without a blocked_reason"),
+                                         ({"state": "READY_FOR_REVIEW", "summary": "x"}, "with review.requested")])
 def test_a_workers_unusable_report_sends_the_ticket_back_as_a_crash(env, report, why):
     store, events, sched, t = env
     sched.tick()
@@ -68,14 +71,15 @@ def test_a_workers_unusable_report_sends_the_ticket_back_as_a_crash(env, report,
 def test_a_reviewers_unusable_report_redoes_the_review(env):
     store, events, sched, t = env
     sched.tick()
-    answer(events, offer(events), {"state": "READY_FOR_REVIEW", "summary": "done"})
-    sched.tick()                                                   # READY_FOR_REVIEW, offered to a reviewer
-    a = offer(events)
-    assert a["role"] == "reviewer"
+    claim(events, offer(events))
+    end(events, offer(events), REVIEW_REQUESTED)
+    sched.tick()                                                   # READY_FOR_REVIEW: the worker offered the review
+    a = standing(events, store, "reviewer")
+    assert a["type"] == REVIEW_REQUESTED
     answer(events, a, {"verdict": "MAYBE"})
     sched.tick()                                                   # no verdict: redone
     notes = store.notes(t.id)
-    assert notes[-1]["kind"] == "crash" and "MAYBE" in notes[-1]["text"]
+    assert notes[-1]["kind"] == "crash" and "changes.requested or review.approved" in notes[-1]["text"]
     assert store.get_ticket(t.id).state == State.READY_FOR_REVIEW and a["assignment"] not in store.assignments()
     assert [x["role"] for x in store.assignments().values()] == ["reviewer"]   # offered again
     assert store.get_ticket(t.id).review_rounds == 0               # not a rejection
@@ -91,8 +95,9 @@ def test_a_report_the_store_refuses_still_frees_the_ticket(env, monkeypatch):
     store, events, sched, t = env
     sched.tick()
     a = offer(events)
-    answer(events, a, {"state": "READY_FOR_REVIEW", "summary": "done"})
-    monkeypatch.setattr(sched.reports, "apply", lambda *args: (_ for _ in ()).throw(RuntimeError("disk full")))
+    claim(events, a)
+    end(events, a, REVIEW_REQUESTED)
+    monkeypatch.setattr(sched.reports, "review_requested", lambda *args: (_ for _ in ()).throw(RuntimeError("disk full")))
     sched.tick()
     assert a["assignment"] not in store.assignments()
     assert store.get_ticket(t.id).state == State.OPEN and len(store.assignments()) == 1   # back to waiting, and offered again

@@ -1,5 +1,6 @@
 """work = "tasks": a ticket is a task, done in a scratch folder and reviewed, with nothing merged;
-the work is offered over the bus, and the machine that accepts it holds it (tests/fake_machine.py).
+the work is offered over the bus, the machine whose claim is first holds it, and the work passes
+directly between the machines that do it while the scheduler records it (tests/fake_machine.py).
 Also the contract's hard cases: leases, two machines answering one offer, the operator's stop, a
 report from a machine that does not hold the work, the scheduler restarting and stopping."""
 
@@ -13,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tasking import scheduler as scheduler_mod
-from tasking.assignments import ACCEPTED, ASSIGNED, RELEASED, REPORTED
+from tasking.assignments import ACCEPTED, APPROVED, ASSIGNED, RELEASED, REPORTED, REVIEW_REQUESTED
 from tasking.events import Events
 from tasking.model import State
 from tasking.scheduler import Scheduler
@@ -43,7 +44,8 @@ def test_a_task_is_done_in_its_folder_and_reviewed_with_nothing_merged(env):
     assert not subprocess.run(["git", "branch", "--list"], cwd=repo, capture_output=True, text=True, check=False).stdout.strip("* main\n")
     assert store.gate_runs() == []
     review = next(o for o in m.offers if o["role"] == "reviewer")
-    assert review["review"] == {"summary": "wrote RESULT.md", "commit": None, "test_output": None} and review["branch"] is None
+    assert review["review"] == {"summary": "wrote RESULT.md", "commit": None, "test_output": None, "worker": "worker/1"}
+    assert review["type"] == REVIEW_REQUESTED and review["source"] == "worker/1" and review["branch"] is None   # from the worker, not the scheduler
 
 
 def test_the_scheduler_is_a_program_and_starts_no_machine(env):
@@ -56,20 +58,27 @@ def test_the_scheduler_is_a_program_and_starts_no_machine(env):
     assert {e["source"] for e in evs} <= {"task_scheduler", "worker/1", "reviewer/1"}
 
 
-def test_work_is_assigned_over_the_bus_and_the_machine_that_accepts_holds_it(env):
-    """The scheduler offers the ticket to a role (task.assigned); the machine that serves it
-    accepts (and so holds the ticket), and reports (task.reported); the scheduler applies it."""
+def test_the_work_passes_between_the_machines_and_the_scheduler_records_it(env):
+    """The scheduler offers the ticket to a role (task.assigned); the machine whose claim is
+    first holds it; the worker asks the reviewers itself (review.requested), a reviewer claims
+    that and approves (review.approved). The scheduler records every step, naming the event that
+    caused it, and its records carry no subject: on the ticket, only the machines act."""
     project, store, events, _repo = env
     t = a_ticket(store)
     run_scheduler(project, store, events)
-    evs = [e for e in events.bus.read(0, limit=10000)[0] if e.get("subject") == t.id]
-    proto = [(e["type"], e["source"], (e["data"] or {}).get("role")) for e in evs if e["type"].startswith("task.") and e["type"] != "task.attention_needed"]
-    assert [p for p in proto if p[0] != "task.working"] == [
-        ("task.assigned", "task_scheduler", "worker"), ("task.accepted", "worker/1", "worker"), ("task.reported", "worker/1", "worker"),
-        ("task.assigned", "task_scheduler", "reviewer"), ("task.accepted", "reviewer/1", "reviewer"), ("task.reported", "reviewer/1", "reviewer")]
-    transitions = [(e["data"]["to"], e["data"]["owner"], e["source"]) for e in evs if e["type"] == "ticket.transitioned"]
-    assert all(src == "task_scheduler" for _, _, src in transitions)                     # only the scheduler moves tickets
-    assert [(to, owner) for to, owner, _ in transitions if to in ("IN_PROGRESS", "IN_REVIEW")] == [("IN_PROGRESS", "worker/1"), ("IN_REVIEW", "reviewer/1")]
+    every = events.bus.read(0, limit=10000)[0]
+    evs = [e for e in every if e.get("subject") == t.id]
+    assert [(e["type"], e["source"], (e["data"] or {}).get("role")) for e in evs if e["type"] not in ("task.working", "ticket.created")] == [
+        ("task.assigned", "task_scheduler", "worker"), ("task.accepted", "worker/1", "worker"), ("review.requested", "worker/1", "reviewer"),
+        ("task.accepted", "reviewer/1", "reviewer"), (APPROVED, "reviewer/1", "reviewer")]
+    by_id = {e["id"]: e for e in every}
+    records = [e for e in every if e["type"] in ("ticket.transitioned", "ticket.note_added") and (e["data"] or {}).get("ticket") == t.id]
+    assert records and all(e["source"] == "task_scheduler" and "subject" not in e for e in records)   # only the scheduler records
+    assert all(by_id[e["causationid"]]["source"] in ("worker/1", "reviewer/1") for e in records)     # what it records is the machines'
+    transitions = [(e["data"]["to"], e["data"]["owner"], by_id[e["causationid"]]["type"]) for e in records if e["type"] == "ticket.transitioned"]
+    assert transitions == [("IN_PROGRESS", "worker/1", ACCEPTED), ("READY_FOR_REVIEW", None, REVIEW_REQUESTED),
+                           ("IN_REVIEW", "reviewer/1", ACCEPTED), ("APPROVED", None, APPROVED), ("DONE", None, APPROVED)]
+    assert store.get_ticket(t.id).caused_by == records[-1]["causationid"]
     assert store.get_ticket(t.id).state.value == "DONE" and store.get_ticket(t.id).owner is None
     assert store.assignments() == {}
 
@@ -137,7 +146,7 @@ def test_an_acceptance_names_its_source_as_the_instance(env):
             sched.tick()
             assert store.assignments()[aid]["instance"] == "worker/2" and store.get_ticket(t.id).owner == "worker/2"
             two.finish.set()
-            wait_for(lambda: on_bus(events, REPORTED, assignment=aid))
+            wait_for(lambda: on_bus(events, REVIEW_REQUESTED, ends=aid))
             sched.tick()
     assert store.get_ticket(t.id).state == State.READY_FOR_REVIEW and store.get_ticket(t.id).worker_turns == 1
 
@@ -164,7 +173,9 @@ def test_a_machine_that_accepts_and_goes_silent_is_a_crash(env, monkeypatch):
         m.finish.set()
 
 
-def test_the_first_to_accept_holds_it_and_the_other_is_told(env):
+def test_the_first_claim_on_the_bus_holds_it_and_the_loser_knows_untold(env):
+    """Two workers claim one offer: the bus's order decides, each reads it, and the scheduler
+    records the same holder without a word to the loser, which starts nothing."""
     project, store, events, _repo = env
     t = a_ticket(store)
     sched = Scheduler(project, store, events)
@@ -176,21 +187,21 @@ def test_the_first_to_accept_holds_it_and_the_other_is_told(env):
         with FakeMachine(events, roles=("worker",), instance="2", heartbeat=0.05) as two:  # sees the same offer, accepts second
             wait_for(lambda: on_bus(events, ACCEPTED, assignment=aid, instance="worker/2"))
             sched.tick()
-            told = on_bus(events, RELEASED, assignment=aid)
-            assert len(told) == 1 and told[0]["data"]["instance"] == "worker/2" and told[0]["data"]["reason"] == "already taken by worker/1"
+            assert on_bus(events, RELEASED, assignment=aid) == []                         # the loser is not told: it read the bus
             assert store.assignments()[aid]["instance"] == "worker/1"
-            wait_for(lambda: aid in two._released)                                        # told, it stops without reporting
+            wait_for(lambda: aid in two.lost)
+            assert two.started == [] and one.started == [(aid, "worker/1")]
         lease = store.assignments()[aid]["lease_until"]
         time.sleep(0.2)
         sched.tick()                                                                      # heartbeats from worker/1 extend the lease
         assert store.assignments()[aid]["lease_until"] > lease
         one.finish.set()
-        wait_for(lambda: on_bus(events, REPORTED, assignment=aid))
+        wait_for(lambda: on_bus(events, REVIEW_REQUESTED, ends=aid))
         sched.tick()
     t = store.get_ticket(t.id)
-    assert t.state == State.READY_FOR_REVIEW and t.worker_turns == 1                    # reported, and offered to a reviewer
-    assert [a["role"] for a in store.assignments().values()] == ["reviewer"]
-    assert [e["source"] for e in on_bus(events, REPORTED, assignment=aid)] == ["worker/1"]
+    assert t.state == State.READY_FOR_REVIEW and t.worker_turns == 1                    # the worker asked the reviewers itself
+    assert [(a["role"], a["by"]) for a in store.assignments().values()] == [("reviewer", "worker/1")]
+    assert [e["source"] for e in on_bus(events, REVIEW_REQUESTED, ends=aid)] == ["worker/1"]
 
 
 def test_the_operator_stops_whoever_holds_a_ticket(env):
@@ -249,7 +260,7 @@ def test_a_report_from_a_machine_that_does_not_hold_the_work_is_ignored(env):
     t = a_ticket(store)
     sched = Scheduler(project, store, events)
     sched.recover()
-    with FakeMachine(events, heartbeat=0.05) as m:
+    with FakeMachine(events, roles=("worker",), heartbeat=0.05) as m:
         sched.tick()
         aid = next(iter(store.assignments()))
         wait_for(lambda: on_bus(events, ACCEPTED, assignment=aid))
@@ -259,9 +270,9 @@ def test_a_report_from_a_machine_that_does_not_hold_the_work_is_ignored(env):
         sched.tick()
         assert store.get_ticket(t.id).state == State.IN_PROGRESS and aid in store.assignments()     # still worker/1's
         m.finish.set()
-        wait_for(lambda: on_bus(events, REPORTED, assignment=aid, role="worker") and on_bus(events, REPORTED)[-1]["source"] == "worker/1")
+        wait_for(lambda: on_bus(events, REVIEW_REQUESTED, ends=aid))
         sched.tick()
-    assert store.get_ticket(t.id).state == State.READY_FOR_REVIEW                        # worker/1's report applied, review offered
+    assert store.get_ticket(t.id).state == State.READY_FOR_REVIEW                        # worker/1's request recorded, the review stands
     assert [a["role"] for a in store.assignments().values()] == ["reviewer"]
     assert [n["author"] for n in store.notes(t.id)] == ["worker"] and "impostor" not in str(store.notes(t.id))
 

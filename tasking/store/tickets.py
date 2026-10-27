@@ -63,7 +63,7 @@ class Tickets:
             tid = f"{self.prefix}-{data['counters']['ticket']}"
             t = Ticket(id=tid, **fields)
             data["tickets"][tid] = t.to_dict()
-            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.events.source, by=by, created=True)
+            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.writer, by=by, created=True)
             write(self.project.tickets_file, data)
         self.measures.write(points)
         self.events.emit("ticket.created", ticket=tid, title=t.title, by=t.created_by)
@@ -95,9 +95,14 @@ class Tickets:
         self.events.emit("ticket.updated", ticket=ticket_id, fields=sorted(changes))
         return t
 
-    def transition(self, ticket_id: str, expected_version: int | None, to_state: State, by: str | None = None, **fields: Any) -> Ticket:
+    def transition(self, ticket_id: str, expected_version: int | None, to_state: State, by: str | None = None,
+                   cause: dict | None = None, because: str | None = None, **fields: Any) -> Ticket:
         """``by``: the machine whose report or request moves the ticket (measures.py); the
-        writer's own when None."""
+        writer's own when None. ``cause``: the event (flat) that caused it, kept as the ticket's
+        ``caused_by`` and named as ``ticket.transitioned``'s causationid; when another machine
+        published it, the announcement is the record's and carries no subject (events.py).
+        ``because``: the id of an event the writer acts on (the gate: the approval), named as the
+        causationid of an announcement that keeps its subject."""
         with self._locked():
             data = self._t()
             d = data["tickets"].get(ticket_id)
@@ -114,17 +119,18 @@ class Tickets:
                     d[k] = v
             if to_state not in ACTIVE:                       # back to waiting: nobody owns it
                 d["owner"] = fields.get("owner")
+            d["caused_by"] = (cause or {}).get("id") or because
             d["state"] = to_state.value
             d["state_since"] = now()
             d["updated_at"] = d["state_since"]
             d["version"] += 1
-            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.events.source, by=by,
+            points = self.measures.ticket_points(data["tickets"], data["metric_counts"], source=self.writer, by=by,
                                                  src=src.value, dst=to_state.value)
             write(self.project.tickets_file, data)
             t = Ticket.from_dict(d)
         self.measures.write(points)
-        held = {"assignment": fields["assignment"]} if fields.get("assignment") else {}   # an acceptance's confirmation names it
-        self.events.emit("ticket.transitioned", ticket=ticket_id, owner=t.owner, **{"from": src.value, "to": to_state.value}, **held)
+        held = {"assignment": fields["assignment"]} if fields.get("assignment") else {}   # a claim's transition names it
+        self.events.emit("ticket.transitioned", cause=cause, because=because, ticket=ticket_id, owner=t.owner, **{"from": src.value, "to": to_state.value}, **held)
         return t
 
     def reassert_levels(self) -> None:
@@ -133,14 +139,15 @@ class Tickets:
         measuring its stocks (tasking/measures.py)."""
         self.measures.write(self.measures.level_points(self._t()["tickets"]))
 
-    def add_note(self, ticket_id: str, note: Note) -> None:
+    def add_note(self, ticket_id: str, note: Note, cause: dict | None = None) -> None:
+        """``cause``: the event (flat) the note records, as for ``transition``."""
         with self._locked():
             data = self._t()
             if ticket_id not in data["tickets"]:
                 raise StoreError(f"no ticket {ticket_id}")
             data["notes"].setdefault(ticket_id, []).append(note.to_dict())
             write(self.project.tickets_file, data)
-        self.events.emit("ticket.note_added", ticket=ticket_id, author=note.author, kind=note.kind)
+        self.events.emit("ticket.note_added", cause=cause, ticket=ticket_id, author=note.author, kind=note.kind)
 
     def notes(self, ticket_id: str) -> list[dict]:
         return list(self._t()["notes"].get(ticket_id, []))

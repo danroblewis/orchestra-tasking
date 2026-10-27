@@ -1,10 +1,13 @@
 """A worker that is a program: it does tasks that are shell commands.
 
 It fills the task system's ``worker`` role by speaking the assignment protocol on Orchestra's bus
-(orchestra-tasking: tasking/assignments.py), using nothing but Orchestra's library. On
-``task.assigned`` for a worker it accepts, runs the commands the ticket's description gives in
-fenced ``sh`` blocks, in order, in the ticket's workspace, says it is still working while they
-run, and reports READY_FOR_REVIEW:
+(orchestra-tasking: tasking/assignments.py), using nothing but Orchestra's library. On an offer
+for a worker (``task.assigned`` from the task system's queue, or ``changes.requested`` from a
+reviewer addressed to this instance) it claims it (``task.accepted``) and reads the bus until its
+claim is there: it goes on only if no other claim of the offer came first. Then it runs the
+commands the ticket's description gives in fenced ``sh`` blocks, in order, in the ticket's
+workspace, says it is still working while they run, and asks the reviewers directly
+(``review.requested``), with its summary:
 
 - a task (the offer names no branch): the workspace is a folder of the ticket's own, empty at
   first; nothing of the repository is there, and ``ORCHESTRA_REPO`` names the repository for a
@@ -13,7 +16,9 @@ run, and reports READY_FOR_REVIEW:
 - code (the offer names a branch): the workspace is a git worktree of the repository on that
   branch, so the commands change the repository's files where they are; the worker commits what
   they changed, with the commands and their exit codes in the commit message, for the reviewer
-  and the merge gate. Nothing else is written into the worktree.
+  and the merge gate, and runs the offer's ``unit_command`` on that commit for the reviewer to
+  read. Nothing else is written into the worktree. Commands that changed nothing leave nothing to
+  review: it reports BLOCKED.
 
 It reports BLOCKED when the ticket gives no commands, or was rejected and running the same
 commands again could only give the same result: a program cannot act on a reviewer's words, so it
@@ -34,6 +39,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from orchestra.config import load_project
@@ -41,6 +47,8 @@ from orchestra.events import Events
 
 ROLE = "worker"
 ASSIGNED, ACCEPTED, WORKING, REPORTED, RELEASED = "task.assigned", "task.accepted", "task.working", "task.reported", "task.released"
+REVIEW_REQUESTED, CHANGES_REQUESTED = "review.requested", "changes.requested"
+OFFERS = (ASSIGNED, CHANGES_REQUESTED)       # what offers a worker a turn (a review request is for the reviewers)
 COMMAND_TIMEOUT_S = 300
 BLOCK = re.compile(r"```(?:sh|bash|shell)\s*\n(.*?)```", re.DOTALL)
 
@@ -85,36 +93,64 @@ def main(instance: str, only_commands: bool) -> None:
     # ORCHESTRA_MACHINE_LOG: where `orchestra run` sends this program's output when it runs it
     # ([[machines]] in orchestra.toml), so Orchestra's machine dialog can show it
     log = os.environ.get("ORCHESTRA_MACHINE_LOG")
-    events.publish("orchestra.machine.started", {"mode": "continuous", "kind": "program", "listens_for": [ASSIGNED, RELEASED],
+    events.publish("orchestra.machine.started", {"mode": "continuous", "kind": "program", "listens_for": [*OFFERS, RELEASED],
                                                  **({"log": log} if log else {})})
     print(f"{me}: waiting for {ROLE} assignments" + (" with commands (--only-commands)" if only_commands else ""), flush=True)
     offset, jobs = events.end(), {}                      # assignment id -> the Job doing it
     while True:
+        start = offset                                   # the offers below are after this: a claim is read back from here
         evs, offset = events.after(offset)
         for ev in evs:
             d = ev.get("data") or {}
-            if ev.get("type") == ASSIGNED and d.get("role") == ROLE:
+            if ev.get("type") in OFFERS and d.get("role") == ROLE and d.get("to") in (None, me):
                 if only_commands and not can_do(d, env):
                     print(f"{me}: {d.get('ticket')} not taken: no `sh` block, or only the commands a rejection already "
                           "answered; left for another worker", flush=True)
                     continue
-                jobs[d["assignment"]] = Job(events, me, d, jobs, env)
+                jobs[d["assignment"]] = Job(events, me, {**d, "id": ev.get("id")}, jobs, env, since=start)
             elif ev.get("type") == RELEASED and d.get("assignment") in jobs and d.get("instance") in (None, me):
                 jobs[d["assignment"]].stop()            # the lease ran out, the operator stopped it, or another holds it
         time.sleep(0.5)
 
 
+def first_claim(evs: list[dict], offer: dict) -> str | None:
+    """The source of the first valid claim of ``offer`` among ``evs`` (envelopes, in bus order):
+    its instance, if sent, is its source, and an offer addressed ``to`` one instance is claimed by
+    that one. The bus's order decides a race; every reader sees the same."""
+    for ev in evs:
+        d, src = ev.get("data") or {}, ev.get("source")
+        if ev.get("type") == ACCEPTED and d.get("assignment") == offer["assignment"] and src \
+                and d.get("instance") in (None, src) and offer.get("to") in (None, src):
+            return src
+    return None
+
+
 class Job:
-    def __init__(self, events: Events, me: str, offer: dict, jobs: dict, env: dict[str, str]):
-        self.events, self.me, self.offer, self.jobs, self.env = events, me, offer, jobs, env
+    def __init__(self, events: Events, me: str, offer: dict, jobs: dict, env: dict[str, str], since: int = 0):
+        self.events, self.me, self.offer, self.jobs, self.env, self.since = events, me, offer, jobs, env, since
         self.folder = Path(offer["workspace"])
         self.released, self.done = threading.Event(), threading.Event()
         self.proc: subprocess.Popen | None = None
         threading.Thread(target=self.run, daemon=True).start()
 
-    def say(self, kind: str, **data) -> None:
-        self.events.publish(kind, {"assignment": self.offer["assignment"], "ticket": self.offer["ticket"], "role": ROLE, **data},
-                            subject=self.offer["ticket"])
+    def say(self, kind: str, data: dict | None = None, **more) -> dict:
+        """Publish ``kind`` about the ticket, caused by the offer: ``data`` as given, or this
+        assignment's fields with ``more``."""
+        data = data if data is not None else {"assignment": self.offer["assignment"], "ticket": self.offer["ticket"], "role": ROLE, **more}
+        return self.events.publish(kind, data, subject=self.offer["ticket"],
+                                   **({"causationid": self.offer["id"]} if self.offer.get("id") else {}))
+
+    def holds(self, claim: dict) -> bool:
+        """Read the bus from the offer until the claim is there: this instance holds the turn if
+        no other valid claim came first (and nothing released it meanwhile)."""
+        end = time.time() + float(self.offer.get("lease_s") or 180)
+        while time.time() < end and not self.released.is_set():
+            evs, _ = self.events.after(self.since)
+            ids = [e.get("id") for e in evs]
+            if claim.get("id") in ids:
+                return first_claim(evs[:ids.index(claim["id"]) + 1], self.offer) == self.me
+            time.sleep(0.2)
+        return False
 
     def stop(self) -> None:
         self.released.set()
@@ -122,16 +158,31 @@ class Job:
             self.proc.kill()
 
     def run(self) -> None:
-        self.say(ACCEPTED, instance=self.me)
-        threading.Thread(target=self.heartbeat, daemon=True).start()
         try:
+            if not self.holds(self.say(ACCEPTED, instance=self.me)):
+                print(f"{self.me}: {self.offer['ticket']}: another worker's claim came first; not mine", flush=True)
+                return
+            threading.Thread(target=self.heartbeat, daemon=True).start()
             report = self.work()
-            if report is not None and not self.released.is_set():
+            if report is None or self.released.is_set():
+                return
+            if report.get("state") == "READY_FOR_REVIEW":
+                self.say(REVIEW_REQUESTED, self.review_request(report))
+            else:
                 self.say(REPORTED, report=report, failed=False, text="")
-                print(f"{self.me}: {self.offer['ticket']} {report['state']}", flush=True)
+            print(f"{self.me}: {self.offer['ticket']} {report['state']}", flush=True)
         finally:
             self.done.set()
             self.jobs.pop(self.offer["assignment"], None)
+
+    def review_request(self, report: dict) -> dict:
+        """The reviewers' offer: this turn ends (``ends``) and a review of the same workspace is
+        offered, with the summary, the commit and the unit command's output."""
+        o, tid = self.offer, self.offer["ticket"]
+        keep = {k: o.get(k) for k in ("workspace", "branch", "base", "lease_s", "unit_command") if k in o}
+        return {**keep, "assignment": f"{tid}.reviewer.{uuid.uuid4().hex[:8]}", "ticket": tid, "role": "reviewer", "ends": o["assignment"],
+                "brief": o.get("brief") or {}, "review": {"summary": report["summary"], "commit": report.get("commit"),
+                                                          "test_output": report.get("test_output"), "worker": self.me}}
 
     def heartbeat(self) -> None:
         """Six heartbeats a lease (the offer's ``lease_s``), so one lost on the way loses nothing."""
@@ -177,14 +228,38 @@ class Job:
         if self.released.is_set():
             return None
         printed = (last or "").strip()[-600:] or "(nothing)"
+        found: dict = {}
         if code:
             outcome = self.commit(f"{tid}: {brief.get('title', '')}\n\n" + "\n".join(lines[2:]))
+            found = self.verified()
+            if found.get("blocked"):
+                ran_before_file(self.offer, self.env).write_text("\n".join(cmds), encoding="utf-8")
+                return {"state": "BLOCKED", "summary": outcome, "blocked_reason": found["blocked"]}
         else:
             (self.folder / "RESULT.md").write_text("\n".join(lines), encoding="utf-8")
             outcome = "The commands and their full output are in RESULT.md."
         ran_before_file(self.offer, self.env).write_text("\n".join(cmds), encoding="utf-8")
-        return {"state": "READY_FOR_REVIEW",
+        return {"state": "READY_FOR_REVIEW", **found,
                 "summary": f"Ran {len(cmds)} command(s), exit codes {codes}. The last printed: {printed}. {outcome}"}
+
+    def verified(self) -> dict:
+        """Code: the commit to review and the unit command's output on it, or why there is
+        nothing to review (no commit beyond the base)."""
+        git = ["git", "-C", str(self.folder)]
+        run = lambda *a: subprocess.run([*git, *a], env=self.env, capture_output=True, text=True, check=False)
+        head, base = run("rev-parse", "HEAD").stdout.strip(), self.offer.get("base")
+        if base and run("merge-base", "--is-ancestor", "HEAD", base).returncode == 0:
+            return {"blocked": f"The commands changed nothing in the worktree, so there is nothing beyond {base} to review. "
+                               "Commands that change the repository, or a worker that can act on prose, would move it."}
+        out = None
+        if self.offer.get("unit_command"):
+            try:
+                r = subprocess.run(["bash", "-c", self.offer["unit_command"]], cwd=self.folder, env=self.env, capture_output=True,
+                                   text=True, timeout=COMMAND_TIMEOUT_S, check=False)
+                out = f"$ {self.offer['unit_command']}\n{(r.stdout + r.stderr)[-6000:]}\n[{'passed' if r.returncode == 0 else 'failed'}]"
+            except subprocess.TimeoutExpired:
+                out = f"$ {self.offer['unit_command']}\n(stopped after {COMMAND_TIMEOUT_S} s)\n[failed]"
+        return {"commit": head, "test_output": out}
 
     def commit(self, record: str) -> str:
         """Commit what the commands changed in the worktree, the record of the run as the message

@@ -49,6 +49,18 @@ class Runtime:
     def drop_assignment(self, aid: str) -> dict | None:
         return self._mutate_runtime(lambda d: d["assignments"].pop(aid, None))
 
+    def hand_over(self, aid: str, rec: dict) -> None:
+        """One turn ends and the next is offered in its place (a review requested, changes
+        requested): the assignment ``aid`` is dropped and ``rec`` recorded, and a pool worktree
+        ``aid`` held passes to ``rec`` with the work, in one write."""
+        def fn(d):
+            d["assignments"].pop(aid, None)
+            d["assignments"][rec["id"]] = rec
+            for s in d["pool"].values():
+                if s.get("holder") == aid:
+                    s["holder"] = rec["id"]
+        self._mutate_runtime(fn)
+
     def untaken(self) -> dict[str, dict]:
         """The offers nobody took within their lease, by ``<ticket>/<role>``: ticket, role, since
         (the first of them), misses (how many), version (the ticket's, when last offered) and

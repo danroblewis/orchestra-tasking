@@ -63,8 +63,9 @@ Where to look, at http://127.0.0.1:8071:
   `reviewer` as observed from the bus (each announces where its log is, so its dialog shows
   it), `planner` (run.py's one-shot requests, a scheduled program) and `orchestra-host`; what
   each publishes and listens for, and the event map between
-  them: `task.assigned` from the scheduler, `task.accepted`/`task.reported` from the machines,
-  `task.requested` from the planner, `request.done` back. `task_web` appears once an operator
+  them: `task.assigned` from the scheduler, `task.accepted` from the machines, `review.requested`
+  from the worker straight to the reviewer, `changes.requested` from the reviewer straight back to
+  the worker, `task.requested` from the planner, `request.done` back. `task_web` appears once an operator
   control has been pressed.
 - **Dynamics**: no model. With four tickets every series has fewer than five events, or
   changes in fewer than five steps, which is discovery's bar for a stock or a flow (fewer

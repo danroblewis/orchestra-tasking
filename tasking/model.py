@@ -124,6 +124,9 @@ class Ticket:
     branch: str | None = None
     owner: str | None = None        # the machine instance working it now (worker/1, reviewer/2); set by the scheduler
     reviewed_commit: str | None = None
+    worker: str | None = None       # the worker instance that last worked it: rejected work returns to it (SPEC.md section 3)
+    test_output: str | None = None  # code: the worker's run of the unit command on reviewed_commit, for a review offered from the queue
+    caused_by: str | None = None    # the id of the event that caused its last transition (CloudEvents causationid)
     blocked_reason: str | None = None
     feedback: str | None = None
     rejected_by: str | None = None

@@ -15,10 +15,11 @@ from .tickets import Tickets
 
 
 class LocalStore(Tickets, Runtime):
-    def __init__(self, project: Project, events: Events):
+    def __init__(self, project: Project, events: Events, writer: str | None = None):
         self.project = project
         self.prefix = project.config.ticket_prefix
         self.events = events                     # every change is an observation from this source
+        self.writer = writer or events.source    # whose record the metric counters are (measures.py): the gate's store writes the scheduler's
         self.measures = Measures(project)
         project.ensure_dirs()
 

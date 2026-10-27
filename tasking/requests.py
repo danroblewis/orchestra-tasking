@@ -57,7 +57,7 @@ def ask(events, command: str, args: dict, by: str) -> dict:
     offset = events.end()                           # from now: the answer comes after the request
     rid = uuid.uuid4().hex[:12]
     if command in QUERIES:
-        events.publish(QUERY, {"request": rid, "op": command, "args": args, "by": by}, subject=_subject(args))
+        events.publish(QUERY, {"request": rid, "op": command, "args": args, "by": by})     # a read acts on no ticket: no subject
     elif command in REQUESTS:
         events.publish(REQUESTS[command], {"request": rid, "args": args, "by": by}, subject=_subject(args))
     else:
@@ -131,8 +131,12 @@ class Desk:
             except Exception as e:  # noqa: BLE001 - a refused request is an answer, not a crash
                 result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         ok = bool(result.get("ok", True))
+        # the answer to a change is the task system acting on the ticket (its subject); the answer
+        # to a query acts on nothing, so it names none, and the map does not put the task system
+        # between the machines that work a ticket whenever a planner reads it
+        subject = None if query else _subject(args) or (result.get("ticket") or {}).get("id")
         self.events.publish(DONE if ok else REFUSED, {"request": ev.get("request"),
                                                       **({"result": result} if ok else {"error": result.get("error")})},
-                            subject=_subject(args) or (result.get("ticket") or {}).get("id"))
+                            **({"subject": subject} if subject else {}))
         if op not in QUERIES or age > RESUME_S:
             self.log(f"request {op} by {by or 'someone'}: {'done' if ok else 'refused: ' + str(result.get('error'))[:80]}")

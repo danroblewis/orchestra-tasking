@@ -1,8 +1,10 @@
-"""The task system's scheduler: it offers ready tickets to the roles that work them (a worker, a
-reviewer) over Orchestra's bus, follows what the machines that took them say, lands approved
-code through the merge gate, and runs the probes in ``orchestra.toml``. It starts no machine:
-whatever fills a role answers (tasking/assignments.py). What a report makes of a ticket is
-tasking/reports.py. SPEC.md section 4."""
+"""The task system's scheduler: the record, not the hub (the owner's decision D17). It offers
+waiting tickets to the roles that work them (a worker, a reviewer) over Orchestra's bus, follows
+what the machines say to each other as the work passes between them (a review requested, changes
+requested, an approval) and records it, takes back what a silent machine holds, lands approved
+code through the merge gate (``merge_gate``), and runs the probes in ``orchestra.toml``. It
+starts no machine and relays nothing: whatever fills a role answers (tasking/assignments.py).
+What an event makes of a ticket is tasking/reports.py. SPEC.md sections 3 and 4."""
 
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ import os
 import signal
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,19 +22,22 @@ from orchestra.runtime import alive
 
 from .assignments import (
     ACCEPTED,
+    APPROVED,
     ASSIGNED,
+    CHANGES_REQUESTED,
     LEASE_S,
     RELEASED,
     REPORTED,
+    REVIEW_REQUESTED,
     WORKING,
     brief,
     new_id,
 )
 from .config import Project
-from .events import SCHEDULER, SUPERVISOR, Events
-from .gate import run_gate, run_specs
+from .events import GATE, SCHEDULER, SUPERVISOR, Events
+from .gate import run_gate
 from .git import Git, GitError
-from .model import ACTIVE, State, Ticket, TransitionError, effective_priorities, is_ready, now
+from .model import ACTIVE, Note, State, Ticket, TransitionError, effective_priorities, is_ready, now
 from .pool import Pool
 from .probes import Prober, config_probes
 from .reports import Reports
@@ -45,6 +51,9 @@ OFFERED_FROM = {"worker": {State.OPEN, State.REJECTED}, "reviewer": {State.READY
 AGAIN_FIRST_S = 60.0                  # an offer nobody took within its lease goes out again after this pause,
 AGAIN_MAX_S = 900.0                   # doubled with each offer nobody took, up to this
 MACHINE_STARTED = "orchestra.machine.started"
+ENDS = (REVIEW_REQUESTED, CHANGES_REQUESTED, APPROVED)    # they end the turn ``ends`` names
+FOLLOWED = (ACCEPTED, WORKING, REPORTED, *ENDS)
+SETTLED_KEPT = 1000                   # the turns lately settled, so a late claim of one is not answered (it lost)
 
 
 def log(msg: str) -> None:
@@ -71,7 +80,10 @@ class Scheduler:
         self.git = Git(project.repo_root)
         self.cfg = project.config
         self.gate_thread: threading.Thread | None = None
-        self.preparing: dict[str, threading.Thread] = {}   # assignment -> the review being prepared (its tests run)
+        # the gate is a machine of its own (merge_gate): its events, and the record's changes it makes, are its
+        self.gate_events = Events.for_project(project, source=GATE)
+        self.gate_store = LocalStore(project, self.gate_events, writer=SCHEDULER)   # its counters are the record's, beside the levels
+        self.settled: deque[str] = deque(maxlen=SETTLED_KEPT)
         self.stop = threading.Event()
         self.staging = Staging(project, store, events)
         self.prober = Prober(project, store, events)
@@ -153,8 +165,11 @@ class Scheduler:
         # the record says the scheduler is up: by then the desk listens, so a request sent now is heard
         self.store.set_scheduler(os.getpid(), time.time())
         self.events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
-                                                          "listens_for": sorted({*REQUESTS.values(), QUERY, ACCEPTED, WORKING, REPORTED, MACHINE_STARTED}),
+                                                          "listens_for": sorted({*REQUESTS.values(), QUERY, *FOLLOWED, MACHINE_STARTED}),
                                                           "log": str(LOG)})
+        if self.cfg.work == "code":
+            self.gate_events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
+                                                                   "listens_for": [APPROVED], "log": str(LOG)})
         log(f"project {self.project.key} on {self.project.repo_root}; workers={self.cfg.workers} reviewers={self.cfg.reviewers}")
         paused = self.store.pipeline()
         if paused.get("paused"):
@@ -180,16 +195,14 @@ class Scheduler:
             self.events.emit("scheduler.stopped")
 
     def _busy(self) -> bool:
-        return bool(self.store.assignments()) or any(t.is_alive() for t in [*self.preparing.values(), self.gate_thread] if t)
+        return bool(self.store.assignments()) or bool(self.gate_thread and self.gate_thread.is_alive())
 
     def _finish_threads(self) -> None:
         """A gate run lands or fails before the shutdown releases anything, so a ticket the gate
-        is landing is never sent back under it; the reviews being prepared finish their tests."""
+        is landing is never sent back under it."""
         if self.gate_thread and self.gate_thread.is_alive():
             log("waiting for the gate run to finish")
             self.gate_thread.join(timeout=self.cfg.gate_timeout + self.cfg.build_timeout + self.cfg.acceptance_ready_timeout)
-        for th in self.preparing.values():
-            th.join(timeout=sum(s.timeout for s in self.cfg.unit))
 
     def tick(self) -> None:
         self.project.reload_config()
@@ -317,8 +330,6 @@ class Scheduler:
                         self._settle(a, lambda a=a: self.reports.stopped(a))
 
     def _reap(self) -> None:
-        for k in [k for k, th in self.preparing.items() if not th.is_alive()]:
-            self.preparing.pop(k)
         if self.gate_thread and not self.gate_thread.is_alive():
             self.gate_thread = None
 
@@ -343,10 +354,12 @@ class Scheduler:
         return path
 
     def _assign(self, t: Ticket, role: str) -> bool:
-        """Offer a ticket to a role: get its place ready (a folder, or a branch in code mode),
-        record the assignment with its lease, and say so on the bus. Whatever serves the role
-        takes it; the ticket moves (IN_PROGRESS, IN_REVIEW) and gets its owner when one accepts
-        (``_follow``), so an offer nobody takes changes nothing."""
+        """Offer a waiting ticket to a role (the queue): get its place ready (a folder, or a branch
+        in code mode), record the assignment with its lease, and say so on the bus. Whatever
+        serves the role takes it; the ticket moves (IN_PROGRESS, IN_REVIEW) and gets its owner
+        when one claims it (``_follow``), so an offer nobody takes changes nothing. Rejected work
+        is offered first to the worker that did it (``to``), for the return timeout, unless it
+        already waited for that worker since it was rejected."""
         tasks = self.cfg.work != "code"
         aid = new_id(t.id, role)
         try:
@@ -378,104 +391,67 @@ class Scheduler:
             return False
         if self.cfg.reuse_worktrees and not tasks:
             self._pool_got(path, t.id, role)
+        untaken = self.store.untaken().get(f"{t.id}/{role}") or {}
+        to = t.worker if role == "worker" and t.state == State.REJECTED and t.worker and untaken.get("returned") != t.version else None
+        lease = self.cfg.return_timeout if to else LEASE_S
         turns = {"worker_turns": t.worker_turns + 1, "branch": branch} if role == "worker" else {}   # as the ticket will read once accepted
         offer = {"assignment": aid, "role": role, "ticket": t.id, "workspace": str(path), "branch": branch,
-                 "lease_s": LEASE_S, "brief": {**brief(t), **turns}}
-        if role == "worker" and not tasks and self.cfg.unit:
+                 "base": None if tasks else self.cfg.base_branch, "lease_s": LEASE_S, "brief": {**brief(t), **turns}}
+        if to:
+            offer["to"] = to
+        if not tasks and self.cfg.unit:
             offer["unit_command"] = self.cfg.unit[0].command
-        record = {"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch,
-                  "assigned_at": time.time(), "lease_until": time.time() + LEASE_S, "instance": None, "accepted_at": None,
-                  "offered_since": (self.store.untaken().get(f"{t.id}/{role}") or {}).get("since") or time.time()}   # the first of the offers nobody took
-        if role == "reviewer" and not tasks:
-            # verifying is the task system's: the unit tests run on the branch before the review is
-            # offered, so the lease starts when the offer goes out; until then the record is held
-            # for as long as the tests may take
-            preparing = sum(s.timeout for s in self.cfg.unit) + LEASE_S
-            self.store.put_assignment({**record, "lease_until": time.time() + preparing})
-            th = threading.Thread(target=self._offer_review, args=(aid, t, path, offer), daemon=True, name=f"{aid}:prepare")
-            self.preparing[aid] = th
-            th.start()
-            return True
-        if role == "reviewer":                       # a task: nothing to verify before the review
-            offer["review"] = {"summary": self._worker_summary(t.id), "commit": None, "test_output": None}
+        if role == "reviewer":                       # what the worker said and ran when it asked for the review, as recorded
+            offer["review"] = {"summary": self._worker_summary(t.id), "commit": None if tasks else t.reviewed_commit,
+                               "test_output": None if tasks else t.test_output, "worker": t.worker}
+        record = {"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch, "to": to,
+                  "assigned_at": time.time(), "lease_until": time.time() + lease, "instance": None, "accepted_at": None,
+                  "offered_since": untaken.get("since") or time.time()}   # the first of the offers nobody took
         self.store.put_assignment(record)
         self.events.publish(ASSIGNED, offer, subject=t.id)
-        log(f"{t.id}: assigned to a {role} ({aid})")
+        log(f"{t.id}: assigned to " + (f"{to} (the worker that did it)" if to else f"a {role}") + f" ({aid})")
         return True
 
     def _worker_summary(self, tid: str) -> str:
         return next((n.get("text", "") for n in reversed(self.store.notes(tid)) if n.get("author") == "worker"), "")
 
-    def _offer_review(self, aid: str, t: Ticket, path: Path, offer: dict) -> None:
-        """A code review's offer: the worker's summary, the commit to review, and the unit tests'
-        output on it, then the assignment goes out and its lease starts. A review that cannot be
-        prepared is not offered: the record is dropped and the ticket waits for a reviewer again."""
-        try:
-            test_output = None
-            if self.cfg.unit:
-                _ok, res = run_specs(self.cfg.unit, path, self.project.logs_dir / "review" / t.id, stage="unit")
-                test_output = "\n".join(f"$ {r['command']}\n{r['tail']}\n[{r['status']}]" for r in res)
-            commit = t.reviewed_commit or self.git.rev_parse("HEAD", cwd=path)
-        except Exception as e:  # noqa: BLE001 - whatever failed, the ticket must not stay held
-            log(f"{t.id}: cannot prepare the review: {e!r}")
-            self.store.drop_assignment(aid)
-            return
-        if aid not in self.store.assignments():                   # released meanwhile (the operator, a shutdown)
-            return
-        offer["review"] = {"summary": self._worker_summary(t.id), "commit": commit, "test_output": test_output}
-        self.store.update_assignment(aid, lease_until=time.time() + LEASE_S)
-        self.events.publish(ASSIGNED, offer, subject=t.id)
-        log(f"{t.id}: assigned to a reviewer ({aid})")
-
     def _follow(self) -> None:
-        """What the assignees said since the last tick, applied: the first acceptance names the
-        holder and moves the ticket, a heartbeat extends the lease, a report is applied to the
-        ticket; anything from a machine that does not hold the assignment is ignored. Then every
-        lease that ran out is released: a holder that went quiet counts as a crash; an offer
-        nobody took is dropped and offered again after a pause (``_untaken``), or as soon as a
-        machine that listens for offers starts."""
+        """What the machines said since the last tick, recorded: the first valid claim of an
+        offer names its holder and moves the ticket, a heartbeat extends the lease, and the event
+        that ends a turn is applied to the ticket: a review requested or changes requested (the
+        next turn is recorded as offered, by the machine that offered it), an approval, a report.
+        Anything from a machine that does not hold the turn is ignored. Then every lease that ran
+        out is released: a holder that went quiet counts as a crash; an offer nobody took is
+        dropped and offered again from the queue (``_untaken``)."""
         out = self.store.assignments()
         evs, self.offset = self.events.after(self.offset)
         for ev in evs:
             try:
-                if ev.get("type") == MACHINE_STARTED and ASSIGNED in (ev.get("listens_for") or []) and self.store.untaken():
+                kind = ev.get("type")
+                if kind == MACHINE_STARTED and ASSIGNED in (ev.get("listens_for") or []) and self.store.untaken():
                     self.store.offer_untaken_now()
                     log(f"{ev.get('source')} started and listens for {ASSIGNED}: the offers nobody took go out again now")
                     continue
-                aid = ev.get("assignment")
-                if ev.get("type") not in (ACCEPTED, WORKING, REPORTED):
+                if kind not in FOLLOWED:
                     continue
+                aid = ev.get("ends") if kind in ENDS else ev.get("assignment")
                 if aid not in out:
-                    # an assignment this scheduler does not hold: released (a restart, a lease that ran
-                    # out, the operator) or settled already; a heartbeat for one is not worth a line
-                    if ev["type"] != WORKING:
-                        log(f"{ev.get('ticket')}: {ev['type']} from {ev.get('source')} for assignment {aid} ignored: not held "
-                            "(released or already settled); the ticket is offered afresh")
-                    if ev["type"] == ACCEPTED and aid and ev.get("source"):
-                        # a late acceptance is answered, or the instance waits out its lease for a word
-                        self.events.publish(RELEASED, {"assignment": aid, "ticket": ev.get("ticket"), "role": ev.get("role"),
-                                                       "reason": "not held (released or already settled)",
-                                                       "instance": ev["source"]}, subject=ev.get("ticket"))
+                    self._not_held(ev, aid)
                     continue
                 a = out[aid]
-                if ev["type"] == ACCEPTED:
-                    if a.get("instance") is None:
-                        if self._accept(a, ev):
-                            out[aid] = self.store.assignments().get(aid, a)
-                        else:
-                            out.pop(aid, None)
-                    elif a["instance"] != ev["source"]:
-                        # two machines answered: the first keeps it, the other is told to stop
-                        self._release(a, f"already taken by {a['instance']}", instance=ev["source"])
+                if kind == ACCEPTED:
+                    self._claim(a, ev, out)
                     continue
                 if ev.get("source") != a.get("instance"):
                     continue
-                if ev["type"] == WORKING:
+                if kind == WORKING:
                     said = {"text": ev["text"][-200:]} if isinstance(ev.get("text"), str) else {}
                     self.store.update_assignment(aid, lease_until=time.time() + LEASE_S, **said)
-                else:
-                    out.pop(aid)
-                    self._settle(a, lambda a=a, ev=ev: self.reports.apply(a, ev.get("report"), ev.get("text") or "", bool(ev.get("failed")), ev.get("commit")))
+                    continue
+                out.pop(aid)
+                nxt = self._end(a, ev)
+                if nxt is not None:
+                    out[nxt["id"]] = nxt
             except Exception as e:  # noqa: BLE001 - one bad event never loses the others
                 log(f"{ev.get('ticket')}: cannot apply {ev.get('type')} from {ev.get('source')}: {e!r}")
         now_t = time.time()
@@ -490,7 +466,100 @@ class Scheduler:
             elif a["lease_until"] < now_t:
                 self._release(a, f"no word from {a['instance']} for {int(LEASE_S)} s")
                 log(f"{a['ticket']}: {a['role']} assignment {aid} released: the lease ran out")
-                self._settle(a, lambda a=a: self.reports.apply(a, None, "", True, None))
+                self._settle(a, lambda a=a: self.reports.apply(a, None, "", True))
+
+    def _not_held(self, ev: dict, aid: str | None) -> None:
+        """An event for a turn this scheduler does not hold: released (a restart, a lease that ran
+        out, the operator), settled already, or never valid. A claim of it is answered, or the
+        instance would wait out its lease for a word, unless the turn was lately settled: then
+        another claim was first, and the claimant read that on the bus."""
+        kind = ev.get("type")
+        if kind != WORKING:                       # a heartbeat for one is not worth a line
+            log(f"{ev.get('ticket')}: {kind} from {ev.get('source')} for assignment {aid} ignored: not held "
+                "(released, already settled, or never valid)")
+        if kind == ACCEPTED and aid and ev.get("source") and aid not in self.settled:
+            self.events.publish(RELEASED, {"assignment": aid, "ticket": ev.get("ticket"), "role": ev.get("role"),
+                                           "reason": "not held (released, already settled, or never valid)",
+                                           "instance": ev["source"]}, subject=ev.get("ticket"))
+
+    def _claim(self, a: dict, ev: dict, out: dict) -> None:
+        """A claim of a held offer. The first valid one holds it (``_accept``); a later one lost
+        the race and knows it from the bus, so nothing is said to it. A claim of an offer
+        addressed to another instance is not valid and changes nothing."""
+        if a.get("instance") is not None:
+            if a["instance"] != ev.get("source"):
+                log(f"{a['ticket']}: {ev.get('source')} claimed {a['id']} after {a['instance']}, which holds it")
+            return
+        if a.get("to") and ev.get("source") != a["to"]:
+            log(f"{a['ticket']}: {ev.get('source')} claimed {a['id']}, which is offered to {a['to']} only; ignored")
+            return
+        if self._accept(a, ev):
+            out[a["id"]] = self.store.assignments().get(a["id"], a)
+        else:
+            out.pop(a["id"], None)
+
+    def _end(self, a: dict, ev: dict) -> dict | None:
+        """The holder ended its turn: what it said is applied, and the assignment is dropped; when
+        the work passed on to another machine (a review requested, changes requested), the turn
+        that event offers is recorded in its place and returned."""
+        kind = ev["type"]
+        self.settled.append(a["id"])              # its holder ended it: a later claim of it lost, and knows
+        if kind == REVIEW_REQUESTED and a["role"] == "worker":
+            return self._hand_over(a, ev, "reviewer", lambda: self.reports.review_requested(a, ev))
+        if kind == CHANGES_REQUESTED and a["role"] == "reviewer":
+            return self._hand_over(a, ev, "worker", lambda: self.reports.verdict(a, ev))
+        if kind == APPROVED and a["role"] == "reviewer":
+            self._settle(a, lambda: self.reports.verdict(a, ev))
+        elif kind == REPORTED:
+            self._settle(a, lambda: self.reports.apply(a, ev.get("report"), ev.get("text") or "", bool(ev.get("failed")), cause=ev))
+        else:
+            self._settle(a, lambda: self.reports.apply(a, None, f"{kind} does not end a {a['role']}'s turn", True))
+        return None
+
+    def _hand_over(self, a: dict, ev: dict, role: str, record: Callable[[], bool]) -> dict | None:
+        """The work passed on: the step is recorded (``record``), then the turn the event offers
+        stands in the record in place of the one it ended, with the same workspace (and a pool
+        worktree passes with it), for the machine that offered it to have taken. An offer the
+        record cannot stand behind (another ticket or role, another workspace, no id, rejected
+        work addressed to nobody) is not recorded: the ticket waits in the queue instead, and a
+        claim of it is released."""
+        nxt = None
+        try:
+            if not record():
+                return None
+            why = self._unfit(a, ev, role)
+            if why:
+                log(f"{a['ticket']}: the {ev['type']} from {ev.get('source')} is recorded, but its offer is not: {why}; "
+                    "the ticket waits in the queue")
+                return None
+            to = ev.get("to") if role == "worker" else None
+            lease = self.cfg.return_timeout if to else LEASE_S
+            nxt = {"id": ev["assignment"], "ticket": a["ticket"], "role": role, "workspace": a.get("workspace"), "branch": a.get("branch"),
+                   "to": to, "by": ev.get("source"), "cause": ev.get("id"), "assigned_at": time.time(), "lease_until": time.time() + lease,
+                   "instance": None, "accepted_at": None, "offered_since": time.time()}
+            self.store.hand_over(a["id"], nxt)
+            log(f"{a['ticket']}: {ev.get('source')} offered the {role}'s turn {nxt['id']}" + (f" to {to}" if to else ""))
+            return nxt
+        except Exception as e:  # noqa: BLE001 - the ticket must not stay active without a holder
+            log(f"{a['ticket']}: cannot apply the {a['role']}'s {ev['type']}: {e!r}")
+            self.reports.back_to_waiting(a["ticket"], f"the task system could not apply the {a['role']}'s {ev['type']} ({e})")
+            return None
+        finally:
+            if nxt is None:
+                self.store.drop_assignment(a["id"])
+
+    @staticmethod
+    def _unfit(a: dict, ev: dict, role: str) -> str | None:
+        """Why the offer an event that ends a turn makes cannot be recorded, or None."""
+        if not isinstance(ev.get("assignment"), str) or not ev["assignment"]:
+            return "it names no assignment"
+        if ev.get("ticket") != a["ticket"] or ev.get("role") != role:
+            return f"it offers {ev.get('ticket')}'s {ev.get('role')} turn, not {a['ticket']}'s {role}"
+        if ev.get("workspace") != a.get("workspace"):
+            return f"its workspace {ev.get('workspace')} is not the turn's {a.get('workspace')}"
+        if role == "worker" and not ev.get("to"):
+            return "rejected work is addressed to the worker that did it, and it names none"
+        return None
 
     def _untaken(self, a: dict, t: Ticket, now_t: float) -> None:
         """An offer nobody took within its lease: withdrawn, and made again after a pause that
@@ -499,6 +568,9 @@ class Scheduler:
         changed nothing: no turn, no note, no transition. The record keeps when it was first
         offered, for the Tasks panel's "offered, not taken". A ticket rewritten since the last of
         them starts over: its first offer is this one, and none were missed before it."""
+        if a.get("to"):
+            self._not_returned(a, t, now_t)
+            return
         rec = self.store.untaken().get(f"{a['ticket']}/{a['role']}")
         if rec is None or rec.get("version") != t.version:
             rec = {"ticket": a["ticket"], "role": a["role"], "misses": 0,
@@ -509,6 +581,19 @@ class Scheduler:
         self.store.set_untaken(a["ticket"], a["role"], {**rec, "misses": misses, "version": t.version, "again_at": now_t + pause})
         log(f"{a['ticket']}: nobody took the {a['role']}'s offer {a['id']} within {int(LEASE_S)} s ({misses} offer(s) not taken); "
             f"offered again in {int(pause)} s, or when the ticket changes or a machine that listens for {ASSIGNED} starts")
+
+    def _not_returned(self, a: dict, t: Ticket, now_t: float) -> None:
+        """Rejected work addressed to the worker that did it, which did not take it within the
+        return timeout (gone, or busy): taken back, said so on the ticket, and offered to any
+        worker at once."""
+        wait = int(self.cfg.return_timeout)
+        why = f"{a['to']} did not take the rejected work back within {wait} s (gone, or busy)"
+        self._release(a, f"{why}; offered to any worker")
+        self.store.add_note(t.id, Note(author=SCHEDULER, text=f"{why}; back in the queue for any worker"))
+        rec = self.store.untaken().get(f"{a['ticket']}/{a['role']}") or {"ticket": a["ticket"], "role": a["role"], "misses": 0, "since": now_t}
+        t = self.store.get_ticket(t.id)
+        self.store.set_untaken(a["ticket"], a["role"], {**rec, "version": t.version, "returned": t.version, "again_at": 0.0})
+        log(f"{a['ticket']}: {why}; offered to any worker")
 
     def _accept(self, a: dict, ev: dict) -> bool:
         """The first acceptance of an offer: the holder is the event's source (an ``instance``
@@ -522,11 +607,11 @@ class Scheduler:
                           instance=holder)
             return True
         t = self.store.get_ticket(a["ticket"])
-        fields = ({"worker_turns": t.worker_turns + 1, **({"branch": a["branch"]} if a.get("branch") else {})}
+        fields = ({"worker_turns": t.worker_turns + 1, "worker": holder, **({"branch": a["branch"]} if a.get("branch") else {})}
                   if a["role"] == "worker" else {})
         try:
             self.store.transition(t.id, t.version, State.IN_PROGRESS if a["role"] == "worker" else State.IN_REVIEW, by=machine_and_instance(holder)[0] or "unknown",
-                                  owner=holder, assignment=a["id"], **fields)
+                                  cause=ev, owner=holder, assignment=a["id"], **fields)
         except (Conflict, StoreError, TransitionError) as e:
             self._release(a, f"the ticket cannot be {'worked' if a['role'] == 'worker' else 'reviewed'} now: {e}", instance=holder)
             self.store.drop_assignment(a["id"])
@@ -550,11 +635,13 @@ class Scheduler:
             self.store.drop_assignment(a["id"])
 
     def _gate(self, ticket_id: str, slot: Path | None = None) -> None:
+        """A gate run, as the gate (``merge_gate``): it takes the approval (the ticket's
+        ``caused_by``) and acts on the ticket itself."""
         try:
             t = self.store.get_ticket(ticket_id)
-            self.store.transition(ticket_id, t.version, State.MERGING)
+            self.gate_store.transition(ticket_id, t.version, State.MERGING, because=t.caused_by)
             log(f"gate: {ticket_id}")
-            run = run_gate(self.project, self.store, self.events, ticket_id, slot=slot)
+            run = run_gate(self.project, self.gate_store, self.gate_events, ticket_id, slot=slot, because=t.caused_by)
             log(f"gate {run['id']}: {run['status']} {run.get('summary', '')}")
         except (Conflict, StoreError, TransitionError) as e:
             log(f"gate: {e}")

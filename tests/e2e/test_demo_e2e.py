@@ -111,15 +111,19 @@ def test_tickets_are_worked_reviewed_and_done_or_blocked_by_programs(demo):
     wait_until("the tickets", lambda: settled(url), timeout_s=120)
     assert states(url) == {"DEMO-1": "DONE", "DEMO-2": "DONE", "DEMO-3": "BLOCKED", "DEMO-4": "BLOCKED"}
 
-    # the whole path of a done ticket, applied by the scheduler alone
+    # the whole path of a done ticket: the work passed between the machines, the scheduler recorded it
     evs = get(url + "/api/events")["events"]                       # the last 500: the whole demo is fewer
-    trail = [(e["data"]["from"], e["data"]["to"], e["source"]) for e in evs if e["type"] == "ticket.transitioned" and e.get("subject") == "DEMO-1"]
-    assert [(a, b) for a, b, _ in trail] == [("OPEN", "IN_PROGRESS"), ("IN_PROGRESS", "READY_FOR_REVIEW"), ("READY_FOR_REVIEW", "IN_REVIEW"),
-                                             ("IN_REVIEW", "APPROVED"), ("APPROVED", "DONE")]
-    assert {src for _, _, src in trail} == {"task_scheduler"}
-    protocol = [(e["type"], e["source"]) for e in evs if e.get("subject") == "DEMO-1" and e["type"] in ("task.assigned", "task.accepted", "task.reported")]
-    assert protocol == [("task.assigned", "task_scheduler"), ("task.accepted", "worker/1"), ("task.reported", "worker/1"),
-                        ("task.assigned", "task_scheduler"), ("task.accepted", "reviewer/1"), ("task.reported", "reviewer/1")]
+    trail = [(e["data"]["from"], e["data"]["to"], e["source"], e.get("subject")) for e in evs
+             if e["type"] == "ticket.transitioned" and e["data"]["ticket"] == "DEMO-1"]
+    assert [(a, b) for a, b, _, _ in trail] == [("OPEN", "IN_PROGRESS"), ("IN_PROGRESS", "READY_FOR_REVIEW"), ("READY_FOR_REVIEW", "IN_REVIEW"),
+                                                ("IN_REVIEW", "APPROVED"), ("APPROVED", "DONE")]
+    assert {(src, subject) for _, _, src, subject in trail} == {("task_scheduler", None)}       # the record's, not an act on the ticket
+    protocol = [(e["type"], e["source"]) for e in evs if e.get("subject") == "DEMO-1" and not e["type"].startswith("ticket.")
+                and e["type"] != "task.working"]
+    assert protocol == [("task.assigned", "task_scheduler"), ("task.accepted", "worker/1"), ("review.requested", "worker/1"),
+                        ("task.accepted", "reviewer/1"), ("review.approved", "reviewer/1")]
+    four = [(e["type"], e["source"], (e["data"] or {}).get("to")) for e in evs if e.get("subject") == "DEMO-4" and e["type"] == "changes.requested"]
+    assert four == [("changes.requested", "reviewer/1", "worker/1")]                    # the rejection went to the worker itself
     assert [e["source"] for e in evs if e["type"] == "task.requested"] == ["planner"] * 4
 
     # what the machines did, as the tickets record it
@@ -170,6 +174,10 @@ def test_orchestra_observes_the_scheduler_and_the_machines(demo):
         return {"task_scheduler", "worker", "reviewer", "planner"} <= set(seen) and not any(seen[m].get("unseen") for m in ("worker", "reviewer"))
     wait_until("the machines", observed, timeout_s=60)
     assert seen["task_scheduler"]["package"] == "tasks" and seen["task_scheduler"]["mode"] == "continuous"
+    wait_until("the tickets", lambda: settled(url), timeout_s=120)
+    edges = {(h["from"], h["via"], h["to"]) for h in get(url + "/api/machines")["handoffs"]}
+    assert {("worker", "review.requested", "reviewer"), ("reviewer", "changes.requested", "worker")} <= edges, edges
+    assert not [e for e in edges if e[0] == "reviewer" and e[2] == "task_scheduler"], edges      # no verdict goes through the scheduler
     assert seen["planner"]["mode"] == "scheduled" and seen["planner"]["kind"] == "program"
     assert "task.accepted" in seen["task_scheduler"]["subscribes"] and "task.requested" in seen["task_scheduler"]["subscribes"]
     for m in ("worker", "reviewer"):

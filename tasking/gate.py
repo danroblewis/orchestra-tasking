@@ -154,10 +154,13 @@ def _stages(project: Project, cwd: Path, log_dir: Path, run: dict) -> bool:
     return True
 
 
-def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str, slot: Path | None = None) -> dict:
+def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str, slot: Path | None = None,
+             because: str | None = None) -> dict:
     """One gate run for ``ticket_id``. Its worktrees are made for the run and removed after it, or,
     with ``slot`` (a worktree of the pool the scheduler claimed for it: tasking/pool.py), that one
-    worktree is reset for the run and, if the base needs checking alone, again for that."""
+    worktree is reset for the run and, if the base needs checking alone, again for that. The
+    scheduler runs it with a store and events of the gate's own source (``merge_gate``): the gate
+    is a machine of the task system's, acting on the approval ``because`` names."""
     cfg = project.config
     git = Git(project.repo_root)
     pool = Pool(project, store, git) if slot is not None else None
@@ -180,7 +183,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
     run: dict = {"id": run_id, "ticket": ticket_id, "base_branch": base, "status": "running", "stages": [],
                  "started_at": now(), "finished_at": None, "summary": "", "conflict": False}
     store.save_gate_run(run)
-    events.emit("gate.started", gate_run=run_id, ticket=ticket_id)
+    events.emit("gate.started", because=because, gate_run=run_id, ticket=ticket_id)
     gate_branch = f"orchestra/gate-{run_id}"
     path = slot or project.gate_dir / run_id
     log_dir = project.logs_dir / run_id

@@ -1,33 +1,51 @@
-"""Assignment: how the task system gives a ticket to whoever fills a role, over Orchestra's bus.
+"""Assignment: how work passes between the machines that do it, over Orchestra's bus, and what
+the task system reads of it (SPEC.md section 3; the owner's decision D17).
 
-The scheduler does not start the machine that does the work. It offers the work to a role
-(``worker``, ``reviewer``), and whatever machine serves that role answers: a program, a person's
-tool, a machine from another package, anything that speaks this. The ticket is every event's
-subject; ``assignment`` is the id that ties an offer to its answers.
+The task system does not start the machines that do the work, and it does not relay between
+them. It offers waiting work to a role; a worker that has finished asks the reviewers directly; a
+reviewer that rejects asks the worker that did the work directly; a reviewer that approves tells
+the gate. The task system reads all of it, records it, and takes back what a silent machine
+holds. The ticket is every event's subject; ``assignment`` is the id of one turn of work.
 
-| Event | From | Data (the scheduler reads what is marked ✓; the rest is for listeners) |
+**Offers**: an event that offers a turn. All three share these fields: assignment (the turn's id,
+made by whoever offers it: ``new_id``), role, ticket, workspace (a folder; in code mode a git
+worktree), branch and base (code mode; null in tasks mode), lease_s, brief (``brief``), in code
+mode unit_command, a reviewer's review {summary, commit, test_output, worker}, and to (an
+instance) when only that instance may take it.
+
+| Event | From | For | Also |
+|---|---|---|---|
+| ``task.assigned`` | task_scheduler | its role; or ``to``: rejected work returned to the worker that did it | |
+| ``review.requested`` | the worker instance holding the work | the reviewer role | ends ✓ (the worker's assignment, which this ends), review.commit ✓ (code: the branch head, beyond the base), review.summary ✓, review.test_output ✓ (the worker's run of unit_command) |
+| ``changes.requested`` | the reviewer instance holding the review | to ✓: the worker instance that did the work | ends ✓, feedback ✓, summary ✓, commit ✓ (the commit reviewed; another than the recorded one is no verdict); brief.feedback and brief.rejected_by set |
+
+**Claims, work and ends** (the task system reads what is marked ✓):
+
+| Event | From | Data |
 |---|---|---|
-| ``task.assigned`` | task_scheduler | assignment, role, ticket, workspace (a folder; in code mode a git worktree), branch (null in tasks mode), lease_s (the lease: a heartbeat must come at least this often), brief (the ticket's fields: id, title, objective, description, acceptance, verification, feedback, rejected_by, review_rounds, priority, depends_on, branch, worker_turns); a code worker's unit_command; a reviewer's review {summary (the worker's), commit, test_output} (in code mode the scheduler runs the unit tests before offering the review; commit and test_output are null in tasks mode) |
-| ``task.accepted`` | the machine instance (worker/1) | assignment ✓, ticket, role; instance ✓ if sent: the holder is the event's CloudEvents source (worker/1), and an instance that says otherwise is refused (``task.released`` naming the source, the machine that sent it; the offer stays open). The first to accept holds it, and the ticket moves to IN_PROGRESS or IN_REVIEW with it as owner (``ticket.transitioned`` with ``owner`` and ``assignment``: the instance's confirmation that it holds that assignment; a machine whose work costs something waits for it); a later one, or an acceptance of an assignment no longer held, is told ``task.released`` naming its instance |
-| ``task.working`` | the instance | assignment ✓, ticket, role: a heartbeat; the lease goes on. ``text`` ✓ if sent: what the instance is doing now, in a line, for the Tasks panel. Only from the instance that holds it |
-| ``task.reported`` | the instance | assignment ✓, report ✓ (a worker's: state READY_FOR_REVIEW or BLOCKED, summary, blocked_reason; a reviewer's: verdict APPROVED or REJECTED, summary, feedback; null when it ended without one), failed ✓ (true: it went away or its lease ran out, retried up to twice; false with a null report: it ended on purpose without one, and the ticket is BLOCKED for a planner), text ✓ (default "": its last words, kept when it is blocked), commit ✓ (default null; a reviewer's, in code mode: the commit it reviewed, which is the offer's review.commit; a report naming another commit counts as no verdict; the gate lands reviewed_commit as the scheduler recorded it from the worker's report), ticket, role. Only from the instance that holds it; a report the scheduler cannot use counts as none. A worker that cannot act on a rejection's feedback reports BLOCKED instead of redoing the same work: nothing else stops a program worker and a program reviewer arguing forever |
-| ``task.released`` | task_scheduler | assignment, ticket, role, reason (nobody filled the role within the lease; no word from the holder for the lease; the operator stopped it; another instance was first; the instance was not the event's source; the ticket moved on meanwhile; the task system restarted or shut down); instance, only when the release is addressed to one instance. The machine stops what it was doing |
+| ``task.accepted`` | the instance | assignment ✓, ticket, role, instance ✓ if sent. The first valid claim of an offer on the bus holds it: valid when instance, if sent, is the event's source, and when the offer names ``to``, the source is that instance. The claimant reads the bus from the offer to its own claim to know (``holder``); the task system records the same holder and says nothing to a loser |
+| ``task.working`` | the holder | assignment ✓, ticket, role, text ✓ if sent: what it is doing now, in a line. At least every HEARTBEAT_S |
+| ``review.approved`` | the reviewer holding the review | ends ✓, ticket, role, summary ✓, commit ✓. For the gate (merge_gate) in code mode; done in tasks mode |
+| ``task.reported`` | the holder | assignment ✓, report ✓ (a worker's: state BLOCKED with blocked_reason, summary; null when the turn ended without one), failed ✓ (true: it went away or ran out its lease), text ✓ (its last words), commit, ticket, role. Work that passes to no machine: READY_FOR_REVIEW or a verdict here is unusable |
+| ``task.released`` | task_scheduler | assignment, ticket, role, reason; instance, when addressed to one. An offer nobody claimed within its lease (or an addressed one within the return timeout), a holder silent for the lease, the operator, a restart or shutdown, or a claim the task system cannot record (not held, the ticket moved on, an instance that is not the source). The machine stops |
 
-``LEASE_S`` and ``HEARTBEAT_S`` are fixed: every offer says ``lease_s``, and a machine that cannot
-keep the lease must not accept.
+Every event a machine publishes in a turn names the offer that opened it as its CloudEvents
+``causationid``; an offer that ends a turn names the offer of the turn it ends.
 
-The scheduler applies every ticket transition itself, from these, and owns the leases: an
-assignment with no word from its machine for ``LEASE_S`` is released and its ticket goes back to
-waiting (no zombies); an offer nobody accepted is dropped and made again every lease, and changed
-nothing: a role nobody fills shows as ``task.assigned``/``task.released`` pairs on the bus."""
+``LEASE_S`` and ``HEARTBEAT_S`` are fixed: every offer says ``lease_s``, and a machine that
+cannot keep the lease must not take it. ``RETURN_S`` is the default of ``[tasks]
+return_timeout``: how long rejected work waits for the worker it is addressed to."""
 
 from __future__ import annotations
 
 import uuid
 
 ASSIGNED, ACCEPTED, WORKING, REPORTED, RELEASED = "task.assigned", "task.accepted", "task.working", "task.reported", "task.released"
+REVIEW_REQUESTED, CHANGES_REQUESTED, APPROVED = "review.requested", "changes.requested", "review.approved"
+OFFERS = (ASSIGNED, REVIEW_REQUESTED, CHANGES_REQUESTED)     # the events that offer a turn
 LEASE_S = 180.0          # no word from the assignee for this long and the work goes back
 HEARTBEAT_S = 30.0       # how often an assignee says it is still working
+RETURN_S = 60.0          # rejected work waits this long for the worker it is addressed to ([tasks] return_timeout)
 
 
 def new_id(ticket: str, role: str) -> str:
@@ -38,3 +56,35 @@ def brief(t) -> dict:
     """What a machine needs to do the ticket, whoever it is."""
     return {k: getattr(t, k, None) for k in ("id", "title", "objective", "description", "acceptance", "verification", "feedback",
                                              "rejected_by", "review_rounds", "priority", "depends_on", "branch", "worker_turns")}
+
+
+def valid_claim(ev: dict, offer: dict) -> bool:
+    """A claim (``task.accepted``, flat) that may hold ``offer``: its instance, if sent, is its
+    source, and an offer addressed ``to`` one instance is claimed by that instance."""
+    src = ev.get("source")
+    return (ev.get("type") == ACCEPTED and ev.get("assignment") == offer.get("assignment") and bool(src)
+            and ev.get("instance") in (None, src) and offer.get("to") in (None, src))
+
+
+def holder(evs: list[dict], offer: dict) -> str | None:
+    """Who holds ``offer`` by the bus's order: the source of its first valid claim among ``evs``
+    (flat events, in bus order, read from the offer on), or None while nobody has claimed it."""
+    return next((ev["source"] for ev in evs if valid_claim(ev, offer)), None)
+
+
+def pass_on(offer: dict, type: str, *, source: str, **fields) -> dict:
+    """The data of an offer that ends the turn ``offer`` opened and offers the next one: the same
+    ticket, workspace, branch, base, lease and unit command, a new assignment for the next role
+    (a review for ``review.requested``, the worker's for ``changes.requested``), ``ends`` naming
+    the turn it ends, and ``fields`` on top. For machines that may import this package (its own
+    tests); others write the same few lines (demo/machines/)."""
+    role = "reviewer" if type == REVIEW_REQUESTED else "worker"
+    keep = {k: offer.get(k) for k in ("ticket", "workspace", "branch", "base", "lease_s", "unit_command") if k in offer}
+    out = {**keep, "assignment": new_id(offer["ticket"], role), "role": role, "ends": offer["assignment"],
+           "brief": dict(offer.get("brief") or {})}
+    if type == CHANGES_REQUESTED:
+        out["to"] = (offer.get("review") or {}).get("worker")
+        b = out["brief"]                          # as the ticket will read once the worker takes it back
+        b.update(feedback=fields.get("feedback"), rejected_by=source.partition("/")[0],
+                 worker_turns=(b.get("worker_turns") or 0) + 1, review_rounds=(b.get("review_rounds") or 0) + 1)
+    return {**out, **fields}

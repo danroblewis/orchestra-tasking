@@ -36,6 +36,7 @@ class Config:
     workers: int = 1             # tickets offered to workers at once
     reviewers: int = 1
     tick: float = 3.0            # how often the scheduler looks at the queue and the bus, in seconds
+    return_timeout: float = 60.0  # rejected work waits this long for the worker it is addressed to, then the queue
     review_rounds_before_escalation: int = 3
     aging_days_per_level: float = 2.0
     reuse_worktrees: bool = False      # code mode: keep a pool of worktrees and reset one per turn (tasking/pool.py)
@@ -82,6 +83,7 @@ class Config:
             workers=int(a.get("workers", 1)),
             reviewers=int(a.get("reviewers", 1)),
             tick=parse_duration(a.get("tick"), 3.0),
+            return_timeout=parse_duration(a.get("return_timeout"), 60.0),
             review_rounds_before_escalation=int(a.get("review_rounds_before_escalation", 3)),
             aging_days_per_level=float(a.get("aging_days_per_level", 2.0)),
             reuse_worktrees=bool(a.get("reuse_worktrees", False)),
@@ -117,6 +119,7 @@ push = false
 workers = 2              # tickets offered to workers at once (whatever fills the role takes them)
 reviewers = 1
 # tick = "3s"            # how often the scheduler looks at the queue and the bus
+# return_timeout = "60s"  # rejected work waits this long for the worker that did it, then goes to any worker
 review_rounds_before_escalation = 3
 aging_days_per_level = 2        # a ticket gains one priority level per N days of age; 0 disables
 # reuse_worktrees = true         # code mode: reuse a pool of worktrees instead of one per ticket

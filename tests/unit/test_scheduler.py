@@ -5,9 +5,9 @@ import os
 import time
 
 import pytest
-from conftest import on_bus
+from conftest import end, on_bus
 
-from tasking.assignments import ACCEPTED, ASSIGNED, REPORTED, WORKING
+from tasking.assignments import ACCEPTED, ASSIGNED, REVIEW_REQUESTED, WORKING
 from tasking.events import Events
 from tasking.model import State
 from tasking.scheduler import Scheduler
@@ -68,7 +68,7 @@ def test_an_error_on_one_event_does_not_lose_the_rest_of_the_batch(project, monk
     sched.tick()                                                     # held by worker/1
     assert store.get_ticket(t.id).state == State.IN_PROGRESS
     say(WORKING)
-    say(REPORTED, report={"state": "READY_FOR_REVIEW", "summary": "done"}, failed=False, text="")
+    end(events, a, REVIEW_REQUESTED)
     update, calls = store.update_assignment, []
 
     def flaky(aid, **fields):
@@ -78,7 +78,7 @@ def test_an_error_on_one_event_does_not_lose_the_rest_of_the_batch(project, monk
         return update(aid, **fields)
     monkeypatch.setattr(store, "update_assignment", flaky)
     sched.tick()
-    assert store.get_ticket(t.id).state == State.READY_FOR_REVIEW   # the report after the bad event was applied
+    assert store.get_ticket(t.id).state == State.READY_FOR_REVIEW   # the review request after the bad event was recorded
     assert a["assignment"] not in store.assignments()
 
 
@@ -107,13 +107,14 @@ def test_a_report_for_an_assignment_a_restart_dropped_is_ignored_with_a_line_in_
     second.recover()
     assert store.get_ticket(t.id).state == State.OPEN and old["assignment"] not in store.assignments()
     assert [e["data"]["assignment"] for e in on_bus(events, "task.released")] == [old["assignment"]]   # worker/1 was told to stop
-    say(REPORTED, report={"state": "READY_FOR_REVIEW", "summary": "done"}, failed=False, text="")   # it reported anyway
+    end(events, old, REVIEW_REQUESTED)                            # it asked for a review anyway
     second.tick()
     x = store.get_ticket(t.id)
     assert x.state == State.OPEN and x.worker_turns == 1                 # not applied: offered afresh, nobody took it yet
     offers = [e["data"]["assignment"] for e in on_bus(events, ASSIGNED)]
     assert len(offers) == 2 and offers[0] == old["assignment"] and offers[1] in store.assignments()
-    assert any("task.reported from worker/1" in ln and old["assignment"] in ln and "ignored" in ln for ln in lines)
+    assert any("review.requested from worker/1" in ln and old["assignment"] in ln and "ignored" in ln for ln in lines)
+    assert all(e["data"]["role"] == "worker" for e in on_bus(events, ASSIGNED))       # and nobody was offered a review of it
 
 
 def test_a_rewritten_ticket_does_not_inherit_the_old_backoff(project, monkeypatch):
@@ -141,10 +142,9 @@ def test_a_rewritten_ticket_does_not_inherit_the_old_backoff(project, monkeypatc
 
 
 def test_an_acceptance_names_its_assignment_and_a_late_one_is_told_released(project):
-    """Each acceptance is answered: the one that holds the offer by ``ticket.transitioned`` naming
-    its assignment (another assignment's transition of the same ticket confirms nothing), and one
-    for an assignment no longer held by ``task.released`` naming the instance, so it never waits
-    out its lease or starts work on a ticket it does not hold."""
+    """The claim that holds the offer is recorded by ``ticket.transitioned`` naming its assignment
+    (the record's, caused by the claim); a claim of an assignment no longer held is answered by
+    ``task.released`` naming the instance, so it never starts work on a ticket it does not hold."""
     events = Events.for_project(project, source="task_scheduler")
     store = LocalStore(project, events)
     first = Scheduler(project, store, events)

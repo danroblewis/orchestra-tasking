@@ -8,6 +8,14 @@ import time
 import pytest
 from fake_machine import FakeMachine
 
+from tasking.assignments import (
+    ACCEPTED,
+    APPROVED,
+    CHANGES_REQUESTED,
+    OFFERS,
+    REVIEW_REQUESTED,
+    pass_on,
+)
 from tasking.config import init_project
 from tasking.scheduler import Scheduler
 
@@ -74,3 +82,61 @@ def wait_for(check, timeout_s=5.0):
             return
         time.sleep(0.05)
     raise AssertionError("did not happen in time")
+
+
+def standing(events, store, role: str) -> dict:
+    """The offer for ``role`` that stands in the record, as the bus carried it: whichever event
+    offered it (the queue's ``task.assigned``, a worker's ``review.requested``, a reviewer's
+    ``changes.requested``)."""
+    held = store.assignments()
+    return [e for e in events.after(0)[0] if e["type"] in OFFERS and e.get("role") == role and e.get("assignment") in held][-1]
+
+
+def claim(events, offer: dict, source: str | None = None) -> dict:
+    """``source`` (default ``<role>/1``) claims ``offer``."""
+    source = source or f"{offer['role']}/1"
+    return events.publish(ACCEPTED, {"assignment": offer["assignment"], "ticket": offer["ticket"], "role": offer["role"]},
+                          source=source, subject=offer["ticket"])
+
+
+def end(events, offer: dict, kind: str, source: str | None = None, **fields) -> dict:
+    """The holder ``source`` (default ``<role>/1``) ends the turn ``offer`` opened: a review
+    requested, changes requested, an approval, or (any other ``kind``) that event with the
+    assignment and ``fields``."""
+    source = source or f"{offer['role']}/1"
+    tid = offer["ticket"]
+    if kind == REVIEW_REQUESTED:
+        data = pass_on(offer, kind, source=source, review={"summary": fields.pop("summary", "done"), "commit": fields.pop("commit", None),
+                                                           "test_output": None, "worker": source}, **fields)
+    elif kind == CHANGES_REQUESTED:
+        data = pass_on(offer, kind, source=source, summary="no", feedback=fields.pop("feedback", "no"), **fields)
+    elif kind == APPROVED:
+        data = {"ends": offer["assignment"], "ticket": tid, "role": offer["role"], "summary": "yes", **fields}
+    else:
+        data = {"assignment": offer["assignment"], "ticket": tid, "role": offer["role"], **fields}
+    return events.publish(kind, data, source=source, subject=tid)
+
+
+def handoffs(events, subject: str) -> list[tuple[str, str | None, str]]:
+    """The hand-offs Orchestra's Machines page and event map compute from the bus (its
+    ``MachineIndex``, behind ``/api/machines``), in the order they arose, for the events about
+    ``subject``: (from machine, via event type, to machine). The index reads the bus as it grew."""
+    from orchestra.web.machines import MachineIndex
+
+    seen: list[dict] = []
+
+    class Grown:                                     # the bus as it stood after each event
+        def end(self):
+            return len(seen)
+
+        def read(self, since=0, limit=500):
+            return seen[since:][-limit:], len(seen)
+
+    idx, out = MachineIndex(Grown()), []
+    for ev in events.bus.read(0, limit=100000)[0]:
+        before = dict(idx.handoffs)
+        seen.append(ev)
+        idx.update()
+        if ev.get("subject") == subject:
+            out += [k for k, n in idx.handoffs.items() if n > before.get(k, 0)]
+    return out

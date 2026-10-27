@@ -5,23 +5,29 @@ broken without updating the spec and saying so in the commit.
 
 ## Invariants
 
-1. **Only the scheduler changes a ticket's state**, from a machine's report or a planner's
-   request on the bus, by the transition table in `tasking/model.py`. Never add a path where
-   anything else moves a ticket, or where a report's words are translated into another state.
+1. **The task system is the record, not the hub** (the owner's decision D17, 2026-10-27). Work
+   passes directly between the machines that do it (a review requested, changes requested of the
+   worker that did the work, an approval for the gate); the scheduler records each step, by the
+   transition table in `tasking/model.py`, and is the only writer of the record. It publishes only
+   when it acts itself: offering waiting work, taking work back, capacity, the gate (as
+   `merge_gate`), attention. Never add a path where the scheduler relays between machines, where
+   anything else writes the record, or where a machine's words are translated into another state.
 2. **No zombies.** A ticket is `IN_PROGRESS`, `IN_REVIEW` or `MERGING` only while an assignment
-   with a live lease holds it. A lease that runs out, a report the task system cannot apply, the
-   operator's stop: each releases the assignment and sends the ticket back to waiting in the same
-   code path; on start, every holder is told to stop and every active ticket goes back; on
+   with a live lease holds it, whoever offered it: the scheduler sees every claim. A lease that
+   runs out, an end of a turn the task system cannot apply, the operator's stop: each releases the
+   assignment and sends the ticket back to waiting in the same code path; on start, every holder is told to stop and every active ticket goes back; on
    shutdown, the gate finishes its run first, then the same.
-3. **The task system starts no machine and knows none.** It offers work to a role and reads an
-   acceptance's source and a report's `report`; nothing else about the machine. In `tasking/`,
+3. **The task system starts no machine and knows none.** It offers work to a role and reads a
+   claim's source and what ended a turn; nothing else about the machine. In `tasking/`,
    `tests/`, `demo/` and SPEC.md's description of the system, no session, transcript, prompt,
    harness or model is named; the design note in `docs/proposals` records what left and why. A
    machine from another package is known only by what it publishes; this package imports nothing
    from it.
-4. **Every crossing is on the bus.** Offers, acceptances, heartbeats, reports, releases,
+4. **Every crossing is on the bus.** Offers, claims, heartbeats, hand-offs, reports, releases,
    requests, answers and attention are CloudEvents through `tasking.events.Events` (over
-   `orchestra.events` and `orchestra.bus`), with the ticket as subject and the machine as source.
+   `orchestra.events` and `orchestra.bus`), with the machine as source and the ticket as subject
+   of every act on it; the record's announcement of another machine's step names that step as its
+   `causationid` and carries no subject, and a query and its answer carry none.
    The contract is the table in `tasking/assignments.py`, the names in `tasking/requests.py` and
    the observation families in SPEC section 3; another package implements the same names, so
    change them deliberately and say so.
@@ -37,7 +43,7 @@ broken without updating the spec and saying so in the commit.
 8. **Every ticket has a milestone, and closed milestones are final.** The store enforces it.
 9. **Orchestra is a library, and the only one the machines need.** `demo/machines/` import only
    `orchestra.config` and `orchestra.events`; they are the example of how to fill a role and must
-   stay about a page each, readable, with no words from any other package.
+   stay a few pages each, readable, with no words from any other package.
 10. **One package, no path hacks.** Everything importable is under `tasking/`; `demo/` is a
     template project and its runner, not a package. No `sys.path` manipulation; the one
     exception is pytest's `pythonpath` in `pyproject.toml`, for the tests only, so that they can
