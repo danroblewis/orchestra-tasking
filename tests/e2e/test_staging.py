@@ -79,3 +79,54 @@ def test_a_port_held_by_another_process_is_not_taken(staged, tmp_path):
         assert [e["type"] for e in events.read(0, limit=1000)[0] if e["type"].startswith("staging.")] == ["staging.failed"]
         other.getsockname()                              # still ours and still open
     assert not st.state()["alive"]
+
+
+def test_staging_that_stops_answering_is_restarted_with_backoff(project, tmp_path):
+    """SPEC section 5: the scheduler restarts staging. A build alive by pid but unanswered on its
+    health check for HEALTH_STALE is restarted; a restart that fails is tried again after a pause
+    that doubles, the supervisor is told once, and a healthy restart ends the outage. Staging the
+    operator stopped stays stopped."""
+    port = free_port()
+    toml = ('[staging]\nstart = "python3 -m http.server {port} --bind 127.0.0.1 --directory {artifact}"\n'
+            f'port = {port}\nhealth = "/ok"\nhealth_timeout = "2s"\n')
+    (project.repo_root / "orchestra.toml").write_text(toml)
+    project.config = Config.from_toml(toml)
+    events = Events.for_project(project, source="task_scheduler")
+    store = LocalStore(project, events)
+    st = Staging(project, store, events)
+    art = tmp_path / "art"
+    art.mkdir()
+    ok = art / "ok"
+    ok.write_text("ok")
+    build = {"id": "b1", "commit": "c1", "artifact_path": str(art)}
+    store.record_build(build)
+    staging_events = lambda type_: [e for e in events.read(0, limit=10000)[0] if e["type"] == type_]
+    try:
+        assert st.deploy(build)
+        ok.unlink()                                                          # alive, but the health check fails
+        store.set_staging(last_health_at="2000-01-01T00:00:00Z")             # for longer than HEALTH_STALE
+        st.ensure_running()                                                  # stale: restarted at once, and that fails
+        s = st.state()
+        assert s["status"] == "restarting" and s["restart_attempts"] == 1
+        assert 25 < s["restart_at"] - time.time() <= 30                      # RESTART_FIRST_S
+        assert [e.get("reason", "").startswith("health check unanswered") for e in staging_events("staging.failed")] == [True, True]
+        told = asked(events, "supervisor")
+        assert len(told) == 1 and "could not be restarted" in told[0]["reason"]
+        st.ensure_running()                                                  # not due yet: no tight loop
+        assert st.state()["restart_attempts"] == 1 and len(staging_events("staging.failed")) == 2
+        store.set_staging(restart_at=0)                                      # due: fails again, the pause doubles
+        st.ensure_running()
+        s = st.state()
+        assert s["restart_attempts"] == 2 and 55 < s["restart_at"] - time.time() <= 60
+        assert len(asked(events, "supervisor")) == 1                         # told once per outage
+        ok.write_text("ok")                                                  # the build answers again
+        store.set_staging(restart_at=0)
+        st.ensure_running()
+        s = st.state()
+        assert s["status"] == "running" and s["alive"] and s["restart_attempts"] == 0 and s["failed_build"] is None
+        assert [e["build"] for e in staging_events("staging.restarted")] == ["b1"]
+        st.stop()                                                            # the operator's stop is left alone
+        st.ensure_running()
+        assert st.state()["status"] == "stopped" and not st.state()["alive"]
+    finally:
+        st.stop()

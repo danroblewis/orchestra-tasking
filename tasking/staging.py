@@ -25,6 +25,8 @@ from .store import LocalStore
 from .store.files import locked
 
 HEALTH_STALE = 600        # seconds a running staging process may go without a healthy answer
+RESTART_FIRST_S = 30      # a restart that failed is tried again after this pause,
+RESTART_MAX_S = 1800      # doubled with each failure, up to this: a broken build is not restarted in a tight loop
 
 
 def _probe(url: str, timeout: float = 6, max_status: int = 400) -> bool:
@@ -175,7 +177,9 @@ class Staging:
                 return False
             if _probe(url):
                 self._log(f"healthy at {url}")
-                self._set(status="running", last_health_at=now())
+                # a healthy start ends any outage: the backoff starts over, and a later stale
+                # health check is reported again
+                self._set(status="running", last_health_at=now(), restart_attempts=0, restart_at=None, failed_build=None)
                 return True
             time.sleep(1)
         self._log(f"health probe {url} did not pass within {self.cfg.staging_health_timeout}s")
@@ -270,25 +274,16 @@ class Staging:
         return False
 
     def ensure_running(self) -> None:
-        """Called every tick: restart a staging process that died. Takes the deploy lock
-        without waiting, so it never races a deploy or restart already in progress."""
+        """Called every tick: restart a staging process that died, or that stopped answering its
+        health check for ``HEALTH_STALE``; a restart that fails is tried again with backoff
+        (status ``restarting``). Staging the operator stopped (``stopped``) or whose deploy or
+        manual restart failed (``failed``) is left alone. Takes the deploy lock without waiting,
+        so it never races a deploy or restart already in progress."""
         if not self.cfg.staging_configured:
             return
         st = self.state()
-        if st.get("status") in ("running", "starting") and not st["alive"]:
-            with locked(self._lock, wait=False) as got:
-                if not got:
-                    return  # a deploy/restart owns staging right now
-                st = self.state()
-                if st["alive"]:
-                    return
-                build = self.store.builds().get(st.get("current_build_id") or "")
-                if build:
-                    self._log("staging process died; restarting")
-                    self.stop()
-                    self._start(build)
-                    self.ensure_tunnel()
-                    self.events.emit("staging.restarted", build=build["id"])
+        if self._needs_restart(st):
+            self._restart_locked()
         elif st.get("status") == "running" and st["alive"]:
             # probe health every 15s, not every tick, so the staging log is not
             # dominated by the task system's own health requests
@@ -298,17 +293,59 @@ class Staging:
                     self._set(last_health_at=now())
                 else:
                     # alive by pid but not answering: after HEALTH_STALE without a healthy
-                    # answer the build has failed in service; say so once and let the
-                    # restart path take it from here
+                    # answer the build has failed in service; say so once, and restart it
                     last = st.get("last_health_at")
                     stale = last is None or time.time() - (epoch(last) or 0.0) > HEALTH_STALE
                     if stale and st.get("current_build_id") and st.get("failed_build") != st.get("current_build_id"):
+                        why = f"health check unanswered for {HEALTH_STALE // 60} minutes"
                         self._log(f"staging stopped answering its health check for {HEALTH_STALE // 60} minutes; recording the failure and restarting")
-                        self._set(failed_build=st.get("current_build_id"))
-                        self.events.emit("staging.failed", build=st["current_build_id"], reason=f"health check unanswered for {HEALTH_STALE // 60} minutes")
-                        self.stop()
+                        # recorded as due first, so a deploy holding the lock now does not lose the restart
+                        self._set(failed_build=st.get("current_build_id"), status="restarting", restart_at=None, restart_reason=why)
+                        self.events.emit("staging.failed", build=st["current_build_id"], reason=why)
+                        self._restart_locked()
+                        return
             if self.cfg.tunnel_name and not alive(st.get("tunnel_pid")):
                 self.ensure_tunnel()
+
+    @staticmethod
+    def _needs_restart(st: dict) -> bool:
+        """Its process died while it should run, or a restart that failed is due again."""
+        if st.get("status") in ("running", "starting"):
+            return not st["alive"]
+        return st.get("status") == "restarting" and time.time() >= (st.get("restart_at") or 0)
+
+    def _restart_locked(self) -> None:
+        """Restart the current build under the deploy lock if it still needs it, unless a deploy
+        or restart owns staging right now (the next tick tries again)."""
+        with locked(self._lock, wait=False) as got:
+            if not got:
+                return
+            st = self.state()
+            if not self._needs_restart(st):
+                return
+            why = (st.get("restart_reason") or "restart due") if st.get("status") == "restarting" else "staging process died"
+            build = self.store.builds().get(st.get("current_build_id") or "")
+            if build:
+                self._recover(build, why, st.get("restart_attempts") or 0)
+
+    def _recover(self, build: dict, why: str, attempts: int) -> None:
+        """Stop what is left of staging and start ``build`` again. A failure is tried again after
+        a pause that doubles with each failure (``RESTART_FIRST_S`` up to ``RESTART_MAX_S``):
+        ``staging.failed`` says so each time, and the supervisor role is told on the first."""
+        self._log(f"{why}; restarting build {build['id']}")
+        self.stop()
+        if self._start(build):
+            self.ensure_tunnel()
+            self.events.emit("staging.restarted", build=build["id"], reason=why)
+            return
+        attempts += 1
+        pause = min(RESTART_FIRST_S * 2 ** (attempts - 1), RESTART_MAX_S)
+        self._set(status="restarting", restart_attempts=attempts, restart_at=time.time() + pause, restart_reason=why)
+        self._log(f"restart {attempts} of build {build['id']} failed; trying again in {pause}s")
+        self.events.emit("staging.failed", build=build["id"], reason=f"{why}; restart {attempts} failed, next in {pause}s")
+        if attempts == 1:
+            self.events.attention(SUPERVISOR, f"staging build {build['id']} could not be restarted ({why}; see the staging "
+                                  f"log); retrying with backoff, up to every {RESTART_MAX_S // 60} minutes")
 
     def restart(self) -> str:
         """Returns 'ok', 'no_build', 'start_failed', or 'tunnel_failed'."""

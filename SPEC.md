@@ -132,7 +132,7 @@ such request from the command line; `requests.ask` does it from Python.
 **Attention.** `task.attention_needed` {to, reason, ticket?} from the task system when a planner
 should decide something, and only then: a ticket `BLOCKED`; a ticket rejected at every multiple
 of `review_rounds_before_escalation`; the base branch broken; a gate error; the pipeline still
-paused after a restart; a staging deploy failed. `to` is the planner role, `coordinator` or
+paused after a restart; a staging deploy failed; staging could not be restarted. `to` is the planner role, `coordinator` or
 `supervisor`. Routine creations, completions and landings are not attention:
 `milestone.created`, `ticket.created`, `ticket.transitioned` and `gate.landed` carry them for
 anyone listening. Nothing listens unless a planner machine does.
@@ -263,9 +263,11 @@ failing stage's output as feedback.
 
 **Staging** (`tasking/staging.py`): when `[staging] start` is set, one long-lived instance of the
 last build that passed the gate, started with the artifact and port as placeholders, probed at
-`health`, restarted by the scheduler if its process dies, optionally behind a named cloudflared
-tunnel (`[staging.tunnel]`). A failed deploy rolls back to the previous build and tells the
-supervisor role. `tasking staging status|logs|deploy|restart|stop` operates it.
+`health`, restarted by the scheduler if its process dies or its health check goes unanswered
+for 10 minutes, optionally behind a named cloudflared tunnel (`[staging.tunnel]`). A restart
+that fails is tried again with a pause that doubles (30 s up to 30 min); each failure is
+`staging.failed`, and the first tells the supervisor role. A failed deploy rolls back to the
+previous build and tells the supervisor role. `tasking staging status|logs|deploy|restart|stop` operates it.
 
 ## 6. Writing a machine that fills a role
 

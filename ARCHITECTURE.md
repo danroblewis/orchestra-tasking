@@ -503,6 +503,7 @@ these unless a planner machine listens.
 | the gate hit an error; the pipeline pauses | `supervisor` | `run_gate.error` |
 | the pipeline is still paused when the scheduler starts | `supervisor` | `Scheduler.run` |
 | a staging deploy failed and was rolled back | `supervisor` | `Staging._deploy` |
+| staging died or stopped answering, and the first restart failed | `supervisor` | `Staging._recover` |
 
 Routine news is not attention. It is in `ticket.*`, `milestone.*` and `gate.landed`.
 
@@ -614,7 +615,13 @@ instance of the last build that passed the gate.
   build again.
 - Every tick, `ensure_running` restarts a staging process that died (`staging.restarted`). It
   probes health every 15 s; after 10 minutes with no healthy answer it publishes
-  `staging.failed` once and stops the process (see section 18: nothing starts it again).
+  `staging.failed` once and restarts the build the same way.
+- A restart that fails leaves staging `restarting` and is tried again after a pause that
+  doubles with each failure (`RESTART_FIRST_S` 30 s up to `RESTART_MAX_S` 30 min), so a broken
+  build is not restarted in a tight loop. Each failure publishes `staging.failed` with a
+  `reason`; the first of an outage also tells the supervisor. A healthy start ends the outage
+  and resets the backoff. Staging the operator stopped (`stopped`), or whose deploy or manual
+  restart failed (`failed`), is left alone.
 - One deploy or restart at a time per project, across processes (a file lock).
 - `tasking staging status|logs|deploy|restart|stop` operates it by hand. `deploy` builds the
   current base head.
@@ -763,8 +770,8 @@ when the data names one. Orchestra reads only the envelope.
 | `gate.base_broken` | `task_scheduler` | `gate_run` |
 | `gate.error` | `task_scheduler` | `gate_run`, `error` |
 | `staging.deployed` | writer | `build`, `commit`, `local_url`, `public_url` |
-| `staging.failed` | writer | `build`, and `reason` when the health check went stale |
-| `staging.restarted` | `task_scheduler` | `build` |
+| `staging.failed` | writer | `build`, and `reason` when the health check went stale or a restart failed |
+| `staging.restarted` | `task_scheduler` | `build`, `reason` |
 
 "Writer" is the source of the process that made the change: almost always `task_scheduler`;
 `task_web` for the operator's controls; `task_cli` for `tasking staging deploy`.
@@ -852,9 +859,5 @@ Behaviour of the code at `7495e9a` that is easy to miss:
   without a verdict.
 - **`TRANSITIONS` is wider than any caller.** It allows active states to go to `CANCELLED`, but
   `cancel_ticket` refuses an active ticket.
-- **Staging that stops answering stays stopped.** After 10 minutes without a healthy answer,
-  `Staging.ensure_running` calls `stop()`, which sets the status to `stopped`. The restart path
-  only acts on `running` or `starting`, so staging stays down until the next landing or a
-  `tasking staging restart`, despite the comment that says the restart path takes over.
 - **One-tick latency.** The scheduler reads acceptances, heartbeats and reports once per tick,
   and the desk polls every 0.5 s.
