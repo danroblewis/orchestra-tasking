@@ -246,7 +246,12 @@ stages from `orchestra.toml`: `[build]` (the artifact is copied to `<state>/arti
 every `[[gate.unit]]` spec, and if `[acceptance]` and `[[gate.acceptance]]` are set, the artifact
 started on a free port and the acceptance specs run against it. All pass: the base branch is
 fast-forwarded (pushed if `push = true`), the ticket is `DONE`, its worktree and branch removed,
-and the build deployed to staging. A failure: the base is checked alone; if the base itself fails
+and the build deployed to staging. The repository root's files follow only when it has the base
+branch checked out, clean: then it is fast-forwarded there (an untracked file at a path the landing
+adds stops it with a gate error naming the file). With another branch checked out, only the base's
+ref moves; when the landing changed `orchestra.toml`, which Orchestra's launcher reads from the
+root, the run's summary says so and the coordinator role is told that the change takes effect only
+when the root is updated. A failure: the base is checked alone; if the base itself fails
 the pipeline pauses and the supervisor role is told; otherwise the ticket is rejected with the
 failing stage's output as feedback.
 

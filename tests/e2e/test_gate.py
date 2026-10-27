@@ -188,3 +188,41 @@ def test_acceptance_failure_rejects_and_stops_target(env):
     import psutil
     assert not [p for p in psutil.process_iter(["cmdline"]) if p.info["cmdline"] and "http.server" in " ".join(p.info["cmdline"])
                 and str(project.state_dir) in " ".join(p.info["cmdline"])]
+
+
+def test_a_landed_orchestra_toml_change_the_root_cannot_see_is_reported(env):
+    """The root has another branch checked out: landing moves only the base's ref, so the root's
+    orchestra.toml (which Orchestra's launcher reads) stays as it was, and the coordinator is told."""
+    project, store, events, ms, repo = env
+    git("checkout", "-q", "-b", "dev", cwd=repo)
+    t = merging_ticket(store, ms, repo, "a collector",
+                       lambda wt: (wt / "orchestra.toml").write_text((wt / "orchestra.toml").read_text() + '\n[[machines]]\nname = "the-collector"\ncommand = "true"\n'))
+    run = run_gate(project, store, events, t.id)
+    assert run["status"] == "landed" and "the-collector" in git("show", "main:orchestra.toml", cwd=repo)
+    assert "the-collector" not in (repo / "orchestra.toml").read_text()                     # the root did not follow
+    [a] = asked(events, "coordinator")
+    assert a["ticket"] == t.id and "the repository root is on dev, not main" in a["reason"]
+    assert "takes effect only when the root is updated" in run["summary"]
+
+
+def test_a_landing_without_orchestra_toml_off_the_base_says_nothing(env):
+    project, store, events, ms, repo = env
+    git("checkout", "-q", "-b", "dev", cwd=repo)
+    t = merging_ticket(store, ms, repo, "docs", lambda wt: (wt / "NEW.md").write_text("ok\n"))
+    assert run_gate(project, store, events, t.id)["status"] == "landed"
+    assert asked(events, "coordinator") == []
+
+
+def test_untracked_files_in_the_way_of_a_landing_are_named(env):
+    """An untracked file in the root at a path the landed commit adds: the fast-forward would fail;
+    the gate error names the file, so the attention says what to move."""
+    project, store, events, ms, repo = env
+    t = merging_ticket(store, ms, repo, "a sampler", lambda wt: ((wt / "scripts").mkdir(), (wt / "scripts" / "sampler.py").write_text("x = 1\n")))
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "sampler.py").write_text("an earlier copy\n")
+    before = git("rev-parse", "main", cwd=repo)
+    run = run_gate(project, store, events, t.id)
+    assert run["status"] == "error" and "scripts/sampler.py" in run["summary"]
+    assert git("rev-parse", "main", cwd=repo) == before and store.get_ticket(t.id).state == State.APPROVED
+    [a] = asked(events, "supervisor")
+    assert "untracked files in the repository root would be overwritten" in a["reason"] and "scripts/sampler.py" in a["reason"]

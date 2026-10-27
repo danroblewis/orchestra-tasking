@@ -19,7 +19,7 @@ import uuid
 from pathlib import Path
 
 from .config import Project, TestSpec
-from .events import SUPERVISOR, Events
+from .events import COORDINATOR, SUPERVISOR, Events
 from .git import Git, GitError
 from .model import Note, State, now
 from .staging import Staging, build_python
@@ -211,7 +211,11 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
         if ok:
             gate_commit = git.rev_parse("HEAD", cwd=path)
             run["gate_commit"] = gate_commit
-            git.land(base, gate_commit, base_commit)
+            followed = git.land(base, gate_commit, base_commit)
+            unseen = None if followed or "orchestra.toml" not in git.changed(base_commit, gate_commit) else (
+                f"{ticket_id} changed orchestra.toml, but the repository root is on {git.current_branch()}, not {base}, so "
+                f"only the {base} ref moved and the root's orchestra.toml is as it was: the change (a new [[machines]] "
+                f"entry, say) takes effect only when the root is updated (check out {base} there, or merge it in)")
             if cfg.push:
                 git.run("push", "origin", base, check=False)
             t = store.get_ticket(ticket_id)
@@ -224,8 +228,10 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
             if t.branch:
                 git.branch_delete(t.branch)
             run["status"] = "landed"
-            run["summary"] = f"landed {ticket_id} on {base} at {gate_commit[:10]}"
+            run["summary"] = f"landed {ticket_id} on {base} at {gate_commit[:10]}" + (f"; {unseen}" if unseen else "")
             events.emit("gate.landed", gate_run=run_id, ticket=ticket_id, commit=gate_commit)
+            if unseen:
+                events.attention(COORDINATOR, unseen, ticket=ticket_id)
             if run.get("artifact") and cfg.staging_configured:
                 build_rec = {"id": run_id, "gate_run_id": run_id, "commit": gate_commit,
                              "artifact_path": run["artifact"], "created_at": now()}

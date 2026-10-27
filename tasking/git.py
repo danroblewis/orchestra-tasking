@@ -62,8 +62,20 @@ class Git:
     def abort_merge(self, cwd: Path) -> None:
         self.run("merge", "--abort", cwd=cwd, check=False)
 
-    def land(self, base: str, commit: str, expected_old: str) -> None:
-        """Fast-forward `base` to `commit`. Refuses if base moved since expected_old."""
+    def changed(self, old: str, new: str) -> list[str]:
+        """The paths that differ between two commits (both sides of a rename)."""
+        out = self.run("diff", "--name-only", "--no-renames", "-z", old, new).stdout
+        return [p for p in out.split("\0") if p]
+
+    def untracked(self) -> set[str]:
+        """The repository root's untracked files that are not ignored."""
+        return {p for p in self.run("ls-files", "--others", "--exclude-standard", "-z").stdout.split("\0") if p}
+
+    def land(self, base: str, commit: str, expected_old: str) -> bool:
+        """Fast-forward `base` to `commit`. Refuses if base moved since expected_old. True when the
+        root's working tree followed (it has `base` checked out, clean: a fast-forward there);
+        False when only the ref moved (it has another branch checked out), so the root's files,
+        orchestra.toml among them, are as they were."""
         current = self.rev_parse(base)
         if current != expected_old:
             raise GitError(f"{base} moved from {expected_old[:10]} to {current[:10]} during the gate")
@@ -72,6 +84,10 @@ class Git:
         if self.current_branch() == base:
             if not self.is_clean():
                 raise GitError(f"{base} is checked out with uncommitted changes; cannot fast-forward")
+            if blocked := sorted(set(self.changed(base, commit)) & self.untracked()):
+                raise GitError(f"untracked files in the repository root would be overwritten by landing {commit[:10]} on "
+                               f"{base}: {', '.join(blocked)}; move them out of the way, then resume the pipeline")
             self.run("merge", "--ff-only", commit)
-        else:
-            self.run("update-ref", "-m", "tasking: land", f"refs/heads/{base}", commit, expected_old)
+            return True
+        self.run("update-ref", "-m", "tasking: land", f"refs/heads/{base}", commit, expected_old)
+        return False
