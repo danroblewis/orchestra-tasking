@@ -17,6 +17,12 @@ def test_transitions():
         check_transition(State.OPEN, State.DONE)
     with pytest.raises(TransitionError):
         check_transition(State.DONE, State.OPEN)
+    # only a waiting ticket may be cancelled: an active one is held, and settles first
+    for waiting in (State.OPEN, State.REJECTED, State.READY_FOR_REVIEW, State.APPROVED, State.BLOCKED):
+        check_transition(waiting, State.CANCELLED)
+    for active in (State.IN_PROGRESS, State.IN_REVIEW, State.MERGING):
+        with pytest.raises(TransitionError):
+            check_transition(active, State.CANCELLED)
 
 
 def test_milestone_rules_and_ids(store):

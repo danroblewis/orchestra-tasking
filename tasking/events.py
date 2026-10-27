@@ -48,7 +48,7 @@ class Events(OrchestraEvents):
 
     def attention(self, to: str, reason: str, ticket: str | None = None) -> dict:
         """The task system needs a planner's decision: a ticket blocked, rejected at every
-        multiple of the threshold, the base branch broken, a gate error, the pipeline still
+        multiple of the threshold, a landed orchestra.toml the repository root did not follow, the base branch broken, a gate error, the pipeline still
         paused after a restart, a staging deploy failed or could not be restarted. An event for whatever
         machine fills the planner role ``to`` (coordinator, supervisor) to listen for, not a write
         into its queue; routine creations and completions are in ``ticket.*`` and ``milestone.*``."""

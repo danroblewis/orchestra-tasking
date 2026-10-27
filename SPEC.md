@@ -131,9 +131,11 @@ such request from the command line; `requests.ask` does it from Python.
 
 **Attention.** `task.attention_needed` {to, reason, ticket?} from the task system when a planner
 should decide something, and only then: a ticket `BLOCKED`; a ticket rejected at every multiple
-of `review_rounds_before_escalation`; the base branch broken; a gate error; the pipeline still
-paused after a restart; a staging deploy failed; staging could not be restarted. `to` is the planner role, `coordinator` or
-`supervisor`. Routine creations, completions and landings are not attention:
+of `review_rounds_before_escalation`; a landing that changed `orchestra.toml` while the
+repository root is not on the base branch, so the root's copy did not follow (to the
+coordinator); the base branch broken; a gate error; the pipeline still paused after a restart; a
+staging deploy failed; staging could not be restarted. `to` is the planner role, `coordinator`
+or `supervisor`. Routine creations, completions and landings are not attention:
 `milestone.created`, `ticket.created`, `ticket.transitioned` and `gate.landed` carry them for
 anyone listening. Nothing listens unless a planner machine does.
 
@@ -181,7 +183,7 @@ per project: a second `tasking run` for the same project exits, naming the pid t
    `task.assigned` starts);
 3. **offers work**: reviews first (finished work lands before new work starts), then, unless
    pickup is paused, ready `OPEN` and `REJECTED` tickets in effective-priority order, up to the
-   role's capacity. Capacity is the operator's ceiling from the Dashboard if set, otherwise
+   role's capacity (an offer not yet accepted holds a slot for its lease). Capacity is the operator's ceiling from the Dashboard if set, otherwise
    `[tasks] workers`/`reviewers`, with a planner's dial (`set_capacity`) under it;
 4. in code mode, starts a gate run for the oldest `APPROVED` ticket if none runs and the
    pipeline is not paused, and drops the worktrees of cancelled tickets;
@@ -206,7 +208,7 @@ and feedback written by the task system are signed `task_scheduler` and state wh
 
 **Applying a reviewer's report.** `APPROVED` moves to `APPROVED` (and in tasks mode straight to
 `DONE`); `REJECTED` records the feedback and sends the ticket back, `rejected_by` the reviewer.
-No verdict is not a rejection: the review is redone, up to three times, before the ticket is sent
+No verdict (a lease that ran out included) is not a rejection: the review is redone, up to three times, before the ticket is sent
 back by the task system (`rejected_by` `task_scheduler`); the merge gate's send-backs say
 `merge_gate`. In code mode a review whose preparation fails (the unit tests cannot run, git
 fails) is not offered: the record is dropped and the ticket, still `READY_FOR_REVIEW`, is offered

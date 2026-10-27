@@ -228,8 +228,8 @@ Who makes each move, and the `by` label the move carries in the metrics (section
 
 Two things change no state at all: an offer nobody accepts, and a heartbeat.
 
-`TRANSITIONS` also allows `IN_PROGRESS`, `IN_REVIEW` and `MERGING` to `CANCELLED`, but no code
-path uses those moves: `cancel_ticket` refuses an active ticket ("wait for it to settle").
+`TRANSITIONS` allows `CANCELLED` only from a waiting state, so the store itself refuses to
+cancel an active ticket; `cancel_ticket` checks first to say why ("wait for it to settle").
 
 ## 5. The scheduler
 
@@ -251,7 +251,9 @@ On start (`Scheduler.recover`, then `run`):
    branches are removed.
 4. The desk thread starts. Then the runtime record names this pid. Then the scheduler
    publishes `orchestra.machine.started` (`package: tasks`, `mode: continuous`, `kind: program`,
-   `listens_for`, `log`).
+   `listens_for`, `log`). `listens_for` names the requests and queries, `task.accepted`,
+   `task.working`, `task.reported` and `orchestra.machine.started` (a machine that listens for
+   offers starting sends the resting offers out again).
 5. If the pipeline is still paused, the supervisor role gets attention.
 6. If staging was deployed and its process is gone, it is started again.
 
@@ -847,17 +849,16 @@ section 7.
 
 ## 18. Sharp edges
 
-Behaviour of the code at `7495e9a` that is easy to miss:
+Behaviour that is easy to miss:
 
 - **Report transitions are labelled with the role, acceptances with the machine.** In the
   metrics, `by` is the holder's machine name on `OPEN → IN_PROGRESS`, but the literal `worker`
   or `reviewer` on the report's transition. They coincide only when the machine is named after
-  its role, as in the demo.
+  its role, as in the demo. Left as it is for now: changing it changes the series discovery
+  reads.
 - **Unaccepted offers use capacity.** A role nobody fills keeps its slots full of offers for
   the lease, then rests them.
 - **A reviewer's lease running out counts toward the no-verdict budget**, like a report
   without a verdict.
-- **`TRANSITIONS` is wider than any caller.** It allows active states to go to `CANCELLED`, but
-  `cancel_ticket` refuses an active ticket.
 - **One-tick latency.** The scheduler reads acceptances, heartbeats and reports once per tick,
   and the desk polls every 0.5 s.

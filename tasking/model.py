@@ -37,14 +37,17 @@ class State(StrEnum):
 ACTIVE = {State.IN_PROGRESS, State.IN_REVIEW, State.MERGING}
 TERMINAL = {State.DONE, State.CANCELLED}
 
+# Only a waiting state may be cancelled: an active ticket is held by a machine (or a gate run),
+# and cancelling it underneath the holder would leave an assignment on a terminal ticket. It
+# settles first (SPEC.md section 2).
 TRANSITIONS: dict[State, set[State]] = {
     State.OPEN: {State.IN_PROGRESS, State.CANCELLED},
-    State.IN_PROGRESS: {State.READY_FOR_REVIEW, State.BLOCKED, State.OPEN, State.CANCELLED},
+    State.IN_PROGRESS: {State.READY_FOR_REVIEW, State.BLOCKED, State.OPEN},
     State.READY_FOR_REVIEW: {State.IN_REVIEW, State.REJECTED, State.CANCELLED},   # REJECTED: its folder or worktree is missing at review time
-    State.IN_REVIEW: {State.APPROVED, State.REJECTED, State.READY_FOR_REVIEW, State.CANCELLED},
+    State.IN_REVIEW: {State.APPROVED, State.REJECTED, State.READY_FOR_REVIEW},
     State.REJECTED: {State.IN_PROGRESS, State.CANCELLED},
     State.APPROVED: {State.MERGING, State.DONE, State.CANCELLED},     # DONE directly when nothing is merged (work = "tasks")
-    State.MERGING: {State.DONE, State.REJECTED, State.APPROVED, State.CANCELLED},
+    State.MERGING: {State.DONE, State.REJECTED, State.APPROVED},
     State.BLOCKED: {State.OPEN, State.CANCELLED},
     State.DONE: set(),
     State.CANCELLED: set(),
