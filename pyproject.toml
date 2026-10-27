@@ -7,7 +7,8 @@ name = "orchestra-tasking"
 version = "0.1.0"
 description = "A task system observed by Orchestra: tickets, the scheduler that offers them to whatever fills the worker and reviewer roles, the merge gate."
 requires-python = ">=3.12"
-dependencies = ["orchestra", "psutil>=5.9", "fastapi>=0.115"]
+dependencies = ["orchestra", "psutil>=5.9", "fastapi>=0.115", "tomlkit>=0.13"]   # tomlkit: `tasking init` adds the starter
+# sections through Orchestra (project.config_edit) with their comments
 
 [project.optional-dependencies]
 # orchestra[sd]: the demo and the e2e tests start `orchestra run`, whose host rediscovers the model;

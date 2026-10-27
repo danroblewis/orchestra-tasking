@@ -50,7 +50,10 @@ broken without updating the spec and saying so in the commit.
     import `conftest`, `fake_machine` and `demo.run`. Orchestra comes from `../orchestra_2`
     (editable: a clone of github.com/danroblewis/orchestra beside this repository, named
     `orchestra_2` as `[tool.uv.sources]` says) and the task system uses its bus, metrics store,
-    config and plugin interface, nothing else.
+    config and plugin interface, nothing else. Configuration is read and changed only through
+    Orchestra's objects (`project.orchestra.config.raw`, `reload_config()`, `config_edit`),
+    never by opening `orchestra.toml` (Orchestra's rule 10), so the owner's private overlay
+    reaches the task system; `tests/unit/test_config_via_orchestra.py` fails otherwise.
 
 ## Conventions
 

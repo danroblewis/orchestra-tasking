@@ -34,7 +34,7 @@ def _store(project: Project, source: str = CLI) -> tuple[LocalStore, Events]:
 
 def cmd_init(args) -> int:
     p = init_project(Path(args.repo or os.getcwd()), prefix=args.prefix, unit_command=args.unit_command)
-    print(f"initialized {p.key}\n  repo:   {p.repo_root}\n  state:  {p.state_dir}\n  config: {p.repo_root / 'orchestra.toml'}")
+    print(f"initialized {p.key}\n  repo:   {p.repo_root}\n  state:  {p.state_dir}\n  config: {p.orchestra.config_file}")
     return 0
 
 

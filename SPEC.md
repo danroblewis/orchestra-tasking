@@ -612,8 +612,8 @@ API at `/api/plugins/tasks`:
 | `GET /tickets/{id}` | one ticket with its notes |
 | `POST /control` | the operator's controls: `{action: pause\|resume}`, `{action: capacity, workers, reviewers}` (omit both to return to the file), `{action: kill, ticket}` (release whoever holds it, and the ticket goes back; or withdraw an offer nobody took) |
 
-Every request re-reads the task system's sections of `orchestra.toml`, so the capacity ceiling
-shown is the file's current one.
+Every request reloads the configuration through Orchestra (`orchestra.toml` with the owner's
+private overlay merged), so the capacity ceiling shown is the current one.
 
 These controls are the only writes a person has; tickets change only through the scheduler
 (Orchestra's rule: humans act through machines, here a planner's request).
