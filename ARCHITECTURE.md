@@ -2,7 +2,7 @@
 
 This document explains how the task system works and what a machine must do to work with it.
 It is written for the owner and for engineers new to the code. `SPEC.md` is the design and
-`AGENTS.md` the rules; this document describes the code as it is on `main` at `7495e9a` and
+`AGENTS.md` the rules; this document describes the code as it is on `main` at the commit that last changed it and
 names the module behind every statement. Where the two disagree, the code is what runs.
 
 Contents:
