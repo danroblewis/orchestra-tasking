@@ -55,7 +55,7 @@ What it is not:
 
 ```mermaid
 flowchart LR
-    subgraph proc_sched ["tasking run (one process per project)"]
+    subgraph proc_sched ["orchestra tasks run (one process per project)"]
         direction TB
         SCH["Scheduler<br/>tasking/scheduler.py"]
         REP["Reports<br/>tasking/reports.py"]
@@ -77,12 +77,12 @@ flowchart LR
     end
 
     STORE[("LocalStore<br/>tasking/store/<br/>tickets.json, runtime.json")]
-    MEAS["tasking metrics<br/>tasking/measures.py"]
+    MEAS["orchestra tasks metrics<br/>tasking/measures.py"]
     BUS[["Orchestra event bus<br/>(via tasking/events.py)"]]
     METRICS[("Orchestra metrics store")]
     MODEL["Orchestra discovery<br/>and SD model"]
     MACH["Machines filling roles<br/>worker/1, reviewer/1, ..."]
-    PLAN["Planners<br/>tasking api, scripts, agents"]
+    PLAN["Planners<br/>orchestra tasks api, scripts, agents"]
     GIT[("git repository<br/>worktrees, base branch")]
 
     SCH <--> STORE
@@ -113,12 +113,12 @@ flowchart LR
 | `tasking/gate_reports.py` | The gate's test reports: `gate.xml` per run (its stages as JUnit, flaky ones Surefire's way) and pruning the report directories. |
 | `tasking/staging.py`, `tasking/probes.py` | The staging instance and the `[[probes]]` checks. |
 | `tasking/recurring.py`, `tasking/schedule.py`, `tasking/store/occurrences.py` | Recurring tickets (D7): the `[[tasks.recurring]]` definitions and their check, the engagement the scheduler ticks (`Recurring`, as `planner/recurring`), the schedules on a zone's wall clock, and the record of the last due time handled per definition, written in the same locked write that makes the ticket. SPEC section 7. |
-| `tasking/measures.py` | The counters kept in the record and the Prometheus text an instrument reads (`tasking metrics`, `/metrics`). |
+| `tasking/measures.py` | The counters kept in the record and the Prometheus text an instrument reads (`orchestra tasks metrics`, `/metrics`). |
 | `tasking/config.py` | The task system's sections of `orchestra.toml`, and the state paths. |
 | `tasking/web.py`, `tasking/static/` | The plugin: pages, every-page scripts, API routes, the scheduler's process and the instrument. |
-| `tasking/cli.py`, `tasking/status.py` | The `tasking` command (`tasking metrics` included) and its one-screen status. |
+| `tasking/cli.py`, `tasking/status.py` | The `orchestra tasks` command (entry point group `orchestra.commands`; `orchestra tasks metrics` included) and its one-screen status. |
 
-Two processes touch the store: the scheduler (`tasking run`) and Orchestra's web server, which
+Two processes touch the store: the scheduler (`orchestra tasks run`) and Orchestra's web server, which
 loads the plugin. They share the store through the file lock. The web server writes only the
 operator's controls (section 14).
 
@@ -261,12 +261,12 @@ cancel an active ticket; `cancel_ticket` checks first to say why ("wait for it t
 
 ## 5. The scheduler
 
-`tasking/scheduler.py`, run as `tasking run`.
+`tasking/scheduler.py`, run as `orchestra tasks run`.
 
 ### Starting and stopping
 
 `orchestra run` starts the scheduler because the plugin declares it (section 14). It is
-`tasking run --wait`. There is one scheduler per project. A second one exits, naming the pid of
+`orchestra tasks run --wait`. There is one scheduler per project. A second one exits, naming the pid of
 the first; with `--wait` it waits for the first to stop and then takes over.
 
 On start (`Scheduler.recover`, then `run`):
@@ -585,13 +585,13 @@ outcome that throws inside `_settle` or `_hand_over` (back to waiting, with a no
 
 `tasking/requests.py` and `tasking/api.py`.
 
-A planner (a person's script, `tasking api`, another package's agent) changes tickets only by
+A planner (a person's script, `orchestra tasks api`, another package's agent) changes tickets only by
 asking. The desk is a thread in the scheduler's process. It polls the bus every 0.5 s, applies
 each request with `api.handle`, and answers.
 
 A request carries `request` (an id), `args` and `by`. `by` is a label the asker picks. It names
 the author: it becomes `created_by` and the note author. The metrics' `by` is the machine of the
-request's source (its part before `/`; `tasking api` publishes with `source` = `by`, so the two
+request's source (its part before `/`; `orchestra tasks api` publishes with `source` = `by`, so the two
 agree). A change without `by` is refused. The task system checks the rules of tickets and
 milestones, not who asks.
 
@@ -629,7 +629,7 @@ no scheduler ran is still answered, and none is answered twice. A request older 
 `RESUME_S` (60 s, twice the 30 s `ask` waits) when read is refused, not applied: its asker gave
 up long ago.
 
-`ask(events, op, args, by)` sends one request and waits up to 30 s for the answer. `tasking api
+`ask(events, op, args, by)` sends one request and waits up to 30 s for the answer. `orchestra tasks api
 --as <by> <op> --args '<json>'` is the same from the shell; it publishes with `source` = `by`.
 
 ## 9. Attention
@@ -872,7 +872,7 @@ whose landings it deploys.
   and resets the backoff. Staging the operator stopped (`stopped`), or whose deploy or manual
   restart failed (`failed`), is left alone.
 - One deploy or restart at a time per project, across processes (a file lock).
-- `tasking staging status|logs|deploy|restart|stop` operates it by hand. `deploy` builds the
+- `orchestra tasks staging status|logs|deploy|restart|stop` operates it by hand. `deploy` builds the
   current base head.
 
 **Probes** (`tasking/probes.py`) are `[[probes]]` commands run on an interval (`every`, default
@@ -911,8 +911,8 @@ its series), labelled `instrument="tasks.tests"`.
   (`measures.exposition`), with the pool's worktrees from `runtime.json` (the scheduler keeps the
   number of waiting turns there, `Runtime.set_pool_waiting`).
 - **The instrument.** The plugin declares `Plugin.collectors = [Collector.collect("tickets",
-  "<python> -m tasking metrics", every_s=<[discovery] step>)]` (`tasking/web.py`, `collectors`),
-  so `orchestra run` runs `tasking metrics` every discovery step and labels every point
+  "<python> -m orchestra tasks metrics", every_s=<[discovery] step>)]` (`tasking/web.py`, `collectors`),
+  so `orchestra run` runs `orchestra tasks metrics` every discovery step and labels every point
   `instrument=tasks.tickets`. The same text is served at `/api/plugins/tasks/metrics`. A command,
   not a scrape of that URL: `orchestra run` does not know the web server's port, and a port of
   the scheduler's own would be one more thing to configure per project; the text is the same.
@@ -938,7 +938,7 @@ Orchestra) decides:
 flowchart LR
     subgraph tasking ["task system"]
         CH["ticket change<br/>store/tickets.py"] --> MC["metric_counts<br/>in tickets.json"]
-        MC --> EX["tasking metrics<br/>measures.exposition"]
+        MC --> EX["orchestra tasks metrics<br/>measures.exposition"]
         TJ["tickets as they stand"] --> EX
     end
     EX -- "instrument tasks.tickets,<br/>every discovery step" --> L["tasks_tickets{state}"]
@@ -988,8 +988,8 @@ Orchestra calls `plugin(orchestra_project)` and gets an `orchestra.plugins.Plugi
 | `scripts` | `tasks-boot.js` | loaded on every page; it loads `tasks.js`, then `attention.js` (blocked-ticket banner) and `tasks-panel.js` (the Dashboard panel, with the queue and the controls) |
 | `stylesheets` | `tasks.css` | linked on every page |
 | `machines` | empty | the scheduler is no machine, so nothing is declared for the Machines page; it has no machine card |
-| `processes` | `Process("scheduler", [python, "-m", "tasking", "run", "--wait"])`, only if `orchestra.toml` has `[project]` or `[tasks]` | `orchestra run` keeps it running as `tasks.scheduler` (on the Core page) |
-| `collectors` | `Collector.collect("tickets", "<python> -m tasking metrics", every_s=<[discovery] step>)`, under the same condition; in code mode also `Collector.collect("tests", "<python> -m orchestra.instruments.test_reports --reports <state>/tasks/reports/*/*.xml …")` (`tests_command`) | `orchestra run` runs them every step and writes their points labelled `instrument=tasks.tickets` and `instrument=tasks.tests` (section 13) |
+| `processes` | `Process("scheduler", [python, "-m", "orchestra", "tasks", "run", "--wait"])`, only if `orchestra.toml` has `[project]` or `[tasks]` | `orchestra run` keeps it running as `tasks.scheduler` (on the Core page) |
+| `collectors` | `Collector.collect("tickets", "<python> -m orchestra tasks metrics", every_s=<[discovery] step>)`, under the same condition; in code mode also `Collector.collect("tests", "<python> -m orchestra.instruments.test_reports --reports <state>/tasks/reports/*/*.xml …")` (`tests_command`) | `orchestra run` runs them every step and writes their points labelled `instrument=tasks.tickets` and `instrument=tasks.tests` (section 13) |
 | `router` | the routes below | mounted at `/api/plugins/tasks` |
 
 | Route | What |
@@ -1048,7 +1048,7 @@ when: section 6, "Who publishes what"):
 | `stack.restacked` | `merge_gate` | `ticket`, `branch`, `onto`, `onto_commit`, `previous`, `commit`, `parent`, `pull` (stacking) |
 | `stack.conflict` | `merge_gate` | `ticket`, `branch`, `onto`, `files`, `parent` (stacking) |
 | `changes.requested` (external review) | who gave the feedback on the pull request | `to`, `feedback`, `summary`, `commit`, `pull`, `pull_feedback`, the offer's fields; no `ends`; `causationid` = the bridge's event |
-| `staging.deployed` | `merge_gate` (`task_cli` for `tasking staging deploy`) | `build`, `commit`, `local_url`, `public_url` |
+| `staging.deployed` | `merge_gate` (`task_cli` for `orchestra tasks staging deploy`) | `build`, `commit`, `local_url`, `public_url` |
 | `staging.failed` | `merge_gate` (or `task_cli`) | `build`, and `reason` when the health check went stale or a restart failed |
 | `staging.restarted` | `merge_gate` | `build`, `reason` |
 

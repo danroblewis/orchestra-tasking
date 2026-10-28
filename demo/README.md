@@ -17,8 +17,8 @@ removes the state a previous run left for that path (under `~/.orchestrator/<nam
 |---|---|
 | `orchestra run` | Orchestra's host: the Core strip shows it up, and it rediscovers the system dynamics model from the metrics |
 | `orchestra web --port 8071` | Orchestra's web UI, with the task system's Tickets page and Tasks panel (its plugin) |
-| `tasking run --wait` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back. `orchestra run` starts it (the task system's plugin declares it; `tasks.scheduler` on the Core page). It is no machine: what it publishes goes out as the machine it acts for (an offer as `coordinator/dispatch`: dispatch is the coordinator's), so the Machines page does not list it |
-| `tasking metrics` | the instrument `tasks.tickets`: `orchestra run` runs it every discovery step (the plugin declares it) and writes the ticket levels and transition counters it prints to the metrics store |
+| `orchestra tasks run --wait` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back. `orchestra run` starts it (the task system's plugin declares it; `tasks.scheduler` on the Core page). It is no machine: what it publishes goes out as the machine it acts for (an offer as `coordinator/dispatch`: dispatch is the coordinator's), so the Machines page does not list it |
+| `orchestra tasks metrics` | the instrument `tasks.tickets`: `orchestra run` runs it every discovery step (the plugin declares it) and writes the ticket levels and transition counters it prints to the metrics store |
 | `python -m tasking.machines.shell_worker` | the machine `worker` (instance `worker/1`): runs the `sh` code blocks of a ticket's description in its workspace (the ticket's own empty folder; `ORCHESTRA_REPO` names the repository), writes RESULT.md |
 | `python -m tasking.machines.check_reviewer` | the machine `reviewer` (`reviewer/1`): approves when RESULT.md exists and the acceptance text's `` `files` `` and `"lines"` are there (in code mode: when a check command passes in the ticket's worktree) |
 
@@ -90,11 +90,11 @@ would send. DEMO-4 is unblocked by dropping the criterion nothing can meet and s
 target is a copy of this folder with no environment of its own, so the commands run from the
 orchestra-tasking checkout's environment, pointed at the target:
 
-    cd ~/orchestra-tasking-demo && uv run --project ~/orchestra-tasking tasking api --as planner update_ticket --args '{"id": "DEMO-4", "acceptance": "- `today.txt` exists"}'
-    cd ~/orchestra-tasking-demo && uv run --project ~/orchestra-tasking tasking api --as planner unblock_ticket --args '{"id": "DEMO-4", "note": "dropped the impossible criterion"}'
+    cd ~/orchestra-tasking-demo && uv run --project ~/orchestra-tasking orchestra tasks api --as planner update_ticket --args '{"id": "DEMO-4", "acceptance": "- `today.txt` exists"}'
+    cd ~/orchestra-tasking-demo && uv run --project ~/orchestra-tasking orchestra tasks api --as planner unblock_ticket --args '{"id": "DEMO-4", "note": "dropped the impossible criterion"}'
 
 (or, from the orchestra-tasking checkout, `ORCHESTRA_REPO=~/orchestra-tasking-demo uv run
-tasking api …`).
+orchestra tasks api …`).
 
 The ticket goes back to OPEN with the planner's note as its feedback, the scheduler offers it to
 the worker again, the worker runs the same commands (the ticket changed, so it does not block),

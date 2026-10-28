@@ -233,7 +233,7 @@ command = "{unit_command}"
 # name = "acceptance"
 # command = "uv run pytest tests/acceptance -q --base-url {{url}}"
 #
-# [[tasks.recurring]]              # a ticket made at each due time (SPEC.md section 7; tasking recurring check)
+# [[tasks.recurring]]              # a ticket made at each due time (SPEC.md section 7; orchestra tasks recurring check)
 # name = "weekly-update"
 # every = "week"                   # day | week | month, at a local time; or cron = "0 9 * * mon"
 # on = "mon"

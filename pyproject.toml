@@ -11,7 +11,7 @@ dependencies = [
     "orchestra @ git+https://github.com/danroblewis/orchestra@main",
     "psutil>=5.9",
     "fastapi>=0.115",
-    "tomlkit>=0.13",   # `tasking init` adds the starter sections through Orchestra (project.config_edit) with their comments
+    "tomlkit>=0.13",   # `orchestra tasks init` adds the starter sections through Orchestra (project.config_edit) with their comments
 ]
 
 [project.optional-dependencies]
@@ -20,8 +20,8 @@ dependencies = [
 # The task system itself needs neither.
 dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6", "orchestra[sd,bus-redis] @ git+https://github.com/danroblewis/orchestra@main"]
 
-[project.scripts]
-tasking = "tasking.cli:main"
+[project.entry-points."orchestra.commands"]
+tasks = "tasking.cli:main"          # `orchestra tasks ...`; no console script of its own (Orchestra PLUGINS.md 4.10)
 
 [project.entry-points."orchestra.plugins"]
 tasks = "tasking.web:plugin"

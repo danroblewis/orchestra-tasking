@@ -46,7 +46,7 @@
       const rec = (D.recurring || []).map((r) => `<span style="white-space:nowrap" title="${esc(r.schedule)}${r.last ? " · last: " + esc(r.last.occurrence) + " " + esc(r.last.outcome) + (r.last.ticket ? " " + esc(r.last.ticket) : "") : ""}">`
         + `<b>${esc(r.name)}</b> <span class="muted">${due(r)}</span></span>`).join(" · ");
       const recurring = rec || D.recurring_problems ? `<div class="recurring" style="margin-top:10px;font-size:11.5px;color:var(--text2)">↻ Recurring: ${rec}`
-        + (D.recurring_problems ? ` <span class="muted">· ${D.recurring_problems} definition${D.recurring_problems === 1 ? "" : "s"} not used (tasking recurring check)</span>` : "") + `</div>` : "";
+        + (D.recurring_problems ? ` <span class="muted">· ${D.recurring_problems} definition${D.recurring_problems === 1 ? "" : "s"} not used (orchestra tasks recurring check)</span>` : "") + `</div>` : "";
       const sum = taskSummary(D), open = sum.start;
       ui.setSub(sum.text + (D.scheduler ? "" : " · the scheduler is not running"));
       body.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin-bottom:10px">

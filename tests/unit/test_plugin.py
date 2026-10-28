@@ -44,7 +44,7 @@ def test_orchestra_run_is_asked_to_keep_the_scheduler_running_in_a_project_set_u
     from tasking.web import plugin
 
     p = plugin(load_orchestra_project(project.repo_root))
-    assert [(x.name, x.argv(), x.restart) for x in p.processes] == [("scheduler", [sys.executable, "-m", "tasking", "run", "--wait"], "always")]
+    assert [(x.name, x.argv(), x.restart) for x in p.processes] == [("scheduler", [sys.executable, "-m", "orchestra", "tasks", "run", "--wait"], "always")]
     bare = tmp_path / "bare"
     bare.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=bare, check=True)

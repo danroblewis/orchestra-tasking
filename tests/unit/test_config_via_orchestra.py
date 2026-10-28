@@ -101,4 +101,4 @@ def test_a_project_set_up_for_tasks_only_in_the_overlay_runs_the_scheduler(tmp_p
     o = load_orchestra_project(repo)
     o.config_edit.set("tasks.workers", 1, target="overlay")
     assert [x.argv() for x in plugin(load_orchestra_project(repo)).processes] == [
-        [sys.executable, "-m", "tasking", "run", "--wait"]]
+        [sys.executable, "-m", "orchestra", "tasks", "run", "--wait"]]

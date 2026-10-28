@@ -65,7 +65,7 @@ broken without updating the spec and saying so in the commit.
 7. **Humans are read-only, except the operator controls.** The pages and CLI read; the only
    writes a person has are pausing pickup, the capacity ceiling and stopping whoever holds a
    ticket. A person who wants a ticket created or changed does it through a planner machine's
-   request (`tasking api` is one), never through a UI form.
+   request (`orchestra tasks api` is one), never through a UI form.
 8. **Every ticket has a milestone, and closed milestones are final.** The store enforces it.
 9. **Orchestra is a library, and the only one the machines need.** `tasking/machines/` (the
    shell worker and the check reviewer, shipped so that projects install them rather than copy them)

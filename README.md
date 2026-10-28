@@ -26,18 +26,29 @@ Ctrl-C stops everything; remove `~/orchestra-tasking-demo` first to run it again
 
 ## Use it on a repository
 
-The commands run from this repository's environment (`--project <this repo>`), since the target
-repository need not have Orchestra or the task system installed:
+Install Orchestra with the task system beside it, once (no clone needed):
 
-    cd <repo> && uv run --project <this repo> tasking init     # the task system's sections in orchestra.toml
-    uv run --project <this repo> orchestra web                 # Orchestra's UI with the Tickets page; open the login link it prints
-    uv run --project <this repo> orchestra run                 # Orchestra's host; it starts the scheduler
-    uv run --project <this repo> tasking api --as planner create_milestone --args '{"name": "First"}'
-    uv run --project <this repo> tasking api --as planner create_ticket --args '{"title": "…", "milestone_id": "M1", "description": "…", "acceptance": "…"}'
+    uv tool install 'orchestra[sd] @ git+https://github.com/danroblewis/orchestra@main' --with 'orchestra-tasking @ git+https://github.com/danroblewis/orchestra-tasking'
 
-Then run something that fills the roles: the package's programs, declared in `orchestra.toml` so
-that `orchestra run` keeps them running (name the Python that has the task system installed, in
-full, if `python` on your PATH is another one):
+The task system's command line comes with it as `orchestra tasks …` (there is no `tasking`
+executable). Then, in the repository:
+
+    cd <repo>
+    orchestra tasks init        # Orchestra's orchestra.toml (if there is none) with the task system's sections
+    orchestra web               # Orchestra's UI with the Tickets page; open the login link it prints
+    orchestra run               # Orchestra's host; it starts the task system's scheduler too
+    orchestra tasks api --as planner create_milestone --args '{"name": "First"}'
+    orchestra tasks api --as planner create_ticket --args '{"title": "…", "milestone_id": "M1", "description": "…", "acceptance": "…"}'
+    orchestra tasks status      # one screen: what needs a decision, who holds what, the queue
+
+There is nothing else to start: `orchestra run` keeps the scheduler running (`tasks.scheduler` on
+the Core page). **But the task system does no work itself.** It offers ready tickets to the
+`worker` and `reviewer` roles, and until something fills them, every ticket waits in `OPEN`.
+Fill them one of two ways.
+
+**Programs** (the package's own two, enough for shell tasks): declare them in `orchestra.toml`
+so that `orchestra run` keeps them running (`python` there is Orchestra's own, which has the task
+system installed):
 
     [[machines]]
     name = "worker"
@@ -46,11 +57,18 @@ full, if `python` on your PATH is another one):
     name = "reviewer"
     command = "python -m tasking.machines.check_reviewer"     # code mode: add --check '<command>' to check something else than the gate's unit command
 
-In tasks mode the reviewer checks the acceptance text's `` `files` `` and `"lines"` against the
+**AI agents**: install the agents plugin into the same tool, which fills the roles with agents
+(its README says how to configure them):
+
+    uv tool install 'orchestra[sd] @ git+https://github.com/danroblewis/orchestra@main' --with 'orchestra-tasking @ git+https://github.com/danroblewis/orchestra-tasking' --with 'orchestra-agents @ git+https://github.com/danroblewis/orchestra-agents'
+
+Installing the tool again replaces it, so name every plugin you want on each install. Or run your
+own machines, anything that speaks the contract in `tasking/assignments.py` over the bus.
+
+The package's reviewer, in tasks mode, checks the acceptance text's `` `files` `` and `"lines"` against the
 ticket's folder and RESULT.md; in code mode it runs `--check`, or the first `[[gate.unit]]`
 command, in the ticket's worktree at the commit to review (`ORCHESTRA_REPO` names the worktree
-there, as it does in the gate) and approves when it passes. Or run your own machines, or any other package's machines that speak the same contract over the bus
-(orchestra-agents is one). Settings are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
+there, as it does in the gate) and approves when it passes. Settings are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
 `~/.orchestrator/<key>/tasks/`; events go on Orchestra's bus. If your tasks live seconds, set
 `[discovery] step = "5s"` (with a window of 30–60 m) in `orchestra.toml`: Orchestra's default
 grid is 30 s, and a level that changes inside one step is not a stock.
@@ -60,7 +78,7 @@ exercise) is a `[[tasks.recurring]]` definition: a schedule on a time zone's wal
 "day" | "week" | "month"` at a time, or `cron`) and a ticket template with date placeholders. The
 scheduler makes the ticket at each due time, once, as the planner (`planner/recurring`); after
 the laptop slept it makes at most one late occurrence, and by default none while the last one is
-still open. `tasking recurring check` says what is wrong with a definition, `tasking recurring
+still open. `orchestra tasks recurring check` says what is wrong with a definition, `orchestra tasks recurring
 list` shows the next due times (also on the Tasks panel). The contract is SPEC.md section 7.
 
 **Reusing worktrees.** In code mode each ticket gets its own git worktree, made when it is first
@@ -77,7 +95,7 @@ removed, ignored files kept unless `worktree_clean_ignored`, and the ticket's br
 (from the base when new). A ticket that comes back gets the worktree it last used when that one
 is free. With the pool full a turn waits; the scheduler's log says so, and
 `tasks_worktrees{state="waiting"}` counts it (read by the instrument `tasks.tickets`, which
-`orchestra run` runs every discovery step: `tasking metrics`). SPEC.md section 5 has the details.
+`orchestra run` runs every discovery step: `orchestra tasks metrics`). SPEC.md section 5 has the details.
 
 **Flaky tests and test counts.** The gate can run a failed stage again, and counts your tests from
 the reports your runner writes:
@@ -201,7 +219,7 @@ A plain `uv run` or `uv sync` also puts the locked Orchestra back.
 The `orchestra.toml` at this repository's root and `bin/orchestra-ctl` are the maintainer's
 setup for watching this repository with Orchestra itself: the TOML points the bus at Redis
 (`redis://127.0.0.1:6379/3`) and the metrics at a VictoriaMetrics on port 8428, and
-`orchestra-ctl start` runs Orchestra's host, its web UI on port 8060 and `tasking run` from this
+`orchestra-ctl start` runs Orchestra's host, its web UI on port 8060 and `orchestra tasks run` from this
 repository's `.venv`, with pids and logs under `run/`. No machine fills the worker and reviewer
 roles there, and the capacity is zero (`[tasks] workers = 0`, `reviewers = 0`), so nothing is
 offered: it is a watching setup, not a working one. Nothing else in the repository depends on

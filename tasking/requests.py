@@ -74,7 +74,7 @@ def ask(events, command: str, args: dict, by: str) -> dict:
             if ev.get("request") == rid and ev.get("type") == REFUSED:
                 return {"ok": False, "error": ev.get("error") or "refused"}
         time.sleep(0.25)
-    return {"ok": False, "error": f"the task system did not answer within {int(WAIT_S)} s: is its scheduler (tasking run) running?"}
+    return {"ok": False, "error": f"the task system did not answer within {int(WAIT_S)} s: is its scheduler (orchestra tasks run) running?"}
 
 
 class Desk:

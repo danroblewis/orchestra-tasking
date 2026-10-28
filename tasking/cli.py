@@ -1,7 +1,8 @@
-"""The `tasking` command line: the task system's scheduler, its tickets, and its operations. The
-web UI, metrics, model and event commands are Orchestra's (`orchestra web`, …). What the command
-line publishes (a staging deploy, a planner's request) is sourced ``task_cli``, or the role a
-request is sent as."""
+"""`orchestra tasks`: the task system's command line (its scheduler, its tickets, its operations),
+a subcommand of Orchestra's (entry point group ``orchestra.commands``; Orchestra sets
+``ORCHESTRA_PROG``). ``python -m tasking`` runs the same. The web UI, metrics, model and event
+commands are Orchestra's (`orchestra web`, …). What the command line publishes (a staging deploy,
+a planner's request) is sourced ``task_cli``, or the role a request is sent as."""
 
 from __future__ import annotations
 
@@ -20,11 +21,16 @@ from .store import LocalStore, StoreError
 CLI = "task_cli"
 
 
+def prog() -> str:
+    """How the command is called: ``ORCHESTRA_PROG`` (Orchestra sets it), else ``orchestra tasks``."""
+    return os.environ.get("ORCHESTRA_PROG") or "orchestra tasks"
+
+
 def _project(args) -> Project:
     try:
         return load_project(getattr(args, "repo", None))
     except ConfigError as e:
-        sys.exit(f"tasking: {e}")
+        sys.exit(f"{prog()}: {e}")
 
 
 def _store(project: Project, source: str = CLI) -> tuple[LocalStore, Events]:
@@ -75,11 +81,11 @@ def cmd_ticket(args) -> int:
             print(f"{t.id:10} {t.state.value:17} p{t.priority} {t.milestone_id:4} {t.title}")
         return 0
     if not args.id:
-        sys.exit("tasking: ticket show needs an id")
+        sys.exit(f"{prog()}: ticket show needs an id")
     try:
         t = store.get_ticket(args.id)
     except StoreError:
-        sys.exit(f"tasking: no ticket {args.id}")
+        sys.exit(f"{prog()}: no ticket {args.id}")
     print(json.dumps({**t.to_dict(), "notes": store.notes(t.id)}, indent=2))
     return 0
 
@@ -93,11 +99,11 @@ def cmd_milestone(args) -> int:
             print(f"{m.id:5} {m.status.value:7} {n:3} tickets  {m.name}")
         return 0
     if not args.id:
-        sys.exit("tasking: milestone show needs an id")
+        sys.exit(f"{prog()}: milestone show needs an id")
     try:
         print(json.dumps(store.get_milestone(args.id).to_dict(), indent=2))
     except StoreError:
-        sys.exit(f"tasking: no milestone {args.id}")
+        sys.exit(f"{prog()}: no milestone {args.id}")
     return 0
 
 
@@ -128,7 +134,7 @@ def cmd_staging(args) -> int:
     store, events = _store(project)
     st = Staging(project, store, events)
     if not project.config.staging_configured:
-        sys.exit("tasking: no [staging] section in orchestra.toml")
+        sys.exit(f"{prog()}: no [staging] section in orchestra.toml")
     if args.action == "status":
         print(json.dumps(st.state(), indent=2))
     elif args.action == "logs":
@@ -138,8 +144,8 @@ def cmd_staging(args) -> int:
         print("stopped")
     elif args.action == "restart":
         r = st.restart()
-        print({"ok": "restarted", "no_build": "no build recorded; use `tasking staging deploy`",
-               "start_failed": "start failed; see `tasking staging logs`",
+        print({"ok": "restarted", "no_build": "no build recorded; use `orchestra tasks staging deploy`",
+               "start_failed": "start failed; see `orchestra tasks staging logs`",
                "tunnel_failed": "running locally, but the tunnel probe failed; see staging/tunnel.log"}[r])
         if r in ("ok", "tunnel_failed"):
             print(f"local:  {st.local_url()}" + (f"\npublic: {st.public_url()}" if st.public_url() else ""))
@@ -147,7 +153,7 @@ def cmd_staging(args) -> int:
         # build the current base branch head with the [build] stage (the gate's) and promote it
         cfg = project.config
         if not (cfg.build_command and cfg.build_artifact):
-            sys.exit("tasking: [build] command and artifact are required to deploy")
+            sys.exit(f"{prog()}: [build] command and artifact are required to deploy")
         git = Git(project.repo_root)
         commit = git.rev_parse(cfg.base_branch)
         bid = f"manual-{uuid.uuid4().hex[:8]}"
@@ -159,11 +165,11 @@ def cmd_staging(args) -> int:
             git.worktree_remove(path)
             git.branch_delete(f"orchestra/build-{bid}")
         if artifact is None:
-            sys.exit(f"tasking: build failed:\n{res[-1]['tail']}")
+            sys.exit(f"{prog()}: build failed:\n{res[-1]['tail']}")
         rec = {"id": bid, "gate_run_id": None, "commit": commit, "artifact_path": artifact, "created_at": now()}
         store.record_build(rec)
         print(f"built {Path(artifact).name} from {commit[:10]}; deploying")
-        print("deployed" if st.deploy(rec) else "deploy FAILED; see `tasking staging logs`")
+        print("deployed" if st.deploy(rec) else "deploy FAILED; see `orchestra tasks staging logs`")
         print(f"local:  {st.local_url()}" + (f"\npublic: {st.public_url()}" if st.public_url() else ""))
     return 0
 
@@ -249,7 +255,7 @@ def cmd_doctor(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="tasking", description="The task system: tickets, the scheduler that offers them to workers and reviewers, the merge gate")
+    p = argparse.ArgumentParser(prog=prog(), description="The task system: tickets, the scheduler that offers them to workers and reviewers, the merge gate")
     p.add_argument("--repo", help="repository root (default: ORCHESTRA_REPO or cwd)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -308,9 +314,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    """``orchestra tasks ARGS``: Orchestra calls this with the arguments after ``tasks``."""
+    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
     return args.fn(args)
 
+
+main.help = "the task system: tickets, the scheduler, the merge gate (init, status, api, ...)"
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -29,7 +29,7 @@ The policy:
   the child is restacked onto the base, ``stacked_on`` cleared, and the gate tests it again.
 - **External review.** The gate hands a stacked ticket off with its parent's branch as the pull
   request's base (``gate.handed_off`` {base, parent}); pushing and opening stay the owner's
-  (``git-spice stack submit`` does it with the bases right; ``tasking stack`` lists them). When the
+  (``git-spice stack submit`` does it with the bases right; ``orchestra tasks stack`` lists them). When the
   parent's pull request is merged (``github.pr.merged`` with ``merge_commit``, kept as the parent's
   ``merged_as``), the child is restacked onto the base if the base has that commit, or onto the
   commit itself (fetched from the remote if it is not here) when the base does not have it yet:

@@ -16,7 +16,7 @@ withdrawals of offers nobody took go out as ``coordinator/dispatch``: an instanc
 coordinator machine, beside whatever else fills that role (an AI agent). A publish as
 ``task_scheduler`` is refused. The web
 plugin's operator controls publish as ``task_web``, the command line as ``task_cli``, a planner
-asking through ``tasking api`` as whatever it says it is. The bus itself is opened as Orchestra
+asking through ``orchestra tasks api`` as whatever it says it is. The bus itself is opened as Orchestra
 opens it (``[events] url`` or ORCHESTRA_EVENTS_URL), so there is one place that decides where the
 events go.
 

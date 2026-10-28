@@ -95,7 +95,7 @@ function render() {
   const s = STATE; if (!s) return;
   $("legend").innerHTML = Object.entries(s.counts).filter(([, v]) => v).map(([k, v]) => `<span class="badge" style="background:${color(k)}">${esc(k.replace(/_/g, " "))} ${v}</span>`).join(" ");
   $("chips").innerHTML = [...opened].map((m) => `<span class="ms-chip" onclick="toggleMs('${m}')">▼ ${esc(m)} · open</span>`).join("");
-  if (!s.tickets.length) { $("nodes").innerHTML = `<text x="20" y="40" fill="#8a90a3">No tickets yet. A planner creates them (tasking api create_ticket …).</text>`; $("edges").innerHTML = ""; return; }
+  if (!s.tickets.length) { $("nodes").innerHTML = `<text x="20" y="40" fill="#8a90a3">No tickets yet. A planner creates them (orchestra tasks api create_ticket …).</text>`; $("edges").innerHTML = ""; return; }
   const model = buildModel(s);
   bounds = layout(model);
   // The frame worth looking at: everything except done milestones (and the chain behind them).

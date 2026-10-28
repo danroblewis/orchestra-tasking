@@ -23,7 +23,7 @@ The rules (SPEC.md section 7, "Recurring tickets"):
   counts from the last occurrence handled.
 
 ``check`` reads the definitions and says what is wrong with each, in words a planner (the
-Supervisor) can act on; ``tasking recurring check`` prints it."""
+Supervisor) can act on; ``orchestra tasks recurring check`` prints it."""
 
 from __future__ import annotations
 
@@ -233,7 +233,7 @@ class Recurring:
             said = f"{label}: {'; '.join(why)}"
             if said not in self.said:
                 self.said.add(said)
-                self.log(f"recurring {label} is not used: {'; '.join(why)} (tasking recurring check)")
+                self.log(f"recurring {label} is not used: {'; '.join(why)} (orchestra tasks recurring check)")
         live = [d for d in checked.definitions if d.enabled]
         if live and not self.announced:
             self.events.publish(MACHINE_STARTED, {"mode": "scheduled", "kind": "program", "listens_for": [],
@@ -284,7 +284,7 @@ class Recurring:
         except StoreError as e:            # no open milestone: handled as failed, said once, never tried again every tick
             if self.store.settle_occurrence(d.name, due=ts, occurrence=occ, outcome="failed", missed=missed):
                 self.events.attention("supervisor", f"recurring ticket {d.name}: the occurrence {occ} could not be made: {e}; "
-                                                    "fix [[tasks.recurring]] (tasking recurring check)", src=SOURCE)
+                                                    "fix [[tasks.recurring]] (orchestra tasks recurring check)", src=SOURCE)
                 self.log(f"recurring {d.name}: {occ} not made: {e}")
             return
         if t:
@@ -293,7 +293,7 @@ class Recurring:
 
 
 def view(project, store: LocalStore, now: float | None = None, raw: dict | None = None) -> dict:
-    """What the pages and ``tasking recurring list`` show: each definition with its schedule in
+    """What the pages and ``orchestra tasks recurring list`` show: each definition with its schedule in
     words, its next due time, and the last occurrence handled; and what is wrong with the rest.
     ``raw``: a configuration to check instead of the project's (a planner's draft)."""
     now = time.time() if now is None else now

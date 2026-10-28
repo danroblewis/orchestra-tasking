@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Orchestra watching this repository: its host and web UI, run from this repository's environment
 # (.venv, `uv sync`), where Orchestra is installed with the task system's plugin (the Tickets
-# page), and the task system's scheduler (`tasking run`, "tasks").
+# page), and the task system's scheduler (`orchestra tasks run`, "tasks").
 #   bin/orchestra-ctl start | stop | status | restart <name>
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -16,7 +16,7 @@ start() {
 }
 stop() { local n=$1; if [ -f "$RUN/$n.pid" ]; then kill "$(cat "$RUN/$n.pid")" 2>/dev/null || true; rm -f "$RUN/$n.pid"; echo "$n: stopped"; fi; }
 one() { case $1 in host) start host "$PY" -m orchestra run ;; web) start web "$PY" -m orchestra web --port "$PORT" ;;
-        tasks) start tasks "$PY" -m tasking run ;; esac; }
+        tasks) start tasks "$PY" -m orchestra tasks run ;; esac; }
 case "${1:-status}" in
   start) for n in $NAMES; do one "$n"; done; echo "web: http://127.0.0.1:$PORT (log in with the token \`$PY -m orchestra web token\` prints)" ;;
   stop) for n in tasks web host; do stop "$n"; done ;;

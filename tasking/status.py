@@ -109,7 +109,7 @@ def render(d: dict) -> str:
             L.append(f"      {b['reason']}")
     L.append("")
     sc = d["scheduler"]
-    L.append(f"scheduler: {'RUNNING' if sc['running'] else 'DOWN'}" + (f"  pid {sc['pid']}" if sc["running"] else "   (start with `tasking run`)"))
+    L.append(f"scheduler: {'RUNNING' if sc['running'] else 'DOWN'}" + (f"  pid {sc['pid']}" if sc["running"] else "   (start with `orchestra tasks run`)"))
     pl = d["pipeline"]
     L.append((f"pipeline:  {'PAUSED ' + str(pl.get('reason')) if pl.get('paused') else 'running'}   " if code else "")
              + f"slots: workers {d['slots']['workers']}, reviewers {d['slots']['reviewers']}" + ("   NEW WORKERS PAUSED" if d.get("pickup_paused") else ""))

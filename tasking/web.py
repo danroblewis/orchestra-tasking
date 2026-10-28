@@ -41,31 +41,31 @@ def plugin(orchestra_project) -> Plugin:
 
 
 def set_up(project: Project) -> bool:
-    """Whether the project is set up for tasks (``tasking init`` wrote ``[project]`` or ``[tasks]``)."""
+    """Whether the project is set up for tasks (``orchestra tasks init`` wrote ``[project]`` or ``[tasks]``)."""
     return bool({"project", "tasks"} & set(project.config.raw))
 
 
 def processes(project: Project) -> list[Process]:
     """What ``orchestra run`` keeps running for the task system: the scheduler, in a project set up
-    for tasks (``tasking init`` wrote ``[project]`` or ``[tasks]`` in its orchestra.toml). It is
+    for tasks (``orchestra tasks init`` wrote ``[project]`` or ``[tasks]`` in its orchestra.toml). It is
     started with the Python that runs Orchestra, where the task system is installed; ``--wait``
     lets one started by hand keep the project until it stops. Orchestra names it ``tasks.scheduler``
     (its log: ``<state>/logs/machines/tasks.scheduler.log``)."""
     if not set_up(project):
         return []
-    return [Process("scheduler", [sys.executable, "-m", "tasking", "run", "--wait"])]
+    return [Process("scheduler", [sys.executable, "-m", "orchestra", "tasks", "run", "--wait"])]
 
 
 def collectors(project: Project) -> list[Collector]:
     """The instrument that measures the tickets (``tasks.tickets``): ``orchestra run`` runs
-    ``tasking metrics`` every discovery step, which prints the levels and counters from the record
+    ``orchestra tasks metrics`` every discovery step, which prints the levels and counters from the record
     (tasking/measures.py), and labels each point ``instrument=tasks.tickets``. A command, not a
     scrape of ``/metrics``: the web server's port is not known to ``orchestra run``, and a port of
     the scheduler's own would be one more to configure per project; the text is the same."""
     if not set_up(project):
         return []
     step = max(1.0, float(project.orchestra.config.discovery_step))
-    out = [Collector.collect("tickets", f"{shlex.quote(sys.executable)} -m tasking metrics", every_s=step, timeout_s=min(step, 10.0))]
+    out = [Collector.collect("tickets", f"{shlex.quote(sys.executable)} -m orchestra tasks metrics", every_s=step, timeout_s=min(step, 10.0))]
     tests = tests_command(project)
     if tests:
         out.append(Collector.collect("tests", tests, every_s=step, timeout_s=min(step, 10.0)))

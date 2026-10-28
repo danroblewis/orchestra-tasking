@@ -1,4 +1,4 @@
-"""``tasking init`` writes the repository's own base branch, not a fixed ``main``."""
+"""``orchestra tasks init`` writes the repository's own base branch, not a fixed ``main``."""
 
 import subprocess
 

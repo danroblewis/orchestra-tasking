@@ -244,7 +244,7 @@ class Staging:
     @property
     def _lock(self) -> Path:
         """One deploy/restart at a time per project, across processes (the gate in the
-        scheduler and a manual `tasking staging deploy` must not interleave)."""
+        scheduler and a manual `orchestra tasks staging deploy` must not interleave)."""
         return self.project.staging_dir / ".deploy.lock"
 
     def deploy(self, build: dict) -> bool:

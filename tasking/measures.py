@@ -32,7 +32,7 @@ Where they come from: the counters are cumulative across processes and restarts,
 tickets in the record (``metric_counts``) under the store's lock and moved in the same write as
 the change they count, so a level and the counters read from one record balance exactly. The
 plugin declares the instrument (``Plugin.collectors``, tasking/web.py): ``orchestra run`` runs
-``tasking metrics`` every discovery step, which prints them from the record, and labels every
+``orchestra tasks metrics`` every discovery step, which prints them from the record, and labels every
 point ``instrument=tasks.tickets``. The same text is served at the plugin's ``/metrics``
 (``/api/plugins/tasks/metrics``), behind Orchestra's web login like every route.
 
