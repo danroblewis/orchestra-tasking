@@ -1,9 +1,13 @@
 """The task system's settings and where it keeps its state.
 
-The settings are sections of the repository's ``orchestra.toml`` that Orchestra itself ignores
-([project], [tasks], [build], [acceptance], [gate], [staging], [[probes]]). The project is
-Orchestra's (``orchestra.config.Project``: the key, the bus, the metrics store), held here with the
-task system's own config; its state lives in ``~/.orchestrator/<key>/tasks/``, beside Orchestra's."""
+The settings are sections of the project's configuration that Orchestra itself ignores
+([project], [tasks], [build], [acceptance], [gate], [staging], [[probes]]). They are read only
+through Orchestra's objects: ``project.orchestra.config.raw``, which is ``orchestra.toml`` with the
+owner's private overlay merged over it, reloaded by ``project.orchestra.reload_config()``. Nothing
+here opens ``orchestra.toml`` (Orchestra's AGENTS.md rule 10); ``init_project`` adds the task
+system's sections through ``project.config_edit``. The project is Orchestra's
+(``orchestra.config.Project``: the key, the bus, the metrics store), held here with the task
+system's own config; its state lives in ``~/.orchestrator/<key>/tasks/``, beside Orchestra's."""
 
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import tomlkit
 from orchestra.config import ConfigError, parse_duration
 from orchestra.config import Project as OrchestraProject
 from orchestra.config import load_project as load_orchestra_project
@@ -66,7 +71,12 @@ class Config:
 
     @classmethod
     def from_toml(cls, text: str) -> Config:
-        raw = tomllib.loads(text)
+        """The settings in a TOML text (tests; the project's come from ``from_raw``)."""
+        return cls.from_raw(tomllib.loads(text))
+
+    @classmethod
+    def from_raw(cls, raw: dict[str, Any]) -> Config:
+        """The settings in a parsed configuration: Orchestra's ``project.config.raw``."""
         p, b, acc, g, st = (raw.get(k, {}) for k in ("project", "build", "acceptance", "gate", "staging"))
         a = raw.get("tasks") or {}
         tun = st.get("tunnel", {}) or {}
@@ -160,7 +170,7 @@ class Project:
 
     @classmethod
     def from_orchestra(cls, o: OrchestraProject) -> Project:
-        return cls(orchestra=o, config=Config.from_toml((o.repo_root / "orchestra.toml").read_text()))
+        return cls(orchestra=o, config=Config.from_raw(o.config.raw))
 
     @property
     def key(self) -> str:
@@ -219,9 +229,16 @@ class Project:
                   self.staging_dir, self.artifacts_dir):
             d.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def config_edit(self):
+        """Orchestra's way to change the configuration (``orchestra.config_edit``)."""
+        return self.orchestra.config_edit
+
     def reload_config(self) -> None:
-        """The task system's own sections, re-read (the scheduler does this every tick)."""
-        self.config = Config.from_toml((self.repo_root / "orchestra.toml").read_text())
+        """The task system's own sections, read again through Orchestra, the private overlay merged
+        (the scheduler does this every tick)."""
+        self.orchestra.reload_config()
+        self.config = Config.from_raw(self.orchestra.config.raw)
 
 
 def load_project(repo: Path | str | None = None) -> Project:
@@ -231,12 +248,14 @@ def load_project(repo: Path | str | None = None) -> Project:
 
 def init_project(repo: Path, *, prefix: str | None = None, unit_command: str = "uv run pytest -q") -> Project:
     """Orchestra's starter ``orchestra.toml`` (if there is none) with the task system's sections
-    added (if it has no ``[project]``), and the project registered with Orchestra."""
+    added (if the configuration has no ``[project]``), through Orchestra (``config_edit``, which
+    keeps the starter's comments), and the project registered with Orchestra."""
     from orchestra.config import init_project as init_orchestra
-    root = init_orchestra(Path(repo)).repo_root
-    toml_path = root / "orchestra.toml"
-    text = toml_path.read_text()
-    if "project" not in tomllib.loads(text):
-        pfx = prefix or re.sub(r"[^A-Za-z]", "", root.name.upper())[:4] or "ORC"
-        toml_path.write_text(text.rstrip() + "\n\n" + STARTER_TOML.format(prefix=pfx, unit_command=unit_command))
-    return load_project(root)
+    o = init_orchestra(Path(repo))
+    if "project" not in o.config.raw:
+        pfx = prefix or re.sub(r"[^A-Za-z]", "", o.repo_root.name.upper())[:4] or "ORC"
+        starter = tomlkit.parse(STARTER_TOML.format(prefix=pfx, unit_command=unit_command))
+        for section in starter:
+            if section not in o.config.raw:
+                o.config_edit.set(section, starter[section])
+    return Project.from_orchestra(o)

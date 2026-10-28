@@ -902,7 +902,7 @@ Orchestra calls `plugin(orchestra_project)` and gets an `orchestra.plugins.Plugi
 The controls are the only writes a person has (`AGENTS.md` rule 7). They publish as
 `task_web`: `pickup.paused`/`pickup.resumed`, `capacity.changed`, `kill.requested`. A kill only
 writes a request into the runtime record; the scheduler releases the assignment at its next
-tick. Every API request re-reads `orchestra.toml`.
+tick. Every API request reloads the configuration through Orchestra (the overlay merged).
 
 The task system uses only Orchestra's library: `orchestra.config` (project, durations),
 `orchestra.events` and the bus, `orchestra.runtime.alive`, `orchestra.plugins`,

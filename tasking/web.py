@@ -67,7 +67,7 @@ def collectors(project: Project) -> list[Collector]:
 
 def router(project: Project) -> APIRouter:
     def fresh() -> None:
-        project.reload_config()                       # orchestra.toml, re-read once per request: the capacity ceiling is live
+        project.reload_config()                       # the configuration, read again through Orchestra per request: the capacity ceiling is live
 
     r = APIRouter(dependencies=[Depends(fresh)])
     store = LocalStore(project, Events.for_project(project, source=WEB))
@@ -92,7 +92,7 @@ def router(project: Project) -> APIRouter:
             return {"ok": True, "pickup_paused": action == "pause"}
         if action == "capacity":
             # the operator's ceiling on workers and reviewers, live. Running turns finish;
-            # only new pickups see the new number. Omit both to return to orchestra.toml
+            # only new pickups see the new number. Omit both to return to the configuration's
             try:
                 w = int(body["workers"]) if body.get("workers") is not None else None
                 rv = int(body["reviewers"]) if body.get("reviewers") is not None else None
