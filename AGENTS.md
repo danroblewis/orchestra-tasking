@@ -73,9 +73,9 @@ broken without updating the spec and saying so in the commit.
 10. **One package, no path hacks.** Everything importable is under `tasking/`; `demo/` is a
     template project and its runner, not a package. No `sys.path` manipulation; the one
     exception is pytest's `pythonpath` in `pyproject.toml`, for the tests only, so that they can
-    import `conftest`, `fake_machine` and `demo.run`. Orchestra comes from `../orchestra_2`
-    (editable: a clone of github.com/danroblewis/orchestra beside this repository, named
-    `orchestra_2` as `[tool.uv.sources]` says) and the task system uses its bus, config and
+    import `conftest`, `fake_machine` and `demo.run`. Orchestra comes from GitHub
+    (`orchestra @ git+https://github.com/danroblewis/orchestra@main`, the commit pinned in
+    `uv.lock`; README, "Developing against a local Orchestra") and the task system uses its bus, config and
     plugin interface (whose instrument fills the metrics store; the task system writes no metric
     itself), nothing else. Configuration is read and changed only through Orchestra's objects
     (`project.orchestra.config.raw`, `reload_config()`, `config_edit`), never by opening

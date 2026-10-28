@@ -426,7 +426,7 @@ wheels = [
 [[package]]
 name = "orchestra"
 version = "1.0.0a1"
-source = { editable = "../orchestra_2" }
+source = { git = "https://github.com/danroblewis/orchestra?rev=main#2ced3a8dc65f8352ed8ab1bc35951b953aac9b31" }
 dependencies = [
     { name = "fastapi" },
     { name = "psutil" },
@@ -445,33 +445,6 @@ sd = [
     { name = "scipy" },
     { name = "sympy" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "cma", marker = "extra == 'sd-research'", specifier = ">=4.0" },
-    { name = "confluent-kafka", marker = "extra == 'bus'", specifier = ">=2.5" },
-    { name = "confluent-kafka", marker = "extra == 'bus-kafka'", specifier = ">=2.5" },
-    { name = "cvxpy", marker = "extra == 'sd-research'", specifier = ">=1.6" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "highspy", marker = "extra == 'sd'", specifier = ">=1.8" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
-    { name = "jax", marker = "extra == 'sd-research'", specifier = ">=0.5" },
-    { name = "numba", marker = "extra == 'sd'", specifier = ">=0.61" },
-    { name = "numpy", marker = "extra == 'sd'", specifier = ">=2.0" },
-    { name = "pika", marker = "extra == 'bus'", specifier = ">=1.3" },
-    { name = "pika", marker = "extra == 'bus-rabbitmq'", specifier = ">=1.3" },
-    { name = "psutil", specifier = ">=5.9" },
-    { name = "pysindy", marker = "extra == 'sd-research'", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "redis", marker = "extra == 'bus'", specifier = ">=5.0" },
-    { name = "redis", marker = "extra == 'bus-redis'", specifier = ">=5.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "scipy", marker = "extra == 'sd'", specifier = ">=1.14" },
-    { name = "sympy", marker = "extra == 'sd'", specifier = ">=1.13" },
-    { name = "tomlkit", specifier = ">=0.13" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-]
-provides-extras = ["dev", "bus-redis", "bus-rabbitmq", "bus-kafka", "bus", "sd", "sd-research"]
 
 [[package]]
 name = "orchestra-tasking"
@@ -496,8 +469,8 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
-    { name = "orchestra", editable = "../orchestra_2" },
-    { name = "orchestra", extras = ["sd", "bus-redis"], marker = "extra == 'dev'", editable = "../orchestra_2" },
+    { name = "orchestra", git = "https://github.com/danroblewis/orchestra?rev=main" },
+    { name = "orchestra", extras = ["sd", "bus-redis"], marker = "extra == 'dev'", git = "https://github.com/danroblewis/orchestra?rev=main" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },

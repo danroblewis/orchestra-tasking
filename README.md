@@ -16,7 +16,7 @@ page of Python using only Orchestra's library (`demo/machines/`). `SPEC.md` is t
 
 ## Try it
 
-    uv sync --extra dev                # first clone github.com/danroblewis/orchestra beside this repository as `orchestra_2` (the path in [tool.uv.sources])
+    uv sync --extra dev                # Orchestra comes from GitHub, at the commit uv.lock pins
     uv run demo/run.py                 # a fresh demo project at ~/orchestra-tasking-demo, http://127.0.0.1:8071
 
 Four tickets are created and worked by the two programs; in about half a minute two are done
@@ -156,6 +156,31 @@ the worker reads an offer's or a release's source, and who holds a turn is the b
 The demo suite also executes the Tickets page in a headless Chrome when it finds one: `node` on
 the PATH, `puppeteer-core` resolvable by node (`NODE_PATH=<dir>/node_modules`) and Chrome at
 `CHROME` (default: the macOS application path). Without them that check is skipped.
+
+## Developing against a local Orchestra
+
+`pyproject.toml` takes Orchestra from GitHub (`orchestra @ git+https://github.com/danroblewis/orchestra@main`),
+and `uv.lock` pins the commit it resolved to, so nothing needs cloning beside this repository.
+`uv lock --upgrade-package orchestra` moves the pin to the newest `main` (then `uv sync --extra dev`).
+
+To run against an Orchestra checkout instead, with its uncommitted changes, lay it over this
+environment for one command:
+
+    uv run --with-editable ~/orchestra_2 python -m pytest -q      # the path to your Orchestra checkout
+    uv run --with-editable ~/orchestra_2 orchestra web
+
+Nothing is written: `.venv`, `pyproject.toml` and `uv.lock` keep GitHub's Orchestra, and a plain
+`uv run` uses it again. Inside the command, `sys.executable` and the `orchestra` beside it import
+the checkout, so the processes the tests and the host start do too.
+
+For something that runs `.venv/bin/orchestra` directly, install the checkout into `.venv` and keep
+uv from syncing it away:
+
+    uv pip install -e ~/orchestra_2
+    uv run --no-sync python -m pytest -q          # or export UV_NO_SYNC=1
+    uv sync --extra dev                            # back to the locked Orchestra from GitHub
+
+A plain `uv run` or `uv sync` also puts the locked Orchestra back.
 
 ## The maintainer's own setup
 

@@ -7,14 +7,18 @@ name = "orchestra-tasking"
 version = "0.1.0"
 description = "A task system observed by Orchestra: tickets, the scheduler that offers them to whatever fills the worker and reviewer roles, the merge gate."
 requires-python = ">=3.12"
-dependencies = ["orchestra", "psutil>=5.9", "fastapi>=0.115", "tomlkit>=0.13"]   # tomlkit: `tasking init` adds the starter
-# sections through Orchestra (project.config_edit) with their comments
+dependencies = [
+    "orchestra @ git+https://github.com/danroblewis/orchestra@main",
+    "psutil>=5.9",
+    "fastapi>=0.115",
+    "tomlkit>=0.13",   # `tasking init` adds the starter sections through Orchestra (project.config_edit) with their comments
+]
 
 [project.optional-dependencies]
 # orchestra[sd]: the demo and the e2e tests start `orchestra run`, whose host rediscovers the model;
 # orchestra[bus-redis]: the maintainer's own orchestra.toml at the repository root uses Redis.
 # The task system itself needs neither.
-dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6", "orchestra[sd,bus-redis]"]
+dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6", "orchestra[sd,bus-redis] @ git+https://github.com/danroblewis/orchestra@main"]
 
 [project.scripts]
 tasking = "tasking.cli:main"
@@ -22,8 +26,8 @@ tasking = "tasking.cli:main"
 [project.entry-points."orchestra.plugins"]
 tasks = "tasking.web:plugin"
 
-[tool.uv.sources]
-orchestra = { path = "../orchestra_2", editable = true }
+[tool.hatch.metadata]
+allow-direct-references = true   # Orchestra comes from GitHub (see README, "Developing against a local Orchestra")
 
 [tool.hatch.build.targets.wheel]
 packages = ["tasking"]
