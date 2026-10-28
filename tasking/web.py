@@ -37,7 +37,8 @@ def plugin(orchestra_project) -> Plugin:
     project = Project.from_orchestra(orchestra_project)
     return Plugin("tasks", [Page("/tickets", "Tickets", STATIC / "tickets.html")],
                   STATIC, router(project), scripts=["tasks-boot.js"], stylesheets=["tasks.css"],
-                  processes=processes(project), collectors=collectors(project))
+                  processes=processes(project), collectors=collectors(project),
+                  guide=Path(__file__).parent / "guide.md")   # how to configure it, for an AI operator (/api/guides)
 
 
 def set_up(project: Project) -> bool:

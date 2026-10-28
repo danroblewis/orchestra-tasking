@@ -45,6 +45,7 @@ def test_orchestra_run_is_asked_to_keep_the_scheduler_running_in_a_project_set_u
 
     p = plugin(load_orchestra_project(project.repo_root))
     assert [(x.name, x.argv(), x.restart) for x in p.processes] == [("scheduler", [sys.executable, "-m", "orchestra", "tasks", "run", "--wait"], "always")]
+    assert p.guide.is_file() and p.guide.name == "guide.md"                           # its operator's guide (/api/guides)
     bare = tmp_path / "bare"
     bare.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=bare, check=True)
