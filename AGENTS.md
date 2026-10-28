@@ -25,7 +25,9 @@ broken without updating the spec and saying so in the commit.
    `coordinator/dispatch` (dispatch is the coordinator's), a held turn taken back as its role
    (`worker`, `reviewer`), the gate,
    its pause and staging as `merge_gate`, a request's answer and what it made as the asker,
-   attention as the machine whose work is stuck (SPEC section 3, "Who publishes what"). It writes
+   attention as the machine whose work is stuck, a recurring ticket made at its due time as
+   `planner/recurring` (the planner's scheduled engagement, Orchestra's decision D7; SPEC section
+   7) (SPEC section 3, "Who publishes what"). It writes
    no metrics: an instrument the plugin declares reads them from the record. Never add an event
    as the scheduler, a machine declared for it, or a card of its own.
 2. **No zombies.** A ticket is `IN_PROGRESS`, `IN_REVIEW` or `MERGING` only while an assignment

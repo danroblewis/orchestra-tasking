@@ -5,6 +5,10 @@ what they measure (Orchestra's discovery decides what is a stock and what is a f
 - ``tasks_tickets{state}``: tickets in each state, every state;
 - ``tasks_tickets_created_total{by}``: tickets created;
 - ``tasks_ticket_transitions_total{from, to, by}``: state changes;
+- ``tasks_recurring_occurrences_total{recurring, outcome}``: the due times of each recurring
+  ticket (tasking/recurring.py) and what became of them: ``created`` on time, ``late`` (made
+  after the scheduler missed its time), ``skipped`` (the previous one still open), ``missed``
+  (not made: a later one was, or ``catch_up = false``), ``failed`` (no open milestone);
 - ``tasks_worktrees{state}``: with reused worktrees (tasking/pool.py), the pool's worktrees
   ``in_use`` and ``free``, and the turns ``waiting`` for one because the pool is full.
 
@@ -33,19 +37,21 @@ from __future__ import annotations
 from .model import State
 
 CREATED, TRANSITIONS = "tasks_tickets_created_total", "tasks_ticket_transitions_total"
+OCCURRENCES = "tasks_recurring_occurrences_total"
 LEVELS, WORKTREES = "tasks_tickets", "tasks_worktrees"
 HELP = {LEVELS: ("gauge", "tickets in each state"),
         CREATED: ("counter", "tickets created, by the machine that asked for them"),
         TRANSITIONS: ("counter", "ticket state changes, by the machine whose act or responsibility moved the ticket"),
-        WORKTREES: ("gauge", "the worktree pool: worktrees in use and free, and turns waiting for one")}
-_KEYS = {"created": CREATED, "transition": TRANSITIONS}
+        WORKTREES: ("gauge", "the worktree pool: worktrees in use and free, and turns waiting for one"),
+        OCCURRENCES: ("counter", "recurring tickets' due times, by definition and outcome: created, late, skipped, missed, failed")}
+_KEYS = {"created": CREATED, "transition": TRANSITIONS, "recurring": OCCURRENCES}
 
 
-def count(counts: dict, kind: str, labels: dict) -> None:
-    """Add one to a cumulative counter kept in ``counts`` (a dict saved with the tickets, under the
-    store's lock). ``kind``: created | transition."""
+def count(counts: dict, kind: str, labels: dict, n: int = 1) -> None:
+    """Add ``n`` to a cumulative counter kept in ``counts`` (a dict saved with the tickets, under the
+    store's lock). ``kind``: created | transition | recurring."""
     key = kind + "|" + "|".join(f"{k}={v}" for k, v in sorted(labels.items()))
-    counts[key] = counts.get(key, 0) + 1
+    counts[key] = counts.get(key, 0) + n
 
 
 def counters(counts: dict) -> dict[tuple[str, tuple], int]:

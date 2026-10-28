@@ -143,6 +143,7 @@ class Ticket:
     pull_head: str | None = None  # the commit its pull request carries, or is about to: what feedback must be about to count
     pull_state: str | None = None  # open | closed | merged, as the bridge last said
     created_by: str = ""         # the role that asked for it
+    occurrence: str | None = None   # a recurring ticket's occurrence, ``<definition>@<local due time>`` (tasking/recurring.py)
     version: int = 1
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)

@@ -1,7 +1,7 @@
 """The task system's settings and where it keeps its state.
 
 The settings are sections of the project's configuration that Orchestra itself ignores
-([project], [tasks], [build], [acceptance], [gate], [staging], [[probes]]). They are read only
+([project], [tasks] with [[tasks.recurring]], [build], [acceptance], [gate], [staging], [[probes]]). They are read only
 through Orchestra's objects: ``project.orchestra.config.raw``, which is ``orchestra.toml`` with the
 owner's private overlay merged over it, reloaded by ``project.orchestra.reload_config()``. Nothing
 here opens ``orchestra.toml`` (Orchestra's AGENTS.md rule 10); ``init_project`` adds the task
@@ -194,6 +194,16 @@ command = "{unit_command}"
 # [[gate.acceptance]]
 # name = "acceptance"
 # command = "uv run pytest tests/acceptance -q --base-url {{url}}"
+#
+# [[tasks.recurring]]              # a ticket made at each due time (SPEC.md section 7; tasking recurring check)
+# name = "weekly-update"
+# every = "week"                   # day | week | month, at a local time; or cron = "0 9 * * mon"
+# on = "mon"
+# at = "09:00"
+# timezone = "Europe/London"
+# title = "Weekly update, week of {{date}}"
+# milestone = "M1"
+# if_open = "skip"                 # nothing new while the last one is open
 #
 # [[probes]]                       # a condition the scheduler checks on an interval; exit 0 = holds.
 # name = "staging_fast"            # probe.failed / probe.recovered events fire on the transition,

@@ -2,7 +2,8 @@
 machine. One daemon stands in for each machine's own scheduler: the worker's queue (offering
 waiting tickets, taking back what a silent worker holds), the reviewer's, the merge gate
 (``merge_gate``, landing approved code), the answers to a planner's requests (tasking/requests.py)
-and the probes in ``orchestra.toml``. The queue is the coordinator's dispatch (choosing what is
+the probes in ``orchestra.toml``, and the planner's recurring tickets (``planner/recurring``,
+tasking/recurring.py). The queue is the coordinator's dispatch (choosing what is
 offered next: readiness, priority, capacity), so its offers go out as ``coordinator/dispatch``. So it never announces itself and never publishes as itself:
 what it publishes goes out as the machine whose responsibility it implements at that moment
 (tasking/events.py; SPEC.md section 3, "Who publishes what"). It follows what the machines say to
@@ -46,6 +47,7 @@ from .git import Git, GitError
 from .model import ACTIVE, Note, State, Ticket, TransitionError, effective_priorities, is_ready, now
 from .pool import Pool
 from .probes import Prober, config_probes
+from .recurring import Recurring
 from .reports import Reports
 from .requests import Desk
 from .staging import Staging
@@ -97,6 +99,7 @@ class Scheduler:
         self.staging = Staging(project, self.gate_store, self.gate_events)     # deploys what the gate landed: the gate's
         self.prober = Prober(project, store, Events.for_project(project, source=PROBES))
         self.reports = Reports(project, store, events, self.git, log)
+        self.recurring = Recurring(project, store, events, log)    # [[tasks.recurring]]: the planner's scheduled engagement
         self.pool = Pool(project, store, self.git, log)    # used only with [tasks] reuse_worktrees
         self.pool_waiting: set[tuple[str, str]] = set()     # (ticket, role or "gate") waiting for a free worktree
         self.offset = events.end()                   # read on from here: what the assignees say back (tasking/assignments.py)
@@ -232,6 +235,10 @@ class Scheduler:
         self._follow()
         if self.cfg.external_review:
             self.external.follow()
+        try:
+            self.recurring.tick()                     # an occurrence due now is made before the queue is read: offered this tick
+        except Exception as e:  # noqa: BLE001 - a broken recurring definition never stops the scheduler
+            log(f"recurring: {e!r}")
         tickets = self.store.tickets_by_id()
         milestones = self.store.milestones_by_id()
         cap = self.store.capacity()

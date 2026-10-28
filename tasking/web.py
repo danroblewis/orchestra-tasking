@@ -21,6 +21,7 @@ from orchestra.launcher import Process
 from orchestra.plugins import Page, Plugin
 from orchestra.runtime import alive
 
+from . import recurring
 from .config import Project
 from .events import OPERATOR, Events
 from .store import LocalStore, StoreError
@@ -113,6 +114,12 @@ def router(project: Project) -> APIRouter:
             return {"ok": True, "ticket": tid}
         raise HTTPException(400, "unknown action")
 
+    @r.get("/recurring")
+    async def recurring_tickets() -> dict:
+        """The recurring tickets (tasking/recurring.py): each definition's schedule, next due
+        time and last occurrence, and what is wrong with the ones not used. Read-only."""
+        return recurring.view(project, store)
+
     @r.get("/metrics", response_class=PlainTextResponse)
     async def metrics() -> str:
         """The task system's measurements in the Prometheus text format (tasking/measures.py)."""
@@ -139,8 +146,8 @@ def router(project: Project) -> APIRouter:
         one counts, and so does one whose offers nobody took), with the machine instance it is
         assigned to now (since when it holds it, or since when it was first offered, and what it
         last said it was doing) and the offers nobody took, blocked ones first,
-        then the held, then the offered, then the rest by when they reached their state; and the
-        queue by state, the capacity and the pause."""
+        then the held, then the offered, then the rest by when they reached their state; the
+        queue by state, the capacity and the pause; and the recurring tickets' next due times."""
         views = store.ticket_views()
         held = {a["ticket"]: a for a in store.assignments().values()}
         untaken = {r["ticket"]: r for r in store.untaken().values()}
@@ -160,7 +167,8 @@ def router(project: Project) -> APIRouter:
                                            "text": a.get("text") or ""} if a else None),
                            # offers of it nobody took: how many, since when, and when the next one goes out
                            "untaken": ({k: u[k] for k in ("role", "since", "misses", "again_at")} if u else None)})
-        return {"ok": True, "now": time.time(), "tickets": flight, "counts": {k: v for k, v in views["counts"].items() if v}, "capacity": store.capacity(),
+        rec = recurring.view(project, store)
+        return {"ok": True, "now": time.time(), "tickets": flight, "recurring": rec["recurring"], "recurring_problems": len(rec["problems"]), "counts": {k: v for k, v in views["counts"].items() if v}, "capacity": store.capacity(),
                 "pickup_paused": store.pickup_paused(), "scheduler": scheduler()["alive"]}
 
     return r

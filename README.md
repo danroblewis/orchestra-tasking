@@ -41,6 +41,14 @@ your own, or any other package's machines that speak the same contract over the 
 `[discovery] step = "5s"` (with a window of 30–60 m) in `orchestra.toml`: Orchestra's default
 grid is 30 s, and a level that changes inside one step is not a stock.
 
+**Recurring tickets.** Work that runs on a clock (a morning brief, a weekly update, a monthly
+exercise) is a `[[tasks.recurring]]` definition: a schedule on a time zone's wall clock (`every =
+"day" | "week" | "month"` at a time, or `cron`) and a ticket template with date placeholders. The
+scheduler makes the ticket at each due time, once, as the planner (`planner/recurring`); after
+the laptop slept it makes at most one late occurrence, and by default none while the last one is
+still open. `tasking recurring check` says what is wrong with a definition, `tasking recurring
+list` shows the next due times (also on the Tasks panel). The contract is SPEC.md section 7.
+
 **Reusing worktrees.** In code mode each ticket gets its own git worktree, made when it is first
 worked and removed when it lands. For a repository whose checkout is large, keep a pool instead:
 

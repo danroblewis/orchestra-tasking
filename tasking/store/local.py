@@ -1,5 +1,6 @@
-"""The local JSON store: the tickets half (store/tickets.py) and the runtime half
-(store/runtime.py) over two files under one lock (store/files.py). SPEC.md section 8."""
+"""The local JSON store: the tickets half (store/tickets.py, with the recurring tickets' record in
+store/occurrences.py) and the runtime half (store/runtime.py) over two files under one lock
+(store/files.py). SPEC.md section 8."""
 
 from __future__ import annotations
 
@@ -11,11 +12,12 @@ from orchestra.events import machine_and_instance
 from ..config import Project
 from ..events import Events
 from .files import locked
+from .occurrences import Occurrences
 from .runtime import Runtime
 from .tickets import Tickets
 
 
-class LocalStore(Tickets, Runtime):
+class LocalStore(Tickets, Occurrences, Runtime):
     def __init__(self, project: Project, events: Events):
         self.project = project
         self.prefix = project.config.ticket_prefix
