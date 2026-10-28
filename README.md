@@ -192,11 +192,11 @@ the PATH, `puppeteer-core` resolvable by node (`NODE_PATH=<dir>/node_modules`) a
 
 ## Developing against a local Orchestra
 
-`pyproject.toml` requires `orchestra>=1.0.0a1,<1.0.0` and takes it from GitHub's `main`
-(`[tool.uv.sources]`); `uv.lock` pins the commit it resolved to, so nothing needs cloning beside
-this repository. The source is this repository's own: installed as a plugin, it gets the Orchestra
-it is installed with. `uv lock --upgrade-package orchestra` moves the pin to the newest `main`
-(then `uv sync --extra dev`).
+`pyproject.toml` requires `orchestra>=1.0.0a1,<1.0.0rc0` and takes it from GitHub's `main`
+(`[tool.uv] override-dependencies`); `uv.lock` pins the commit it resolved to, so nothing needs
+cloning beside this repository. The override is this repository's own: installed as a plugin, it
+gets the Orchestra it is installed with. `uv lock --upgrade-package orchestra` moves the pin to the
+newest `main` (then `uv sync --extra dev`).
 
 To run against an Orchestra checkout instead, with its uncommitted changes, lay it over this
 environment for one command:
@@ -217,12 +217,13 @@ uv from syncing it away:
 
 A plain `uv run` or `uv sync` also puts the locked Orchestra back.
 
-To keep a checkout as this environment's Orchestra, point the source at it in `pyproject.toml`,
+To keep a checkout as this environment's Orchestra, point `pyproject.toml` at it,
 then `uv sync --extra dev`; leave that change, and the `uv.lock` it rewrites, out of commits
 (`git checkout pyproject.toml uv.lock`, then `uv sync --extra dev`, goes back):
 
-    [tool.uv.sources]
-    orchestra = { path = "../orchestra_2", editable = true }   # the path to your Orchestra checkout
+    [tool.uv]
+    override-dependencies = ["orchestra[sd,bus-redis]"]
+    sources = { orchestra = { path = "../orchestra_2", editable = true } }   # the path to your Orchestra checkout
 
 ## The maintainer's own setup
 
