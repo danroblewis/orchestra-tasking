@@ -18,7 +18,7 @@ stop() { local n=$1; if [ -f "$RUN/$n.pid" ]; then kill "$(cat "$RUN/$n.pid")" 2
 one() { case $1 in host) start host "$PY" -m orchestra run ;; web) start web "$PY" -m orchestra web --port "$PORT" ;;
         tasks) start tasks "$PY" -m tasking run ;; esac; }
 case "${1:-status}" in
-  start) for n in $NAMES; do one "$n"; done; echo "web: http://127.0.0.1:$PORT" ;;
+  start) for n in $NAMES; do one "$n"; done; echo "web: http://127.0.0.1:$PORT (log in with the token \`$PY -m orchestra web token\` prints)" ;;
   stop) for n in tasks web host; do stop "$n"; done ;;
   restart) n="${2:?which: $NAMES}"; stop "$n"; one "$n" ;;
   status) for n in $NAMES; do if [ -f "$RUN/$n.pid" ] && kill -0 "$(cat "$RUN/$n.pid")" 2>/dev/null; then echo "$n: running"; else echo "$n: stopped"; fi; done ;;

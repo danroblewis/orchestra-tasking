@@ -29,7 +29,7 @@ The commands run from this repository's environment (`--project <this repo>`), s
 repository need not have Orchestra or the task system installed:
 
     cd <repo> && uv run --project <this repo> tasking init     # the task system's sections in orchestra.toml
-    uv run --project <this repo> orchestra web                 # Orchestra's UI with the Tickets page
+    uv run --project <this repo> orchestra web                 # Orchestra's UI with the Tickets page; open the login link it prints
     uv run --project <this repo> orchestra run                 # Orchestra's host; it starts the scheduler
     uv run --project <this repo> tasking api --as planner create_milestone --args '{"name": "First"}'
     uv run --project <this repo> tasking api --as planner create_ticket --args '{"title": "…", "milestone_id": "M1", "description": "…", "acceptance": "…"}'

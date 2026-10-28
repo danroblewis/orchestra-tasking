@@ -21,7 +21,7 @@ the change they count, so a level and the counters read from one record balance 
 plugin declares the instrument (``Plugin.collectors``, tasking/web.py): ``orchestra run`` runs
 ``tasking metrics`` every discovery step, which prints them from the record, and labels every
 point ``instrument=tasks.tickets``. The same text is served at the plugin's ``/metrics``
-(``/api/plugins/tasks/metrics``) for anyone to read.
+(``/api/plugins/tasks/metrics``), behind Orchestra's web login like every route.
 
 Until 2026-10-27 the scheduler wrote these points itself, with ``machine="task_scheduler"`` on
 every series. That label is gone (the scheduler is no machine), and ``instrument`` is new; the

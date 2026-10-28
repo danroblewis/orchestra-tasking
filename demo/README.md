@@ -51,7 +51,8 @@ Nm ago", growing from the first offer.
   same result, and reported it BLOCKED: the reviewer wants what the commands never produce, with
   the reviewer's words quoted.
 
-Where to look, at http://127.0.0.1:8071:
+Where to look, at http://127.0.0.1:8071 (open the `log in:` link `run.py` prints first: every page
+asks for the project's web token):
 
 - **Dashboard**: the Tasks panel (cards for the tickets in flight, which instance holds each or
   what it waits for, the queue by state, the capacity and pause controls); the Core strip shows

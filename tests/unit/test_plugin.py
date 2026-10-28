@@ -6,10 +6,12 @@ import subprocess
 from fastapi.testclient import TestClient
 from orchestra.config import load_project as load_orchestra_project
 from orchestra.web.app import create_app
+from orchestra.web.auth import bearer
 
 
 def test_orchestra_serves_the_task_pages_and_api(project):
-    c = TestClient(create_app(load_orchestra_project(project.repo_root)))
+    o = load_orchestra_project(project.repo_root)
+    c = TestClient(create_app(o), headers=bearer(o))
     d = c.get("/api/plugins").json()
     assert [p["path"] for p in d["pages"] if p["plugin"] == "tasks"] == ["/tickets"] and d["errors"] == []
     assert d["scripts"] == ["/plugins/tasks/static/tasks-boot.js"]            # one loader; it loads the rest after tasks.js
@@ -28,7 +30,8 @@ def test_orchestra_serves_the_task_pages_and_api(project):
 
 def test_the_capacity_ceiling_follows_orchestra_toml(project):
     """Every request re-reads the task system's config, so an edit to [tasks] is live on the Dashboard."""
-    c = TestClient(create_app(load_orchestra_project(project.repo_root)))
+    o = load_orchestra_project(project.repo_root)
+    c = TestClient(create_app(o), headers=bearer(o))
     assert c.get("/api/plugins/tasks/board").json()["capacity"]["max_workers"] == 2
     toml = project.repo_root / "orchestra.toml"
     toml.write_text(toml.read_text().replace("workers = 2", "workers = 5"))
@@ -47,3 +50,21 @@ def test_orchestra_run_is_asked_to_keep_the_scheduler_running_in_a_project_set_u
     subprocess.run(["git", "init", "-q"], cwd=bare, check=True)
     (bare / "orchestra.toml").write_text('[events]\nurl = "file"\n')
     assert plugin(load_orchestra_project(bare)).processes == []        # not set up for tasks: no scheduler
+
+
+def test_the_operators_controls_need_a_login_and_orchestras_own_pages(project):
+    """POST /control as the Tasks panel sends it: the session cookie and the page's origin. Without a
+    login, or from another site, Orchestra refuses it before the plugin sees it."""
+    from orchestra.web.auth import token
+
+    o = load_orchestra_project(project.repo_root)
+    browser = TestClient(create_app(o))
+    page = {"Origin": "http://testserver"}
+    assert browser.post("/api/plugins/tasks/control", json={"action": "pause"}, headers=page).status_code == 401
+    assert browser.post("/login", data={"token": token(o), "next": "/"}, headers=page, follow_redirects=False).status_code == 303
+    assert browser.post("/api/plugins/tasks/control", json={"action": "pause"}).status_code == 403
+    assert browser.post("/api/plugins/tasks/control", json={"action": "pause"},
+                        headers={"Origin": "https://elsewhere.example"}).status_code == 403
+    assert browser.get("/api/plugins/tasks/board").json()["pickup_paused"] is False
+    assert browser.post("/api/plugins/tasks/control", json={"action": "pause"}, headers=page).json()["ok"]
+    assert browser.get("/api/plugins/tasks/board").json()["pickup_paused"] is True

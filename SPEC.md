@@ -848,6 +848,12 @@ API at `/api/plugins/tasks`:
 Every request reloads the configuration through Orchestra (`orchestra.toml` with the owner's
 private overlay merged), so the capacity ceiling shown is the current one.
 
+The pages, these routes and the static files are behind Orchestra's web login (Orchestra's SPEC
+§10.2, PLUGINS.md §4.4.1): a browser's session, or `Authorization: Bearer <orchestra web token>`
+from a program. `POST /control` carried by the session must come from Orchestra's own pages (a
+same-origin `Origin` or `Referer`), or Orchestra answers `403` before the plugin sees it; the Tasks
+panel's `fetch` sends it by itself. The plugin adds no check of its own.
+
 These controls are the only writes a person has; tickets change only through the scheduler
 (Orchestra's rule: humans act through machines, here a planner's request).
 

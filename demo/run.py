@@ -7,7 +7,8 @@ a git repository (Orchestra wants orchestra.toml at a repository root), removes 
 previous run left for it, starts Orchestra's host (`orchestra run`, which starts the task
 system's scheduler, declared by its plugin, and the two machines, declared in the template's
 orchestra.toml) and web UI, creates a milestone and four tickets as a planner would (requests over
-the bus, tasking/requests.py), prints the URL and stops everything on Ctrl-C. The host's and the
+the bus, tasking/requests.py), prints the URL with a link that logs in (every page of `orchestra
+web` asks for the project's web token) and stops everything on Ctrl-C. The host's and the
 web UI's output goes to run/*.log in the target; what the host starts logs to
 ``~/.orchestrator/<key>/logs/machines/<name>.log``. The e2e tests use the same functions against a temporary directory
 and a free port (tests/e2e/test_demo_e2e.py)."""
@@ -22,6 +23,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -89,9 +91,34 @@ def stop(procs: dict[str, subprocess.Popen]) -> None:
             p.wait()
 
 
-def get(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=5) as r:
-        return json.load(r)
+def web_token(target: Path, env: dict[str, str] | None = None) -> str:
+    """The project's web token, as `orchestra web token` prints it: what `orchestra web` asks for."""
+    env = {**os.environ, **(env or {}), "ORCHESTRA_REPO": str(target)}
+    return subprocess.run([PYTHON, "-m", "orchestra", "web", "token"], cwd=target, env=env,
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+class Web:
+    """`orchestra web` at ``url``, asked as a program asks it: with the web token as a bearer."""
+
+    def __init__(self, url: str, token: str):
+        self.url, self.token = url, token
+
+    def open(self, path: str):
+        req = urllib.request.Request(self.url + path, headers={"Authorization": f"Bearer {self.token}"})
+        return urllib.request.urlopen(req, timeout=5)
+
+    def get(self, path: str) -> dict:
+        with self.open(path) as r:
+            return json.load(r)
+
+    def text(self, path: str) -> str:
+        with self.open(path) as r:
+            return r.read().decode()
+
+    def login_link(self, path: str = "/") -> str:
+        """A link that logs a browser in (the token after '#' never leaves it), then opens ``path``."""
+        return f"{self.url}/login?next={urllib.parse.quote(path, safe='')}#token={self.token}"
 
 
 def wait_until(what: str, check, timeout_s: float = 60.0) -> None:
@@ -107,15 +134,15 @@ def wait_until(what: str, check, timeout_s: float = 60.0) -> None:
     raise TimeoutError(f"{what} did not come up within {timeout_s:.0f} s")
 
 
-def wait_for(url: str, procs: dict[str, subprocess.Popen]) -> None:
+def wait_for(web: Web, procs: dict[str, subprocess.Popen]) -> None:
     """The web UI answers and the scheduler is up (its desk then hears requests)."""
     def alive():
         dead = [n for n, p in procs.items() if p.poll() is not None]
         if dead:
             raise SystemExit(f"{', '.join(dead)} exited; see run/*.log")
         return True
-    wait_until("the web UI", lambda: alive() and get(f"{url}/api/plugins")["ok"])
-    wait_until("the scheduler", lambda: alive() and get(f"{url}/api/plugins/tasks/board")["scheduler"])
+    wait_until("the web UI", lambda: alive() and web.get("/api/plugins")["ok"])
+    wait_until("the scheduler", lambda: alive() and web.get("/api/plugins/tasks/board")["scheduler"])
 
 
 def plan(target: Path) -> list[str]:
@@ -160,9 +187,11 @@ def main() -> None:
     target, url = make_project(a.target.expanduser().resolve()), f"http://127.0.0.1:{a.port}"
     procs = start(target, a.port)
     try:
-        wait_for(url, procs)
+        web = Web(url, web_token(target))
+        wait_for(web, procs)
         ids = plan(target)
-        print(f"\nThe demo runs at {url}\n  project:  {target}\n  tickets:  {', '.join(ids)}  ({url}/tickets)\n"
+        print(f"\nThe demo runs at {url}\n  log in:   {web.login_link('/tickets')}\n  project:  {target}\n"
+              f"  tickets:  {', '.join(ids)}  ({url}/tickets)\n"
               f"  machines: {url}/machines\n  logs:     {target / 'run'}/*.log and the Core page\nCtrl-C stops everything.", flush=True)
         while all(p.poll() is None for p in procs.values()):
             time.sleep(1)
