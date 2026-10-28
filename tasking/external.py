@@ -19,8 +19,10 @@ What the pull request's people and checks do, applied to the ticket:
   that worker, published as whoever gave the first of the feedback (the reviewer, the pipeline's
   account that set the label, the check's app), with that event as its cause. The scheduler stands
   in for that reviewer's side of the protocol, which nobody on the pull request speaks, as it
-  stands in for the worker's queue (the owner's decision D17: it publishes as the machine whose
-  responsibility it implements). The feedback is metadata only: who, how many comments, which
+  stands in for the coordinator's dispatch (the owner's decision D17: it publishes as the machine
+  whose responsibility it implements). When that worker does not take it back within the return
+  timeout, dispatch (``coordinator/dispatch``) withdraws the offer and offers the work to any
+  worker, as it does any rejected work. The feedback is metadata only: who, how many comments, which
   files and lines, which label or check; the texts stay on the pull request;
 - feedback on another commit than ``pull_head`` (an older head) is noted, never acted on, and so
   is feedback that comes while the worker already has the ticket back;

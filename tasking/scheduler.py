@@ -2,7 +2,8 @@
 machine. One daemon stands in for each machine's own scheduler: the worker's queue (offering
 waiting tickets, taking back what a silent worker holds), the reviewer's, the merge gate
 (``merge_gate``, landing approved code), the answers to a planner's requests (tasking/requests.py)
-and the probes in ``orchestra.toml``. So it never announces itself and never publishes as itself:
+and the probes in ``orchestra.toml``. The queue is the coordinator's dispatch (choosing what is
+offered next: readiness, priority, capacity), so its offers go out as ``coordinator/dispatch``. So it never announces itself and never publishes as itself:
 what it publishes goes out as the machine whose responsibility it implements at that moment
 (tasking/events.py; SPEC.md section 3, "Who publishes what"). It follows what the machines say to
 each other as the work passes between them (a review requested, changes requested, an approval)
@@ -38,7 +39,7 @@ from .assignments import (
     new_id,
 )
 from .config import Project
-from .events import GATE, SCHEDULER, SUPERVISOR, Events
+from .events import DISPATCH, GATE, SCHEDULER, SUPERVISOR, Events
 from .external import External
 from .gate import run_gate
 from .git import Git, GitError
@@ -56,8 +57,8 @@ OFFERED_FROM = {"worker": {State.OPEN, State.REJECTED}, "reviewer": {State.READY
 AGAIN_FIRST_S = 60.0                  # an offer nobody took within its lease goes out again after this pause,
 AGAIN_MAX_S = 900.0                   # doubled with each offer nobody took, up to this
 MACHINE_STARTED = "orchestra.machine.started"
-QUEUE_LISTENS = {"worker": ["gate.conflict", "gate.rejected", "ticket.created"]}   # what makes the worker's queue offer work
-LOOK_BACK = 200_000                   # events read at start to find an announcement already made
+# what makes dispatch offer work: a new ticket, work the gate sent back, work taken back from a role
+DISPATCH_LISTENS = ["gate.conflict", "gate.rejected", RELEASED, "ticket.created"]
 PROBES = "probes"                     # the source the [[probes]] are published as: the condition checks, no other machine's
 ENDS = (REVIEW_REQUESTED, CHANGES_REQUESTED, APPROVED)    # they end the turn ``ends`` names
 FOLLOWED = (ACCEPTED, WORKING, REPORTED, *ENDS)
@@ -138,13 +139,16 @@ class Scheduler:
 
     def _release(self, a: dict, reason: str, instance: str | None = None) -> None:
         """``task.released`` for an assignment (to one instance when the release is addressed to
-        it), published as the role's machine, whose queue and lease this is; an offer nobody
-        accepted is dropped here, since nothing is counted for it."""
+        it). A turn an instance held, or a claim addressed back to its instance, is the role's
+        (published as ``worker`` or ``reviewer``: that instance stops); an offer nobody claimed is
+        withdrawn by dispatch, back into its queue (``coordinator/dispatch``), whoever made it, and
+        dropped here, since nothing is counted for it."""
         data = {"assignment": a["id"], "ticket": a["ticket"], "role": a["role"], "reason": reason}
         if instance is not None:
             data["instance"] = instance
-        self.events.publish(RELEASED, data, source=a["role"], subject=a["ticket"])
-        if a.get("instance") is None and instance is None:
+        unclaimed = a.get("instance") is None and instance is None
+        self.events.publish(RELEASED, data, source=DISPATCH if unclaimed else a["role"], subject=a["ticket"])
+        if unclaimed:
             self.store.drop_assignment(a["id"])
 
     def _other(self) -> int | None:
@@ -173,12 +177,8 @@ class Scheduler:
         self.desk = Desk(self.project, self.store, self.events, log)   # planners' requests (tasking/requests.py)
         self.desk.start()
         # the record says the scheduler is up: by then the desk listens, so a request sent now is heard.
-        # The scheduler announces nothing of itself: it is no machine (tasking/events.py). The gate is one
         self.store.set_scheduler(os.getpid(), time.time())
-        self._announce_queues()
-        if self.cfg.work == "code":
-            self.gate_events.publish("orchestra.machine.started", {"package": "tasks", "mode": "continuous", "kind": "program",
-                                                                   "listens_for": [APPROVED], "log": str(LOG)})
+        self.announce()
         log(f"project {self.project.key} on {self.project.repo_root}; workers={self.cfg.workers} reviewers={self.cfg.reviewers}")
         paused = self.store.pipeline()
         if paused.get("paused"):
@@ -202,18 +202,17 @@ class Scheduler:
             self._release_all("the task system shut down")
             self.store.clear_scheduler(os.getpid())
 
-    def _announce_queues(self) -> None:
-        """What makes each machine's queue act, said for it once on the bus (AGENTS.md rule 2: a
-        machine announces what it listens for; Orchestra's AGENTS.md rule 2): the worker's queue offers work when a ticket is
-        created and when the gate sends work back. Only ``listens_for``: the queue is part of the
-        machine, whose instances say what they are themselves. Not said again when the bus already
-        has it, so a restart does not make it the machine's latest announcement."""
-        end = self.events.end()
-        evs, _ = self.events.read(max(0, end - LOOK_BACK), LOOK_BACK)
-        said = {(ev.get("source"), tuple(ev.get("listens_for") or ())) for ev in evs if ev.get("type") == MACHINE_STARTED}
-        for role, listens in QUEUE_LISTENS.items():
-            if (role, tuple(listens)) not in said:
-                self.events.publish(MACHINE_STARTED, {"listens_for": listens}, source=role)
+    def announce(self) -> None:
+        """The scheduler announces nothing of itself: it is no machine (tasking/events.py). It
+        announces the parts of machines it implements, each as an instance that says what it listens
+        for and what it is: dispatch, an instance of the coordinator (no package: the coordinator is
+        whoever fills that role, and Orchestra keeps each instance's card apart, so this erases
+        nothing an agent coordinator said of itself), and in code mode the gate."""
+        self.events.publish(MACHINE_STARTED, {"mode": "continuous", "kind": "program", "listens_for": DISPATCH_LISTENS,
+                                              "log": str(LOG)}, source=DISPATCH)
+        if self.cfg.work == "code":
+            self.gate_events.publish(MACHINE_STARTED, {"package": "tasks", "mode": "continuous", "kind": "program",
+                                                       "listens_for": [APPROVED], "log": str(LOG)})
 
     def _busy(self) -> bool:
         return bool(self.store.assignments()) or bool(self.gate_thread and self.gate_thread.is_alive())
@@ -379,9 +378,9 @@ class Scheduler:
         serves the role takes it; the ticket moves (IN_PROGRESS, IN_REVIEW) and gets its owner
         when one claims it (``_follow``), so an offer nobody takes changes nothing. Rejected work
         is offered first to the worker that did it (``to``), for the return timeout, unless it
-        already waited for that worker since it was rejected. Published as the role's machine
-        (its queue), or for external review as ``source`` with ``type`` ``changes.requested``,
-        ``cause`` and ``extra`` (``_offer_back``)."""
+        already waited for that worker since it was rejected. Published as dispatch
+        (``coordinator/dispatch``, the queue), or for external review as ``source`` with ``type``
+        ``changes.requested``, ``cause`` and ``extra`` (``_offer_back``)."""
         tasks = self.cfg.work != "code"
         aid = new_id(t.id, role)
         try:
@@ -434,8 +433,8 @@ class Scheduler:
         if source:
             record.update(by=source, cause=cause)
         self.store.put_assignment(record)
-        # as the role's machine: its queue offers it; or as the pull request's reviewer, whose side it stands in for
-        self.events.publish(type, offer, source=source or role, subject=t.id, **({"causationid": cause} if cause else {}))
+        # dispatch offers it (the coordinator's); or the pull request's reviewer, whose side it stands in for
+        self.events.publish(type, offer, source=source or DISPATCH, subject=t.id, **({"causationid": cause} if cause else {}))
         log(f"{t.id}: {'assigned' if type == ASSIGNED else type + ' from ' + str(source) + ','} to "
             + (f"{to} (the worker that did it)" if to else f"a {role}") + f" ({aid})")
         return True

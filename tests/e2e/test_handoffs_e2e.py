@@ -21,7 +21,7 @@ from tasking.assignments import (
     RELEASED,
     REVIEW_REQUESTED,
 )
-from tasking.events import Events
+from tasking.events import DISPATCH, Events
 from tasking.model import State
 from tasking.scheduler import Scheduler
 from tasking.store import LocalStore
@@ -55,9 +55,9 @@ def until(sched, check, timeout_s=20.0):
 
 def test_rejected_work_returns_to_the_same_worker_and_the_scheduler_is_no_hub(project):
     """Worked, rejected once, reworked by the same worker instance, approved and landed. On the
-    bus the hand-offs go planner → worker → reviewer → worker → reviewer → merge_gate; the
-    scheduler appears nowhere: what it publishes goes out as the machine it acts for (the first
-    offer as the worker's queue), and never restates another machine's act."""
+    bus the hand-offs go planner → coordinator → worker → reviewer → worker → reviewer →
+    merge_gate; the scheduler appears nowhere: what it publishes goes out as the machine it acts
+    for (the first offer as the coordinator's dispatch), and never restates another machine's act."""
     store, events, t = setup(project, "code")
     with FakeMachine(events, roles=("worker",), instance="2"):            # another worker, free all along
         m = run_scheduler(project, store, events, reject_first=True)
@@ -68,9 +68,9 @@ def test_rejected_work_returns_to_the_same_worker_and_the_scheduler_is_no_hub(pr
     rejection = on_bus(events, CHANGES_REQUESTED, ticket=t.id)
     assert len(rejection) == 1 and rejection[0]["data"]["to"] == t.worker and rejection[0]["source"] == "reviewer/1"
     assert [o["type"] for o in m.offers if o["role"] == "worker"].count(ASSIGNED) == 1      # only the first turn came from the queue
-    assert handoffs(events, t.id) == [("planner", "ticket.created", "worker"), ("worker", REVIEW_REQUESTED, "reviewer"),
-                                      ("reviewer", CHANGES_REQUESTED, "worker"), ("worker", REVIEW_REQUESTED, "reviewer"),
-                                      ("reviewer", APPROVED, "merge_gate")]
+    assert handoffs(events, t.id) == [("planner", "ticket.created", "coordinator"), ("coordinator", ASSIGNED, "worker"),
+                                      ("worker", REVIEW_REQUESTED, "reviewer"), ("reviewer", CHANGES_REQUESTED, "worker"),
+                                      ("worker", REVIEW_REQUESTED, "reviewer"), ("reviewer", APPROVED, "merge_gate")]
     evs = events.bus.read(0, limit=100000)[0]
     assert not [e for e in evs if e["source"] == "task_scheduler"]                       # no event as the scheduler, not even an announcement
     # the provider is never the machine (Orchestra's AGENTS.md rule 2): no node, edge or hand-off
@@ -81,8 +81,13 @@ def test_rejected_work_returns_to_the_same_worker_and_the_scheduler_is_no_hub(pr
     written = for_project(project.orchestra)
     assert not [n for n in ("tasks_tickets", "tasks_tickets_created_total", "tasks_ticket_transitions_total", "tasks_worktrees") if written.dump(n, {})]
     assert not [e for e in evs if e["type"] in ("ticket.transitioned", "ticket.note_added")]   # no echo of another machine's act
-    queue = [e["type"] for e in evs if e.get("subject") == t.id and e["source"] == "worker"]
-    assert queue == [ASSIGNED]                                                            # the worker's queue: the first offer, nothing else
+    queue = [e["type"] for e in evs if e.get("subject") == t.id and e["source"] == DISPATCH]
+    assert queue == [ASSIGNED]                                                            # dispatch: the first offer, nothing else
+    assert {e["source"] for e in evs if e["type"] == ASSIGNED} == {DISPATCH}              # every offer from the queue is dispatch's
+    assert not [e for e in evs if e["source"] in ("worker", "reviewer")]                  # no role publishes as its bare queue here
+    [coordinator] = [m for m in view["machines"] if m["id"] == "coordinator"]
+    assert coordinator["kind"] == "program" and coordinator["subscribes"] == ["gate.conflict", "gate.rejected", RELEASED, "ticket.created"]
+    assert [i["id"] for i in coordinator["instances"]] == ["dispatch"]
     assert {e["source"] for e in evs if e["type"].startswith("gate.")} == {"merge_gate"}
     started = next(e for e in evs if e["type"] == "gate.started")
     approved = on_bus(events, APPROVED, ticket=t.id)[-1]
@@ -97,14 +102,22 @@ def test_a_worker_gone_at_rejection_loses_the_work_to_the_queue_after_the_timeou
     store, events, t = setup(project, "tasks", return_timeout='"1s"')
     sched = Scheduler(project, store, events)
     sched.recover()
+    sched.announce()
     with FakeMachine(events, roles=("worker",), instance="1", leave_after=True), FakeMachine(events, roles=("reviewer",), reject_first=True):
         until(sched, lambda: on_bus(events, CHANGES_REQUESTED, ticket=t.id))
         assert on_bus(events, CHANGES_REQUESTED, ticket=t.id)[0]["data"]["to"] == "worker/1"
         with FakeMachine(events, roles=("worker",), instance="2") as two:
             until(sched, lambda: store.get_ticket(t.id).state == State.DONE)
     released = [e for e in on_bus(events, RELEASED, ticket=t.id) if "did not take" in e["data"]["reason"]]
-    assert len(released) == 1
+    assert len(released) == 1 and released[0]["source"] == DISPATCH                     # the offer nobody took is back in dispatch's queue
     assert released[0]["data"]["reason"] == "worker/1 did not take the rejected work back within 1 s (gone, or busy); offered to any worker"
+    # the reviewer's rejection went to the worker directly (worker/2's claim of it is not valid, but it is
+    # a worker's act on the ticket); when it was not taken, the coordinator took it back (on the return
+    # timeout: no event it listens for is what it acts on) and offered it to any worker
+    assert handoffs(events, t.id) == [("planner", "ticket.created", "coordinator"), ("coordinator", ASSIGNED, "worker"),
+                                      ("worker", REVIEW_REQUESTED, "reviewer"), ("reviewer", CHANGES_REQUESTED, "worker"),
+                                      ("worker", None, "coordinator"), ("coordinator", ASSIGNED, "worker"),
+                                      ("worker", REVIEW_REQUESTED, "reviewer")]
     assert any(n["author"] == "task_scheduler" and n["text"].startswith("worker/1 did not take the rejected work back") for n in store.notes(t.id))
     again = [e for e in on_bus(events, ASSIGNED, ticket=t.id) if e["data"]["role"] == "worker"][-1]
     assert "to" not in again["data"] and two.started[0][0] == again["data"]["assignment"]
@@ -133,6 +146,7 @@ def test_a_worker_silent_past_its_lease_after_a_direct_hand_off_is_taken_back(pr
     store, events, t = setup(project, work)
     sched = Scheduler(project, store, events)
     sched.recover()
+    sched.announce()
     sched.tick()
     offer = on_bus(events, ASSIGNED)[-1]["data"] | {"id": on_bus(events, ASSIGNED)[-1]["id"]}
     claim(events, offer)
@@ -155,6 +169,11 @@ def test_a_worker_silent_past_its_lease_after_a_direct_hand_off_is_taken_back(pr
     sched.tick()
     released = on_bus(events, RELEASED, assignment=back["assignment"])
     assert released and released[0]["data"]["reason"].startswith("no word from worker/1")
+    assert released[0]["source"] == "worker"                                             # the held turn is the role's: its instance stops
     t = store.get_ticket(t.id)
     assert t.state == State.OPEN and t.owner is None and store.notes(t.id)[-1]["kind"] == "crash"
     assert back["assignment"] not in store.assignments()
+    again = on_bus(events, ASSIGNED, ticket=t.id)[-1]                                    # the coordinator offered it again at once
+    assert again["source"] == DISPATCH and again["data"]["assignment"] != offer["assignment"]
+    claim(events, again["data"], source="worker/2")
+    assert handoffs(events, t.id)[-2:] == [("worker", RELEASED, "coordinator"), ("coordinator", ASSIGNED, "worker")]

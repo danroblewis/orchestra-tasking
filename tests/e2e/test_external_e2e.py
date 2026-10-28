@@ -14,8 +14,15 @@ import pytest
 from conftest import git, handoffs, moves, on_bus
 from fake_machine import FakeMachine
 
-from tasking.assignments import ACCEPTED, APPROVED, ASSIGNED, CHANGES_REQUESTED, REVIEW_REQUESTED
-from tasking.events import Events
+from tasking.assignments import (
+    ACCEPTED,
+    APPROVED,
+    ASSIGNED,
+    CHANGES_REQUESTED,
+    RELEASED,
+    REVIEW_REQUESTED,
+)
+from tasking.events import DISPATCH, Events
 from tasking.model import State
 from tasking.scheduler import Scheduler
 from tasking.store import LocalStore
@@ -53,10 +60,10 @@ def pr(events, kind: str, who: str, head: str, branch: str, **data) -> dict:
 
 
 def started(project, store, events) -> Scheduler:
-    """A scheduler as ``run`` starts one: recovered, and the worker's queue announced."""
+    """A scheduler as ``run`` starts one: recovered, and dispatch and the gate announced."""
     sched = Scheduler(project, store, events)
     sched.recover()
-    sched._announce_queues()
+    sched.announce()
     return sched
 
 
@@ -96,9 +103,9 @@ def flow(project):
 def test_changes_requested_with_line_comments_go_back_to_the_same_worker_then_merge_closes_it(flow):
     """Acceptance 1 and 5: the hand-off, a review requesting changes with two line comments, the
     same worker instance takes the work back with the feedback as metadata, a new push, the merge:
-    DONE. Nothing lands on the base branch here; the hand-offs read planner → worker → reviewer →
-    merge_gate → the pull request's reviewer → worker → reviewer → merge_gate, and the scheduler is
-    nowhere."""
+    DONE. Nothing lands on the base branch here; the hand-offs read planner → coordinator → worker
+    → reviewer → merge_gate → the pull request's reviewer → worker → reviewer → merge_gate, and the
+    scheduler is nowhere."""
     project, store, events, sched, t = flow
     c1, branch = t.reviewed_commit, t.branch
     handed = on_bus(events, "gate.handed_off", ticket=t.id)
@@ -143,13 +150,15 @@ def test_changes_requested_with_line_comments_go_back_to_the_same_worker_then_me
     assert m[("IN_EXTERNAL_REVIEW", "REJECTED", "person.alice")] == 1 and m[("IN_EXTERNAL_REVIEW", "DONE", "person.owner")] == 1
     assert m[("REJECTED", "IN_PROGRESS", "worker")] == 1
 
-    assert handoffs(events, t.id) == [("planner", "ticket.created", "worker"), ("worker", REVIEW_REQUESTED, "reviewer"),
+    assert handoffs(events, t.id) == [("planner", "ticket.created", "coordinator"), ("coordinator", ASSIGNED, "worker"),
+                                      ("worker", REVIEW_REQUESTED, "reviewer"),
                                       ("reviewer", APPROVED, "merge_gate"), ("merge_gate", "gate.handed_off", "person.alice"),
                                       ("person.alice", CHANGES_REQUESTED, "worker"), ("worker", REVIEW_REQUESTED, "reviewer"),
                                       ("reviewer", APPROVED, "merge_gate")]
     evs = events.bus.read(0, limit=100000)[0]
     assert not [e for e in evs if e["source"] == "task_scheduler"]
-    assert [e["type"] for e in evs if e.get("subject") == t.id and e["source"] == "worker"] == [ASSIGNED]
+    assert [e["type"] for e in evs if e.get("subject") == t.id and e["source"] == DISPATCH] == [ASSIGNED]   # dispatch: the first offer only
+    assert not [e for e in evs if e.get("subject") == t.id and e["source"] in ("worker", "reviewer")]      # no offer or release as a role
     assert not [e for e in evs if e["type"] in ("ticket.transitioned", "ticket.note_added")]
 
 
@@ -221,6 +230,35 @@ def test_feedback_on_an_older_head_is_noted_not_acted_on(flow):
     pr(events, "review_submitted", "alice", c2, branch, review=903, state="changes_requested", comments=0)
     until(sched, lambda: len(on_bus(events, CHANGES_REQUESTED, ticket=t.id)) == 2)
     assert on_bus(events, CHANGES_REQUESTED, ticket=t.id)[-1]["data"]["commit"] == c2
+
+
+def test_feedback_for_a_worker_that_is_gone_falls_back_to_dispatch(project):
+    """The pull request's reviewer sends the work back to worker/1, which is gone: after the return
+    timeout the coordinator's dispatch withdraws that offer and offers the work to any worker. The
+    hand-offs read the pull request's reviewer → worker, then coordinator → worker; nothing as the
+    scheduler, and no offer as a role."""
+    toml = project.repo_root / "orchestra.toml"
+    toml.write_text(toml.read_text().replace("[tasks]\n", '[tasks]\nreturn_timeout = "1s"\n'))
+    store, events, t = setup(project)
+    sched = started(project, store, events)
+    with FakeMachine(events, instance="1"):
+        until(sched, lambda: in_review(store, t.id))
+    t = store.get_ticket(t.id)
+    pr(events, "opened", "owner", t.reviewed_commit, t.branch)
+    review = pr(events, "review_submitted", "alice", t.reviewed_commit, t.branch, review=903, state="changes_requested", comments=0)
+    with FakeMachine(events, roles=("worker",), instance="2") as two:
+        until(sched, lambda: store.get_ticket(t.id).worker == "worker/2" and on_bus(events, REVIEW_REQUESTED, ticket=t.id)[-1]["source"] == "worker/2")
+    [back] = on_bus(events, CHANGES_REQUESTED, ticket=t.id)
+    assert back["source"] == "person.alice" and back["causationid"] == review["id"] and back["data"]["to"] == "worker/1"
+    released = [e for e in on_bus(events, RELEASED, ticket=t.id) if "did not take" in e["data"]["reason"]]
+    assert len(released) == 1 and released[0]["source"] == DISPATCH and released[0]["data"]["assignment"] == back["data"]["assignment"]
+    again = on_bus(events, ASSIGNED, ticket=t.id)[-1]
+    assert again["source"] == DISPATCH and "to" not in again["data"] and two.started[0][0] == again["data"]["assignment"]
+    assert handoffs(events, t.id)[-4:] == [("merge_gate", "gate.handed_off", "person.alice"), ("person.alice", CHANGES_REQUESTED, "worker"),
+                                           ("worker", None, "coordinator"), ("coordinator", ASSIGNED, "worker")]   # no reviewer runs here
+    evs = events.bus.read(0, limit=100000)[0]
+    assert not [e for e in evs if e["source"] == "task_scheduler"]
+    assert {e["source"] for e in evs if e["type"] == ASSIGNED} == {DISPATCH}
 
 
 def test_a_merge_while_the_worker_has_it_back_releases_it_and_closes_the_ticket(project):

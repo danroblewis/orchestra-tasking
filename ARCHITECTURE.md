@@ -39,8 +39,8 @@ It is an Orchestra plugin named `tasks`. Orchestra's web UI shows its pages, and
 What it is not:
 
 - It runs no machine besides the merge gate (`merge_gate`, code mode). Its scheduler is a
-  daemon, not a machine: it stands in for each machine's own scheduling (the worker's queue, the
-  reviewer's, the gate, the answers to requests) and publishes only as the machine it acts for
+  daemon, not a machine: it stands in for each machine's own scheduling (the coordinator's
+  dispatch, the leases of the worker's and the reviewer's turns, the gate, the answers to requests) and publishes only as the machine it acts for
   (section 6, "Who publishes what"). Whatever fills a role is another program that speaks the
   contract in section 6. In this repository that is a shell runner and a file checker
   (`demo/machines/`); elsewhere it can be anything, an AI agent included.
@@ -277,10 +277,11 @@ On start (`Scheduler.recover`, then `run`):
    branches are removed. With reused worktrees, the gate's hold on the pool is dropped and a
    pool worktree left on a gate branch is detached first, so the branch can go.
 4. The desk thread starts. Then the runtime record names this pid. The scheduler announces
-   nothing of itself: it is no machine. It says once per bus what makes the worker's queue act,
-   as `worker` with only `{listens_for: [gate.conflict, gate.rejected, ticket.created]}`
-   (`Scheduler._announce_queues`; skipped when the bus already has it, so a restart does not make
-   it the worker's latest announcement). In code mode the gate announces itself, as `merge_gate`
+   nothing of itself: it is no machine (`Scheduler.announce`). Dispatch announces itself as
+   `coordinator/dispatch` (`mode: continuous`, `kind: program`, `listens_for: [gate.conflict,
+   gate.rejected, task.released, ticket.created]`, its log; no package: the coordinator is
+   whoever fills that role, and an instance of its own erases nothing the agent coordinator
+   announced). In code mode the gate announces itself, as `merge_gate`
    (`package: tasks`, `mode: continuous`, `kind: program`, `listens_for: [review.approved]`,
    `log`).
 5. If the pipeline is still paused, the supervisor role gets attention (as `merge_gate`).
@@ -341,7 +342,7 @@ Points worth knowing:
   turn a machine offered as for one the queue offered: the scheduler saw the claim.
 - An **addressed** offer (rejected work `to` the worker that did it) is released when its
   addressee does not claim it within `[tasks] return_timeout` (60 s): a note says why, and the
-  queue offers the ticket to any worker at once (`untaken.returned` keeps it from being addressed
+  queue (dispatch, as `coordinator/dispatch`) offers the ticket to any worker at once (`untaken.returned` keeps it from being addressed
   again until the ticket changes).
 - An **unaccepted** offer whose lease runs out is released and dropped. Nothing about the
   ticket changes. The scheduler records it in `untaken` and rests that (ticket, role) pair:
@@ -358,7 +359,8 @@ The tables in the docstring of `tasking/assignments.py` are the contract; `SPEC.
 the design (the owner's decision D17: the task system is the record, not the hub). This section
 explains it. The `assignment` id (`<ticket>.<role>.<8 hex>`) names one turn of work and is made by
 whoever offers the turn. The `source` is who speaks: `<machine>/<instance>` for a machine,
-`worker` or `reviewer` (no instance) for that role's queue, `merge_gate` for the gate. The
+`coordinator/dispatch` for the queue (dispatch is the coordinator's), `worker` or `reviewer` (no
+instance) for a held turn of that role taken back, `merge_gate` for the gate. The
 scheduler is never a source (`task_scheduler` is refused by `tasking/events.py`): the owner's
 decision of 2026-10-27 is that it is no machine but one daemon standing in for each machine's own
 scheduling, an implementation detail of the task system that Orchestra's Machines page, event
@@ -372,7 +374,7 @@ whose responsibility it implements:
 
 | Step | Who publishes | Event |
 |---|---|---|
-| waiting work is offered from the queue | the role's queue: `worker` or `reviewer` | `task.assigned` (to a role; or `to` the worker that did rejected work) |
+| waiting work is offered from the queue | dispatch: `coordinator/dispatch` | `task.assigned` (to a role; or `to` the worker that did rejected work) |
 | a machine takes an offer | the instance | `task.accepted` |
 | the holder is still at it | the holder | `task.working` |
 | a worker has finished | the worker | `review.requested` (offers the review) |
@@ -380,7 +382,8 @@ whose responsibility it implements:
 | a reviewer approves | the reviewer | `review.approved` (for the gate) |
 | the work passes to no machine | the holder | `task.reported` (a worker's BLOCKED, or no report) |
 | the gate takes approved code | `merge_gate` | `gate.*` (`gate.started` names the approval as `causationid`) |
-| work is taken back | the role's queue: `worker` or `reviewer` | `task.released` |
+| an offer nobody claimed is withdrawn | dispatch: `coordinator/dispatch` | `task.released` |
+| a held turn is taken back | the role: `worker` or `reviewer` | `task.released` |
 | the record of a machine's step | nobody: recorded in the store only | none |
 
 ### Who publishes what
@@ -392,13 +395,15 @@ Everything the scheduler publishes, and as whom. It is the same table as SPEC.md
 | creates a ticket or milestone on a planner's request | the asker (the request's source); `causationid` = the request | `ticket.created`, `milestone.created` |
 | answers a request or query | the asker; `causationid` = the request; subject = the ticket for a change, none for a query | `request.done`, `request.refused` |
 | applies any other request (update, note, cancel, unblock, milestone change or close, capacity, resume the pipeline) | nothing beyond the answer | none |
-| offers waiting work from the queue (also rejected work addressed `to` the worker that did it, after a gate rejection) | the role's machine, no instance: `worker` or `reviewer` | `task.assigned` |
-| takes work back: an offer nobody claimed within its lease, a silent holder, the return timeout, the operator's stop, a restart or shutdown, a claim it cannot record | the role's machine (`worker`, `reviewer`); `instance` in the data when addressed to one | `task.released` |
-| says once per bus what makes the worker's queue act | `worker`, data only `{listens_for: [gate.conflict, gate.rejected, ticket.created]}` (no kind, mode or package: the worker's instances say what they are) | `orchestra.machine.started` |
+| offers waiting work to a worker from the queue: a ticket's first offer from `OPEN`, an offer again after one nobody took or a held turn taken back, rework that reached the queue (also rejected work addressed `to` the worker that did it, after a gate rejection or a restart) | `coordinator/dispatch`: choosing what is offered next (readiness, priority, capacity, when it goes out again) is dispatch, the coordinator's | `task.assigned` |
+| offers waiting reviews from the queue: a review nobody took, a reviewer gone, after a restart | `coordinator/dispatch`, for the same reason: which waiting review goes to the reviewers' capacity is dispatch. A worker's `review.requested` stays the worker's own hand-off to the reviewers; the queue offers only what that hand-off did not place | `task.assigned` |
+| withdraws an offer nobody claimed: its lease ran out, an addressed one was not taken within the return timeout, the ticket moved on, the operator's stop, a restart or shutdown | `coordinator/dispatch`, whoever made the offer (the queue, a worker's `review.requested`, a reviewer's `changes.requested`): nobody holds it, and it goes back into dispatch's queue, so no role is drawn as having had it | `task.released` |
+| takes a held turn back: a silent holder, the operator's stop, a restart or shutdown; answers a claim it cannot record | the role whose turn it was (`worker`, `reviewer`): the turn is that role's, its instance is the one that stops, and the map reads worker → coordinator (`task.released`) when dispatch offers it again; `instance` in the data when addressed to one | `task.released` |
+| says at each start what makes dispatch act | `coordinator/dispatch` {mode: continuous, kind: program, listens_for: [gate.conflict, gate.rejected, task.released, ticket.created], log} | `orchestra.machine.started` |
 | records a step another machine announced (a claim, a heartbeat, `review.requested`, `changes.requested`, `review.approved`, `task.reported`) | nothing: recorded in the store only | none |
 | runs the gate | `merge_gate` (a machine: it does work of its own, merging) | `gate.started` (`causationid` = the approval), `gate.landed`, `gate.rejected`, `gate.conflict`, `gate.error`, `gate.base_broken`; in code mode its announcement {package: tasks, mode: continuous, kind: program, listens_for: [review.approved], log} |
 | external review: hands an approved branch off | `merge_gate`; `causationid` = the approval | `gate.handed_off` |
-| external review: sends the work back after feedback on its pull request | whoever gave the first of it, as the bridge named them; `causationid` = that bridge event | `changes.requested` (`to` the worker that did it) |
+| external review: sends the work back after feedback on its pull request | whoever gave the first of it, as the bridge named them; `causationid` = that bridge event; not taken within the return timeout, withdrawn and offered to any worker as `coordinator/dispatch` | `changes.requested` (`to` the worker that did it) |
 | external review: asks a planner about a ticket sent back by its pull request at a multiple of the threshold | `merge_gate` | `task.attention_needed` |
 | external review: asks a planner about a pull request closed unmerged | `merge_gate` | `task.attention_needed` |
 | pauses the pipeline | `merge_gate` | `pipeline.paused` |
@@ -419,14 +424,14 @@ announced (a claim, `review.requested`, `changes.requested`, `review.approved`, 
 
 | Event | From | Data | The scheduler reads |
 |---|---|---|---|
-| `task.assigned` | the role's queue, as `worker` or `reviewer` | the offer fields: `assignment`, `role`, `ticket`, `workspace`, `branch` and `base` (null in tasks mode), `lease_s`, `brief`, `unit_command` (code), a reviewer's `review` {`summary`, `commit`, `test_output`, `worker`}, `to` | (it sends this) |
+| `task.assigned` | dispatch, as `coordinator/dispatch` | the offer fields: `assignment`, `role`, `ticket`, `workspace`, `branch` and `base` (null in tasks mode), `lease_s`, `brief`, `unit_command` (code), a reviewer's `review` {`summary`, `commit`, `test_output`, `worker`}, `to` | (it sends this) |
 | `review.requested` | the worker holding the work | the offer fields for the reviewer's turn, `ends` | `ends`, `assignment`, `ticket`, `role`, `workspace`, `review.summary`, `review.commit`, `review.test_output`, `source` |
 | `changes.requested` | the reviewer holding the review | the offer fields for the worker's turn (`brief.feedback`, `brief.rejected_by` set), `to`, `ends`, `summary`, `feedback`, `commit` | `ends`, `assignment`, `ticket`, `role`, `workspace`, `to`, `summary`, `feedback`, `commit`, `source` |
 | `task.accepted` | the instance | `assignment`, `ticket`, `role`, optional `instance` | `assignment`, `instance`, `source` |
 | `task.working` | the holder | `assignment`, `ticket`, `role`, optional `text` | `assignment`, `text` (last 200 chars, shown on the Tasks panel), `source` |
 | `review.approved` | the reviewer holding the review | `ends`, `ticket`, `role`, `summary`, `commit` | `ends`, `summary`, `commit`, `source` |
 | `task.reported` | the holder | `assignment`, `ticket`, `role`, `report`, `failed`, `text`, `commit` | `assignment`, `report`, `failed`, `text`, `source` |
-| `task.released` | the role's queue, as `worker` or `reviewer` | `assignment`, `ticket`, `role`, `reason`; `instance` when addressed to one instance | (it sends this) |
+| `task.released` | an offer nobody claimed: dispatch, as `coordinator/dispatch`; a held turn: its role, as `worker` or `reviewer` | `assignment`, `ticket`, `role`, `reason`; `instance` when addressed to one instance | (it sends this) |
 
 `brief` holds the ticket's `id`, `title`, `objective`, `description`, `acceptance`,
 `verification`, `feedback`, `rejected_by`, `review_rounds`, `priority`, `depends_on`, `branch`
@@ -488,7 +493,7 @@ sequenceDiagram
     participant G as merge_gate
 
     Note over S: tick: TK-7 is OPEN and ready, a worker slot is free
-    S->>B: task.assigned {assignment A, role worker, ...} as source worker (the worker's queue)
+    S->>B: task.assigned {assignment A, role worker, ...} as source coordinator/dispatch
     W1->>B: task.accepted {assignment A}
     W2->>B: task.accepted {assignment A}
     Note over W1,W2: each reads its claim back: W1's is first, W2 lost and does nothing
@@ -513,17 +518,19 @@ sequenceDiagram
     Note over G: records DONE
     alt worker/1 is gone when C1 comes
         Note over S: return timeout with no claim
-        S->>B: task.released {assignment C1, reason "worker/1 did not take the rejected work back ..."} as worker
-        S->>B: task.assigned {assignment A2, role worker} as worker (any worker)
+        S->>B: task.released {assignment C1, reason "worker/1 did not take the rejected work back ..."} as coordinator/dispatch
+        S->>B: task.assigned {assignment A2, role worker} as coordinator/dispatch (any worker)
     end
 ```
 
 Orchestra's event map (hand-offs inferred from who acts next on a subject, named by the event
-the receiver listens for) draws this, with the planner that asked for TK-7, as `planner → worker
-(via ticket.created) → reviewer (review.requested) → worker (changes.requested) → reviewer →
-merge_gate (review.approved)`, with nothing in between: the first offer, as `worker`, is the
-worker's own queue acting, and the worker's queue announcement (section 5) names `ticket.created`
-as what it listens for. After a gate rejection it draws `merge_gate → worker` via `gate.rejected`.
+the receiver listens for) draws this, with the planner that asked for TK-7, as `planner →
+coordinator (via ticket.created) → worker (task.assigned) → reviewer (review.requested) → worker
+(changes.requested) → reviewer → merge_gate (review.approved)`, with nothing in between: the first
+offer is dispatch's, the coordinator's, and dispatch's announcement (section 5) names
+`ticket.created` as what it listens for. After a gate rejection it draws `merge_gate →
+coordinator` via `gate.rejected`, then `coordinator → worker`; after a held turn is taken back,
+`worker → coordinator` via `task.released`.
 `tests/e2e/test_handoffs_e2e.py` checks this, and that no event has the source `task_scheduler`.
 
 ## 7. What the end of a turn makes of a ticket
@@ -811,7 +818,11 @@ sequenceDiagram
 the head branch), and re-engages the worker for each ticket whose feedback has settled. The
 offer is made by `Scheduler._assign` (as `_offer_back`), so it is recorded, leased (the return
 timeout) and claimed exactly as a reviewer's `changes.requested`; `_follow` skips the event itself,
-which ends no turn. A merge while the worker has the work back goes through `Scheduler._withdraw`
+which ends no turn. If that worker does not take it back within the return timeout, `_release`
+withdraws it as `coordinator/dispatch` (nobody claimed it) and the next tick's `_assign` offers it
+to any worker as `coordinator/dispatch`: on Orchestra's map, the pull request's reviewer → worker,
+then worker → coordinator → worker, as after any rejection. Only the turn back to the worker that
+did it is published as the pull request's reviewer; every offer from the queue is dispatch's. A merge while the worker has the work back goes through `Scheduler._withdraw`
 (the operator's stop, without counting) before `DONE`.
 
 ## 12. Staging and probes
@@ -985,7 +996,7 @@ when: section 6, "Who publishes what"):
 
 | Type | Source | Data |
 |---|---|---|
-| `orchestra.machine.started` | `worker` | once per bus: only `listens_for: [gate.conflict, gate.rejected, ticket.created]`, what makes the worker's queue act |
+| `orchestra.machine.started` | `coordinator/dispatch` | at each start: `mode: continuous`, `kind: program`, `listens_for: [gate.conflict, gate.rejected, task.released, ticket.created]` (what makes dispatch act), `log` |
 | `ticket.created` | the asker; `causationid` = the request | `ticket`, `title`, `by` |
 | `milestone.created` | the asker; `causationid` = the request | `milestone`, `name` |
 | `capacity.changed` | `task_web` | `by`, `workers`, `reviewers`, `note` |

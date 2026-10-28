@@ -6,7 +6,7 @@ import threading
 import time
 
 import pytest
-from conftest import git, moves, run_scheduler
+from conftest import git, handoffs, moves, run_scheduler
 from fake_machine import FakeMachine
 
 from tasking import scheduler as scheduler_mod
@@ -123,6 +123,14 @@ def test_gate_rejection_reengages_worker_then_lands(env):
     assert "WORK.md" in git("ls-tree", "--name-only", "main", cwd=repo)
     first_review = next(o for o in m.offers if o["role"] == "reviewer")["review"]
     assert "[failed]" in first_review["test_output"]   # the reviewer was told the tests fail on the branch
+    # the gate does not offer work: it says it rejected the merge, and the coordinator's dispatch
+    # returns the work to the worker that did it (addressed to it)
+    assert handoffs(events, t.id) == [("planner", "ticket.created", "coordinator"), ("coordinator", "task.assigned", "worker"),
+                                      ("worker", "review.requested", "reviewer"), ("reviewer", "review.approved", "merge_gate"),
+                                      ("merge_gate", "gate.rejected", "coordinator"), ("coordinator", "task.assigned", "worker"),
+                                      ("worker", "review.requested", "reviewer"), ("reviewer", "review.approved", "merge_gate")]
+    back = [e for e in evs if e["type"] == "task.assigned" and e.get("to")]
+    assert [(e["source"], e["to"]) for e in back] == [("coordinator/dispatch", t.worker)]
 
 
 def test_a_shutdown_lets_the_gate_finish_its_run(env):
