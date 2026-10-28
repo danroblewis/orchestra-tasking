@@ -21,6 +21,7 @@ instance) when only that instance may take it.
 | ``task.assigned`` | the role's queue, published as the role's machine (``worker``, ``reviewer``) | its role; or ``to``: rejected work returned to the worker that did it | |
 | ``review.requested`` | the worker instance holding the work | the reviewer role | ends ✓ (the worker's assignment, which this ends), review.commit ✓ (code: the branch head, beyond the base), review.summary ✓, review.test_output ✓ (the worker's run of unit_command) |
 | ``changes.requested`` | the reviewer instance holding the review | to ✓: the worker instance that did the work | ends ✓, feedback ✓, summary ✓, commit ✓ (the commit reviewed; another than the recorded one is no verdict); brief.feedback and brief.rejected_by set |
+| ``changes.requested`` (external review) | whoever gave feedback on the ticket's pull request (a person or bot the bridge names), published for them by the task system | to: the worker instance that did the work | no ends (it ends no turn of the protocol: the ticket waited in ``IN_EXTERNAL_REVIEW``); feedback, summary, commit (the head the feedback is about), pull (``owner/repo#n``), pull_feedback {pull, head, reviews, comments, labels, checks, conversation}: metadata only; brief.feedback, brief.rejected_by (that machine) and brief.pull set |
 
 **Claims, work and ends** (the task system reads what is marked ✓):
 
@@ -58,7 +59,7 @@ def new_id(ticket: str, role: str) -> str:
 def brief(t) -> dict:
     """What a machine needs to do the ticket, whoever it is."""
     return {k: getattr(t, k, None) for k in ("id", "title", "objective", "description", "acceptance", "verification", "feedback",
-                                             "rejected_by", "review_rounds", "priority", "depends_on", "branch", "worker_turns")}
+                                             "rejected_by", "review_rounds", "priority", "depends_on", "branch", "worker_turns", "pull")}
 
 
 def valid_claim(ev: dict, offer: dict) -> bool:

@@ -145,7 +145,8 @@ def router(project: Project) -> APIRouter:
         held = {a["ticket"]: a for a in store.assignments().values()}
         untaken = {r["ticket"]: r for r in store.untaken().values()}
         waiting = {"READY_FOR_REVIEW": "waiting for a reviewer", "REJECTED": "rejected: waiting for its worker",
-                   "APPROVED": "approved", "BLOCKED": "blocked: waiting for a decision"}
+                   "APPROVED": "approved", "BLOCKED": "blocked: waiting for a decision",
+                   "IN_EXTERNAL_REVIEW": "in external review: waiting for its pull request"}
         rank = lambda t: (0 if t["state"] == "BLOCKED" else 1 if (held.get(t["id"]) or {}).get("instance")
                           else 2 if t["id"] in held or t["id"] in untaken else 3)
         flight = []
@@ -153,7 +154,7 @@ def router(project: Project) -> APIRouter:
             if t["state"] in ("OPEN", "DONE", "CANCELLED") and t["id"] not in held and t["id"] not in untaken:
                 continue
             a, u = held.get(t["id"]), untaken.get(t["id"])
-            flight.append({**{k: t.get(k) for k in ("id", "title", "state", "worker_turns", "reviewer_rejections", "gate_rejections", "blocked_reason")},
+            flight.append({**{k: t.get(k) for k in ("id", "title", "state", "worker_turns", "reviewer_rejections", "gate_rejections", "pull_rejections", "blocked_reason")},
                            "waiting": None if a or u else waiting.get(t["state"], ""),
                            "assignment": ({"role": a["role"], "instance": a.get("instance"), "since": a.get("accepted_at") or a.get("offered_since"),
                                            "text": a.get("text") or ""} if a else None),

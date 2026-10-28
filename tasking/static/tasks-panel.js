@@ -8,16 +8,17 @@
 // A card opens the ticket.
 (function () {
   if (!window.Orchestra || !Orchestra.panels) return;
-  const ORDER = ["OPEN", "IN_PROGRESS", "READY_FOR_REVIEW", "IN_REVIEW", "REJECTED", "BLOCKED", "APPROVED", "MERGING", "DONE", "CANCELLED"];
+  const ORDER = ["OPEN", "IN_PROGRESS", "READY_FOR_REVIEW", "IN_REVIEW", "REJECTED", "BLOCKED", "APPROVED", "IN_EXTERNAL_REVIEW", "MERGING", "DONE", "CANCELLED"];
 
   function turns(t) {
     if (!t.worker_turns || t.worker_turns < 2) return "";
-    const other = t.worker_turns - 1 - (t.reviewer_rejections || 0) - (t.gate_rejections || 0);
+    const other = t.worker_turns - 1 - (t.reviewer_rejections || 0) - (t.gate_rejections || 0) - (t.pull_rejections || 0);
     const bits = [`↺${t.worker_turns}`];
     if (t.reviewer_rejections) bits.push(`✗${t.reviewer_rejections}`);
     if (t.gate_rejections) bits.push(`⛔${t.gate_rejections}`);
+    if (t.pull_rejections) bits.push(`⇄${t.pull_rejections}`);
     if (other > 0) bits.push(`⟳${other}`);
-    return `<span class="turns" title="worker turns: ${t.worker_turns} (${turnsWhy(t).join(", ")}); ✗ reviewer rejections, ⛔ gate rejections, ⟳ crashes, timeouts or operator stops">${bits.join(" ")}</span>`;
+    return `<span class="turns" title="worker turns: ${t.worker_turns} (${turnsWhy(t).join(", ")}); ✗ reviewer rejections, ⛔ gate rejections, ⇄ pull-request feedback, ⟳ crashes, timeouts or operator stops">${bits.join(" ")}</span>`;
   }
 
   Orchestra.panels.register({ id: "tasks", title: "Tasks", size: { w: 12, h: 9 }, mount(body, ui) {

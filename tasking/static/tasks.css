@@ -4,7 +4,7 @@
    has the frame: panels, drawers, .kv, .note, .empty, button.ctl). */
 :root {
   --OPEN:#6b7280; --BLOCKED:#f0883e; --IN_PROGRESS:#3b82f6; --READY_FOR_REVIEW:#7c3aed; --IN_REVIEW:#a855f7; --REJECTED:#ef4444;
-  --APPROVED:#d97706; --MERGING:#f59e0b; --DONE:#16a34a; --CANCELLED:#374151;
+  --APPROVED:#d97706; --IN_EXTERNAL_REVIEW:#0ea5e9; --MERGING:#f59e0b; --DONE:#16a34a; --CANCELLED:#374151;
 }
 .work { background:var(--panel2); border:1px solid var(--border); border-left:4px solid var(--c); border-radius:10px; padding:10px 12px; margin-bottom:8px; cursor:pointer }
 .work:hover { background:var(--panel3) } .work .top { display:flex; justify-content:space-between; gap:8px; align-items:center; min-width:0 }

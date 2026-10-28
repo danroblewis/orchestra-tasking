@@ -168,6 +168,7 @@ off). It never goes below 1.
 | | `REJECTED` | sent back by a reviewer, the gate or the task system; waits for a worker, who gets `feedback` |
 | | `READY_FOR_REVIEW` | waits for a reviewer |
 | | `APPROVED` | approved; in code mode waits for the gate |
+| | `IN_EXTERNAL_REVIEW` | external review: handed off for a pull request; waits for its people, checks and merge |
 | | `BLOCKED` | waits for a planner's decision; `blocked_reason` says why |
 | active | `IN_PROGRESS` | held by a worker instance |
 | | `IN_REVIEW` | held by a reviewer instance |
@@ -175,7 +176,7 @@ off). It never goes below 1.
 | terminal | `DONE` | approved, and in code mode landed |
 | | `CANCELLED` | a planner cancelled it |
 
-There are exactly these ten states. Active states each have a waiting state they fall back to
+There are exactly these eleven states. Active states each have a waiting state they fall back to
 (`RECOVERY`): `IN_PROGRESS` to `OPEN`, `IN_REVIEW` to `READY_FOR_REVIEW`, `MERGING` to
 `APPROVED`.
 
@@ -203,6 +204,12 @@ stateDiagram-v2
     READY_FOR_REVIEW --> CANCELLED: cancel_ticket
     APPROVED --> CANCELLED: cancel_ticket
     BLOCKED --> CANCELLED: cancel_ticket
+    APPROVED --> IN_EXTERNAL_REVIEW: external review, merge_gate hands it off
+    IN_EXTERNAL_REVIEW --> REJECTED: feedback on its pull request's head
+    IN_EXTERNAL_REVIEW --> DONE: its pull request merged
+    IN_EXTERNAL_REVIEW --> BLOCKED: closed without a merge
+    BLOCKED --> IN_EXTERNAL_REVIEW: reopened
+    IN_EXTERNAL_REVIEW --> CANCELLED: cancel_ticket
     DONE --> [*]
     CANCELLED --> [*]
 ```
@@ -230,6 +237,11 @@ Who makes each move, and the `by` label the move carries in the metrics (section
 | `MERGING` | `APPROVED` | base branch broken, gate error, or a restart during the run | `run_gate`, `recover` | `merge_gate` |
 | `BLOCKED` | `OPEN` | `unblock_ticket` request | `api.handle` | the asker's machine (the request's source) |
 | any waiting state | `CANCELLED` | `cancel_ticket` request; refused while active | `api.handle` | the asker's machine (the request's source) |
+| `APPROVED` | `IN_EXTERNAL_REVIEW` | external review: the gate hands the branch off (`gate.handed_off`) | `External.hand_off` | `merge_gate` |
+| `IN_EXTERNAL_REVIEW` | `REJECTED` | feedback on the pull request's head, gathered for `settle`; `review_rounds` + 1, `pull_rejections` + 1 | `External._engage` → `send_back` | who gave it (`person.<login>`, a bot) |
+| `IN_EXTERNAL_REVIEW` | `BLOCKED` | `github.pr.closed` | `External._closed` | who closed it |
+| `BLOCKED` | `IN_EXTERNAL_REVIEW` | `github.pr.reopened` of the pull request that closed it | `External._reopened` | who reopened it |
+| any waiting state | `DONE` | `github.pr.merged` (an active ticket's holder is released first) | `External._merged` | who merged it |
 
 `by` is never `task_scheduler`: a move the scheduler records names the machine whose act or
 responsibility it was, and the store refuses one recorded by the scheduler without a `by`
@@ -385,6 +397,10 @@ Everything the scheduler publishes, and as whom. It is the same table as SPEC.md
 | says once per bus what makes the worker's queue act | `worker`, data only `{listens_for: [gate.conflict, gate.rejected, ticket.created]}` (no kind, mode or package: the worker's instances say what they are) | `orchestra.machine.started` |
 | records a step another machine announced (a claim, a heartbeat, `review.requested`, `changes.requested`, `review.approved`, `task.reported`) | nothing: recorded in the store only | none |
 | runs the gate | `merge_gate` (a machine: it does work of its own, merging) | `gate.started` (`causationid` = the approval), `gate.landed`, `gate.rejected`, `gate.conflict`, `gate.error`, `gate.base_broken`; in code mode its announcement {package: tasks, mode: continuous, kind: program, listens_for: [review.approved], log} |
+| external review: hands an approved branch off | `merge_gate`; `causationid` = the approval | `gate.handed_off` |
+| external review: sends the work back after feedback on its pull request | whoever gave the first of it, as the bridge named them; `causationid` = that bridge event | `changes.requested` (`to` the worker that did it) |
+| external review: asks a planner about a ticket sent back by its pull request at a multiple of the threshold | `merge_gate` | `task.attention_needed` |
+| external review: asks a planner about a pull request closed unmerged | `merge_gate` | `task.attention_needed` |
 | pauses the pipeline | `merge_gate` | `pipeline.paused` |
 | deploys or restarts staging | `merge_gate` | `staging.deployed`, `staging.failed`, `staging.restarted` |
 | asks a planner about a ticket blocked by the worker's report, a worker turn that keeps failing, nothing beyond the base | `worker` (whose work is stuck) | `task.attention_needed` |
@@ -757,6 +773,47 @@ Details:
 - Gate runs are kept in the runtime record (`gate_runs`) with their stages, status
   (`running`, `landed`, `conflict`, `rejected`, `base_broken`, `error`, `aborted`) and summary.
 
+### External review
+
+`tasking/external.py`, with `[gate] mode = "external"` in code mode. The gate lands nothing; it
+hands the approved branch off (`IN_EXTERNAL_REVIEW`, `gate.handed_off`), the owner pushes it and
+opens the pull request, and the ticket follows what orchestra-bridges' pull-request bridge
+publishes about it. SPEC.md section 5 has the rules; this is the round trip.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as worker/1
+    participant R as reviewer
+    participant G as merge_gate
+    participant O as Owner
+    participant B as bridges.github_prs
+    participant T as Scheduler (External)
+    W->>R: review.requested
+    R->>G: review.approved
+    G->>O: gate.handed_off (branch, commit)
+    O->>B: push the branch, open the pull request (on GitHub)
+    B->>T: github.pr.opened (branch: linked)
+    B->>T: github.pr.review_submitted changes_requested, review_commented ×2 (head = the handed-off commit)
+    Note over T: gathered until settle; REJECTED, counted by person.alice
+    T->>W: changes.requested as person.alice, to worker/1 (feedback: files and lines, no text)
+    W->>R: review.requested (the same branch, a new commit)
+    R->>G: review.approved
+    G->>O: gate.handed_off (the new commit)
+    O->>B: push
+    B->>T: github.pr.pushed, then github.pr.merged
+    Note over T: DONE, worktree and branch removed
+```
+
+`External.follow` runs every tick after `_follow`: it reads the bus from its own offset (kept in
+`runtime.json` with the ids it applied lately and the feedback it is gathering), applies each
+`github.pr.*` event of the configured repository to the ticket linked to it (by `pull`, else by
+the head branch), and re-engages the worker for each ticket whose feedback has settled. The
+offer is made by `Scheduler._assign` (as `_offer_back`), so it is recorded, leased (the return
+timeout) and claimed exactly as a reviewer's `changes.requested`; `_follow` skips the event itself,
+which ends no turn. A merge while the worker has the work back goes through `Scheduler._withdraw`
+(the operator's stop, without counting) before `DONE`.
+
 ## 12. Staging and probes
 
 **Staging** (`tasking/staging.py`) runs when `[staging] start` is set. It is one long-lived
@@ -942,6 +999,8 @@ when: section 6, "Who publishes what"):
 | `gate.landed` | `merge_gate` | `gate_run`, `ticket`, `commit` |
 | `gate.base_broken` | `merge_gate` | `gate_run` |
 | `gate.error` | `merge_gate` | `gate_run`, `error` |
+| `gate.handed_off` | `merge_gate` | `ticket`, `branch`, `commit`, `base`, `repository`, `pull`; `causationid` = the approval (external review) |
+| `changes.requested` (external review) | who gave the feedback on the pull request | `to`, `feedback`, `summary`, `commit`, `pull`, `pull_feedback`, the offer's fields; no `ends`; `causationid` = the bridge's event |
 | `staging.deployed` | `merge_gate` (`task_cli` for `tasking staging deploy`) | `build`, `commit`, `local_url`, `public_url` |
 | `staging.failed` | `merge_gate` (or `task_cli`) | `build`, and `reason` when the health check went stale or a restart failed |
 | `staging.restarted` | `merge_gate` | `build`, `reason` |
