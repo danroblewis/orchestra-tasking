@@ -426,7 +426,7 @@ wheels = [
 [[package]]
 name = "orchestra"
 version = "1.0.0a1"
-source = { git = "https://github.com/danroblewis/orchestra?rev=main#c245f721e3120b120da4e7b8b98ce75acc920809" }
+source = { git = "https://github.com/danroblewis/orchestra?branch=main#50fe9ae0c17dacff20d2415049452a29440bced9" }
 dependencies = [
     { name = "fastapi" },
     { name = "psutil" },
@@ -469,8 +469,8 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
-    { name = "orchestra", git = "https://github.com/danroblewis/orchestra?rev=main" },
-    { name = "orchestra", extras = ["sd", "bus-redis"], marker = "extra == 'dev'", git = "https://github.com/danroblewis/orchestra?rev=main" },
+    { name = "orchestra", git = "https://github.com/danroblewis/orchestra?branch=main" },
+    { name = "orchestra", extras = ["sd", "bus-redis"], marker = "extra == 'dev'", git = "https://github.com/danroblewis/orchestra?branch=main" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },

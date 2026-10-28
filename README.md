@@ -28,7 +28,7 @@ Ctrl-C stops everything; remove `~/orchestra-tasking-demo` first to run it again
 
 Install Orchestra with the task system beside it, once (no clone needed):
 
-    uv tool install 'orchestra[sd] @ git+https://github.com/danroblewis/orchestra@main' --with 'orchestra-tasking @ git+https://github.com/danroblewis/orchestra-tasking'
+    uv tool install 'orchestra[sd,tasking] @ git+https://github.com/danroblewis/orchestra@main'
 
 The task system's command line comes with it as `orchestra tasks …` (there is no `tasking`
 executable). Then, in the repository:
@@ -60,10 +60,11 @@ system installed):
 **AI agents**: install the agents plugin into the same tool, which fills the roles with agents
 (its README says how to configure them):
 
-    uv tool install 'orchestra[sd] @ git+https://github.com/danroblewis/orchestra@main' --with 'orchestra-tasking @ git+https://github.com/danroblewis/orchestra-tasking' --with 'orchestra-agents @ git+https://github.com/danroblewis/orchestra-agents'
+    uv tool install 'orchestra[sd,tasking,agents] @ git+https://github.com/danroblewis/orchestra@main'
 
-Installing the tool again replaces it, so name every plugin you want on each install. Or run your
-own machines, anything that speaks the contract in `tasking/assignments.py` over the bus.
+Installing the tool again replaces it, so name every plugin you want, as an extra, on each
+install. Or run your own machines, anything that speaks the contract in `tasking/assignments.py`
+over the bus.
 
 The package's reviewer, in tasks mode, checks the acceptance text's `` `files` `` and `"lines"` against the
 ticket's folder and RESULT.md; in code mode it runs `--check`, or the first `[[gate.unit]]`
@@ -191,9 +192,11 @@ the PATH, `puppeteer-core` resolvable by node (`NODE_PATH=<dir>/node_modules`) a
 
 ## Developing against a local Orchestra
 
-`pyproject.toml` takes Orchestra from GitHub (`orchestra @ git+https://github.com/danroblewis/orchestra@main`),
-and `uv.lock` pins the commit it resolved to, so nothing needs cloning beside this repository.
-`uv lock --upgrade-package orchestra` moves the pin to the newest `main` (then `uv sync --extra dev`).
+`pyproject.toml` requires `orchestra>=1.0.0a1,<1.0.0` and takes it from GitHub's `main`
+(`[tool.uv.sources]`); `uv.lock` pins the commit it resolved to, so nothing needs cloning beside
+this repository. The source is this repository's own: installed as a plugin, it gets the Orchestra
+it is installed with. `uv lock --upgrade-package orchestra` moves the pin to the newest `main`
+(then `uv sync --extra dev`).
 
 To run against an Orchestra checkout instead, with its uncommitted changes, lay it over this
 environment for one command:
@@ -213,6 +216,13 @@ uv from syncing it away:
     uv sync --extra dev                            # back to the locked Orchestra from GitHub
 
 A plain `uv run` or `uv sync` also puts the locked Orchestra back.
+
+To keep a checkout as this environment's Orchestra, point the source at it in `pyproject.toml`,
+then `uv sync --extra dev`; leave that change, and the `uv.lock` it rewrites, out of commits
+(`git checkout pyproject.toml uv.lock`, then `uv sync --extra dev`, goes back):
+
+    [tool.uv.sources]
+    orchestra = { path = "../orchestra_2", editable = true }   # the path to your Orchestra checkout
 
 ## The maintainer's own setup
 
