@@ -33,8 +33,9 @@ def _store(project: Project, source: str = CLI) -> tuple[LocalStore, Events]:
 
 
 def cmd_init(args) -> int:
-    p = init_project(Path(args.repo or os.getcwd()), prefix=args.prefix, unit_command=args.unit_command)
-    print(f"initialized {p.key}\n  repo:   {p.repo_root}\n  state:  {p.state_dir}\n  config: {p.orchestra.config_file}")
+    p = init_project(Path(args.repo or os.getcwd()), prefix=args.prefix, unit_command=args.unit_command, base_branch=args.base_branch)
+    print(f"initialized {p.key}\n  repo:   {p.repo_root}\n  state:  {p.state_dir}\n  config: {p.orchestra.config_file}"
+          f"\n  base:   {p.config.base_branch} (approved work lands here; [project] base_branch)")
     return 0
 
 
@@ -255,6 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("init", help="register this repository and write orchestra.toml")
     s.add_argument("--prefix", help="ticket id prefix, e.g. ORC")
     s.add_argument("--unit-command", default="uv run pytest -q", help="the [[gate.unit]] command to start with")
+    s.add_argument("--base-branch", help="where approved work lands (default: the remote's default branch, else the one checked out)")
     s.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("run", help="run the scheduler: offer ready tickets to the roles, apply their reports, land approved code")

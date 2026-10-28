@@ -790,7 +790,7 @@ itself ignores. `tasking init` writes starters for them after Orchestra's own.
 
 ```toml
 [project]
-base_branch = "main"
+base_branch = "main"     # init writes the repository's own: the remote's default branch, else the one checked out
 ticket_prefix = "ORC"
 work = "tasks"           # tasks: a folder per ticket, nothing merged | code: a branch per ticket, the merge gate
 push = false             # code: push the base branch after a landing
@@ -1080,7 +1080,7 @@ These controls are the only writes a person has; tickets change only through the
 
 | Command | What |
 |---|---|
-| `tasking init [--prefix P] [--unit-command C]` | write the task system's sections into `orchestra.toml` and register the project with Orchestra |
+| `tasking init [--prefix P] [--unit-command C] [--base-branch B]` | write the task system's sections into `orchestra.toml` and register the project with Orchestra |
 | `tasking run [--once] [--wait]` | the scheduler (`orchestra run` starts it with `--wait`; §4) |
 | `tasking metrics` | the measurements as Prometheus text, from the record: the command the instrument `tasks.tickets` runs (§8) |
 | `tasking status [--json]` | one screen: what needs a decision, scheduler, who holds what, queue; the gate in code mode, staging when configured |
