@@ -5,7 +5,9 @@ worked next and by which role, offers that work over Orchestra's event bus, appl
 back, and in code mode lands approved branches through a merge gate. It is an Orchestra plugin
 (`tasks`): its pages and API live inside Orchestra's web UI.
 
-It runs no machine of its own besides the merge gate (`merge_gate`, code mode). Its scheduler is
+It runs no machine of its own besides the merge gate (`merge_gate`, code mode), which lands
+approved branches or, with external review, hands them off for a pull request that people outside
+review and merge (section 5). Its scheduler is
 a daemon, not a machine: it stands in for each machine's own scheduling and publishes only as the
 machine it acts for (section 3, "Who publishes what"). Whoever fills the `worker` and `reviewer`
 roles is another program that speaks the contract in section 3: in this repository's demo, a
@@ -44,9 +46,12 @@ prove it), a priority (1 is soonest; default 5), dependencies (`depends_on`), an
 scheduler keeps: `state`, `owner` (the machine instance that holds it now), `branch` and
 `reviewed_commit` (code mode), `blocked_reason`, `feedback` and `rejected_by` (what the next
 worker is told), `review_rounds`, `worker_turns`, `reviewer_rejections`, `gate_rejections`,
-`created_by` (the role that asked for it), a `version` for optimistic concurrency, and
+with external review `pull` (its pull request, `owner/repo#n`), `pull_head` (the commit the pull
+request carries, or is about to), `pull_state` (`open`, `closed`, `merged`) and
+`pull_rejections`, `created_by` (the role that asked for it), a `version` for optimistic concurrency, and
 timestamps. **Notes** record what happened: the worker's summary, the reviewer's verdict, the
-gate's result, a blocker, a crash, a planner's note.
+gate's result, a blocker, a crash, a planner's note; with external review, what happened on its
+pull request, signed by the machine the bridge named for it (kind `pull`).
 
 **Readiness** is derived: a ticket is ready when it is `OPEN`, every ticket it depends on is
 `DONE`, and its milestone is open. **Effective priority** (`effective_priorities`) is the
@@ -62,10 +67,11 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | | `READY_FOR_REVIEW` | waits for a reviewer |
 | | `REJECTED` | a reviewer or the gate sent it back; waits for a worker, who is given `feedback` |
 | | `APPROVED` | approved; in code mode waits for the gate |
+| | `IN_EXTERNAL_REVIEW` | external review: handed off for a pull request; waits for the people and checks on it, and for its merge |
 | active | `IN_PROGRESS` | held by a worker |
 | | `IN_REVIEW` | held by a reviewer |
 | | `MERGING` | in a gate run (code mode) |
-| terminal | `DONE` | approved and, in code mode, landed on the base branch |
+| terminal | `DONE` | approved and, in code mode, landed on the base branch; with external review, its pull request merged |
 | | `CANCELLED` | a planner cancelled it |
 
 ### Transitions (`TRANSITIONS` in `model.py`)
@@ -88,6 +94,11 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | `MERGING` | `APPROVED` | the base branch itself is broken, or the gate hit an error: nothing attributed, the pipeline pauses |
 | `BLOCKED` | `OPEN` | a planner unblocks it |
 | any waiting state | `CANCELLED` | a planner cancels it (an active ticket must settle first) |
+| `APPROVED` | `IN_EXTERNAL_REVIEW` | external review: the gate hands the branch off for its pull request (`gate.handed_off`) |
+| `IN_EXTERNAL_REVIEW` | `REJECTED` | feedback on the pull request's head (changes requested, line comments, a failing label or check): back to the worker that did it (`review_rounds` + 1, `pull_rejections` + 1; `rejected_by` = whoever gave it) |
+| `IN_EXTERNAL_REVIEW` | `BLOCKED` | the pull request was closed without a merge (`blocked_reason` says by whom) |
+| `BLOCKED` | `IN_EXTERNAL_REVIEW` | that pull request was reopened |
+| any waiting state | `DONE` | external review: its pull request was merged (whoever held it is released first) |
 
 An offer nobody claims is only a released assignment: no transition, nothing counted. When
 `review_rounds` reaches `review_rounds_before_escalation` (and every multiple of it), whether a
@@ -125,6 +136,14 @@ publishes it as that machine. So:
   ticket in the queue, and it says so;
 - a reviewer that approves says so (`review.approved`), and the task system's gate (`merge_gate`,
   a machine of its own) takes it;
+- with external review (section 5), the people and checks on the ticket's pull request review it
+  on GitHub, and the pull-request bridge publishes what they did (`github.pr.*`, as the person or
+  bot who did it). Feedback there asks the worker that did the work for changes as an internal
+  reviewer would: `changes.requested`, addressed `to` that worker, published as whoever gave the
+  feedback, with the bridge's event as its cause. Nobody on the pull request speaks this protocol,
+  so the scheduler stands in for their side of it, as it stands in for the worker's queue. This
+  is the one place where the task system turns another machine's words into a state (its rule 1
+  says so): the feedback's words are the bridge's event, and the offer is the reviewer's;
 - the task system speaks when a role's queue offers waiting work (`task.assigned`, as `worker`
   or `reviewer`), takes work back (`task.released`, as the same), runs the gate (as
   `merge_gate`), answers a request (as the asker), or asks a planner (`task.attention_needed`, as
@@ -135,7 +154,9 @@ Orchestra's event map infers a hand-off from who acts next on a subject, from th
 and names the event it came by from what the receiver listens for (Orchestra's SPEC §2). A
 reworked ticket therefore reads planner → worker (via `ticket.created`) → reviewer
 (`review.requested`) → worker (`changes.requested`) → reviewer → merge_gate (`review.approved`),
-with nothing in between; after a gate rejection, merge_gate → worker via `gate.rejected`. The
+with nothing in between; after a gate rejection, merge_gate → worker via `gate.rejected`. With
+external review, reviewer → merge_gate (`review.approved`) → the pull request's reviewer
+(`gate.handed_off`) → worker (`changes.requested`) → reviewer → merge_gate. The
 hand-offs into the worker's queue (via `ticket.created`, via `gate.rejected`) rest on its
 announcement (**Announcement**, below): those are what make the worker's queue act.
 `tests/e2e/test_handoffs_e2e.py` checks this, and that no event has the source `task_scheduler`.
@@ -153,6 +174,7 @@ and `to`, an instance, when the offer is for that instance only.
 | `task.assigned` | the role's queue, published as `worker` or `reviewer` (no instance) | its `role`; or `to` when it returns rejected work to the worker that did it | |
 | `review.requested` | the worker instance that holds the work | the `reviewer` role | `ends`: the worker's own assignment, which this ends |
 | `changes.requested` | the reviewer instance that holds the review | `to`: the worker instance that did the work | `ends`; `feedback`, `summary`, `commit` (the commit reviewed); the brief's `feedback` and `rejected_by` already set |
+| `changes.requested` (external review) | whoever gave feedback on the ticket's pull request, published for them by the task system | `to`: the worker instance that did the work | no `ends`; `feedback`, `summary`, `commit` (the head the feedback is about), `pull`, `pull_feedback` (metadata: reviews, line comments' files and lines, labels, checks); the brief's `feedback`, `rejected_by` and `pull` set |
 
 **The end of a turn.** A turn ends with one of: `review.requested` or `changes.requested` (the
 work passes on), `review.approved` {ends, ticket, role, summary, commit} (to the gate), or
@@ -265,11 +287,12 @@ made (its id). So a request to create a ticket is `task.requested` and what it m
 listening, in families named up to the first dot (Orchestra's event map groups them so):
 `ticket.created`, `milestone.created`, `capacity.changed`, `pickup.paused`/`resumed`,
 `kill.requested`, `pipeline.paused`, `probe.failed`/`recovered`,
-`gate.started`/`conflict`/`landed`/`base_broken`/`rejected`/`error`,
+`gate.started`/`conflict`/`landed`/`base_broken`/`rejected`/`error`/`handed_off`,
 `staging.deployed`/`failed`/`restarted`. Orchestra never reads their data. These families and the
 fields named here are part of what listeners may rely on, like the assignment table and the
 request names: `ticket.created` {ticket}, `gate.base_broken` {gate_run}, `probe.failed`/
-`probe.recovered` {probe}; rename them deliberately and say so in the commit.
+`probe.recovered` {probe}, `gate.handed_off` {ticket, branch, commit, base, repository, pull}; rename
+them deliberately and say so in the commit.
 
 **No echoes** (the owner, 2026-10-27). Every change of a ticket's state is caused by an act some
 machine already announced: a claim, `review.requested`, `changes.requested`, `review.approved`,
@@ -296,6 +319,9 @@ What the scheduler does, and the source it publishes it as. It never publishes a
 | says once per bus what makes the worker's queue act | `worker`, data only `{listens_for: [gate.conflict, gate.rejected, ticket.created]}` | `orchestra.machine.started` |
 | records a step another machine announced (a claim, a heartbeat, `review.requested`, `changes.requested`, `review.approved`, `task.reported`) | nothing: recorded in the store only | none |
 | runs the gate | `merge_gate` (a machine: it does work of its own, merging) | `gate.started` (`causationid` = the approval), `gate.landed`, `gate.rejected`, `gate.conflict`, `gate.error`, `gate.base_broken`; in code mode its announcement {package: tasks, mode: continuous, kind: program, listens_for: [review.approved], log} |
+| external review: hands an approved branch off for its pull request | `merge_gate`; `causationid` = the approval | `gate.handed_off` |
+| external review: sends the work back to the worker that did it after feedback on its pull request | whoever gave the first of the feedback, as the bridge named them (`person.<login>`, a bot); `causationid` = that bridge event | `changes.requested` (to that worker) |
+| external review: asks a planner about a pull request closed without a merge | `merge_gate` (whose hand-off it was) | `task.attention_needed` |
 | pauses the pipeline | `merge_gate` | `pipeline.paused` |
 | deploys or restarts staging | `merge_gate` | `staging.deployed`, `staging.failed`, `staging.restarted` |
 | asks a planner about a ticket blocked by the worker's report, a worker turn that keeps failing, nothing beyond the base | `worker` (whose work is stuck) | `task.attention_needed` |
@@ -334,7 +360,9 @@ per project: a second `tasking run` for the same project exits, naming the pid t
    lease). A `REJECTED` ticket goes first to the worker that did it (`to`, for the return
    timeout), unless it already waited for it since it was rejected. Capacity is the operator's ceiling from the Dashboard if set, otherwise
    `[tasks] workers`/`reviewers`, with a planner's dial (`set_capacity`) under it;
-4. in code mode, starts a gate run for the oldest `APPROVED` ticket if none runs and the
+4. in code mode, with external review, hands every `APPROVED` ticket off for its pull request
+   (section 5) after applying what the pull-request bridge published since the last tick;
+   otherwise starts a gate run for the oldest `APPROVED` ticket if none runs and the
    pipeline is not paused (with reused worktrees, section 5, this comes before step 3, so the
    gate's claim on the pool comes before any offer's), and drops the worktrees of cancelled
    tickets;
@@ -473,6 +501,72 @@ when the root is updated. A failure: the base is checked alone; if the base itse
 the pipeline pauses and the supervisor role is told; otherwise the ticket is rejected with the
 failing stage's output as feedback.
 
+**External review** (`[gate] mode = "external"`, code mode; `tasking/external.py`; goal G6 in
+Orchestra's `docs/roadmap/goals.md`). Where code reaches the base branch through a company's
+pull requests and CI/CD, the gate lands nothing. It hands the approved branch off for a pull
+request, and the ticket follows that pull request until it is merged or closed.
+
+- *Hand-off.* The gate (`merge_gate`) moves an `APPROVED` ticket to `IN_EXTERNAL_REVIEW`, keeps the
+  reviewed commit as `pull_head` (the commit the pull request is to carry), and publishes
+  `gate.handed_off` {ticket, branch, commit, base, repository, pull} with the approval as its
+  cause. It runs no stages and merges nothing: the company's checks run on the pull request.
+  **Pushing the branch and opening the pull request are the owner's acts** (or, one day, an
+  outbox's with the owner's approval): the task system never pushes and never opens one. The
+  ticket's worktree is kept for the rework that may come.
+- *Link.* What the pull-request bridge (orchestra-bridges, `github.pr.*`) publishes is linked to a
+  ticket by the pull request's head branch, which is the ticket's branch (`orchestra/<ticket>-<slug>`:
+  the owner pushes it under that name), and from then on by the pull request itself (`pull`,
+  `owner/repo#n`). A ticket follows one pull request at a time; a new one opened from its branch
+  replaces it. Only `[gate.external] repository`'s pull requests are read when it is set.
+- *Feedback re-engages the worker.* While the ticket is `IN_EXTERNAL_REVIEW`, a review requesting
+  changes, line comments (`line_comments`, on by default; a commenting review with line comments
+  counts too), conversation comments (`conversation_comments`, off), a check that ends `failure`,
+  `timed_out` or `error` (`failing_checks`, on) or a label in `failing_labels` (`SAIL-failed`) is
+  feedback. It is gathered until none came for `settle` (15 s by default; a review's line comments
+  arrive just after it, so a review waits for as many as it says it has, up to three settle
+  periods), then the work goes back once: `REJECTED` (a review round, so the coordinator is asked
+  at the threshold as for any rejection; `pull_rejections` + 1; `rejected_by` the machine that gave
+  the feedback) and `changes.requested` addressed `to` the worker instance that did the work, with
+  the return timeout, like a reviewer's (section 3). The worker resumes its own work (its session,
+  if it keeps one) on the same branch, asks for a review as before, and an approval hands the new
+  commit off again; the owner pushes it to the pull request. **The bus carries no text**, so the
+  feedback is metadata only: who, the review's state, how many line comments and at which files
+  and lines, which label, which check and how it ended. The feedback tells the worker that the
+  texts are on the pull request (`brief.pull` names it).
+- *Which machine re-engages.* The `changes.requested` is published as whoever gave the first of the
+  feedback, as the bridge named them (`person.alice` for a review, the pipeline's account for a
+  label, `bot.<app>` for a check), with the bridge's event as its cause. Asking the worker for
+  changes is a reviewer's act (section 3: reviewer → worker); here the reviewer is a person or a
+  bot on the pull request who speaks no protocol, and the scheduler stands in for that side of it,
+  as it stands in for the worker's queue (D17: it publishes as the machine whose responsibility it
+  implements). So Orchestra's hand-offs read merge_gate → the pull request's reviewer
+  (`gate.handed_off`) → worker (`changes.requested`). Rejected: a configured stand-in machine for
+  "the pull request's reviewers", which would be a machine that does no work (Orchestra's D18);
+  the bridge itself, which only reads GitHub and decides nothing; the merge gate, which did not
+  ask for the changes.
+- *Stale feedback.* Feedback about another commit than `pull_head` (the bridge's `head`: the commit
+  reviewed, labelled or checked) is noted on the ticket and not acted on, and so is feedback that
+  comes while the ticket is not in external review (the worker already has it back). `pull_head`
+  moves with every hand-off and with a push the bridge reports (`github.pr.pushed`) that is not
+  older than it.
+- *Only a merge closes it.* An approval and a label in `passing_labels` are noted. `github.pr.merged`
+  makes the ticket `DONE` from whatever waiting state it is in (whoever holds it or is offered it
+  is released first, without counting against anyone), and its worktree and branch are removed as a
+  landing removes them. `github.pr.closed` (never a merge's own close) makes a ticket in external
+  review `BLOCKED` with the reason, and the merge gate, whose hand-off it was, asks the coordinator:
+  a closed pull request is a decision someone made, so redoing the same work automatically would
+  only open the same pull request again; a planner reopens it, unblocks the ticket (to have the work
+  redone for a new pull request) or cancels it. `github.pr.reopened` returns it to
+  `IN_EXTERNAL_REVIEW`.
+- *Why a state of its own.* A ticket in external review waits on people outside, for hours or
+  days, and is neither approved-and-waiting-for-the-gate (`APPROVED`, which the gate would take)
+  nor held by any machine (an active state needs a lease: no zombies). `IN_EXTERNAL_REVIEW` is a
+  waiting state, so the measurements show it as a stock of its own (`tasks_tickets{state}`), and
+  every rule about waiting states (cancelling, the restart's recovery) holds for it unchanged.
+- *Restarts.* External review reads the bus on from where it stopped (the offset, the ids it
+  applied lately and the feedback it is gathering, in `runtime.json`), so a merge published while
+  no scheduler ran is applied when one starts, and nothing is applied twice.
+
 **Staging** (`tasking/staging.py`): when `[staging] start` is set, one long-lived instance of the
 last build that passed the gate, started with the artifact and port as placeholders, probed at
 `health`, restarted by the scheduler if its process dies or its health check goes unanswered
@@ -588,6 +682,16 @@ ready_timeout = "60s"
 
 [gate]
 timeout = "900s"         # per spec
+mode = "land"            # land: the gate merges and lands | external: it hands the branch off for a pull request (code mode)
+
+[gate.external]          # with mode = "external" (section 5, "External review")
+repository = "acme/service"        # only this repository's pull requests (any, when unset)
+failing_labels = ["SAIL-failed"]   # a label added that sends the work back to its worker
+passing_labels = ["SAIL-passed"]   # noted; only a merge closes the ticket
+line_comments = true               # review comments on lines re-engage the worker
+conversation_comments = false      # comments on the conversation re-engage it
+failing_checks = true              # a check ending failure, timed_out or error re-engages it
+settle = "15s"                     # gather feedback until none came for this long, then re-engage once
 
 [[gate.unit]]
 name = "unit"
@@ -650,7 +754,8 @@ step>)`), so `orchestra run` runs `tasking metrics` every discovery step and lab
 does not know the web server's port, and a port of the scheduler's own would be one more thing to
 configure per project; the text is the same. The series:
 
-- `tasks_tickets{state}`: tickets in each state, every state, read every step;
+- `tasks_tickets{state}`: tickets in each state, every state, read every step (`IN_EXTERNAL_REVIEW`
+  included, 0 without external review);
 - `tasks_tickets_created_total{by}`: tickets created, `by` the machine that asked;
 - `tasks_ticket_transitions_total{from,to,by}`: state changes;
 - with reused worktrees (section 5), `tasks_worktrees{state}`: the pool's worktrees `in_use` and
@@ -663,7 +768,9 @@ mode, `reviewer`; the gate's moves (to `MERGING`, `DONE`, `REJECTED`, back to `A
 `worker`; a review redone for no verdict, or sent back by the task system's rules (no verdict, a
 missing workspace), `reviewer`; a restart sending an active ticket back, the machine whose turn it
 was (`IN_PROGRESS` worker, `IN_REVIEW` reviewer, `MERGING` merge_gate); a request's move (cancel,
-unblock) and a creation, the asker.
+unblock) and a creation, the asker; with external review, the hand-off `merge_gate`, and a move a
+pull request's event caused (feedback, merge, close, reopen) the machine the bridge named for it
+(`person.<login>`, a bot).
 
 Until 2026-10-27 the scheduler wrote these points itself, with `machine="task_scheduler"` on every
 series, and re-asserted the levels every discovery step between changes. That label is gone and
@@ -742,6 +849,9 @@ announces what it listens for, as a real machine does. `test_handoffs_e2e.py` ch
 Orchestra infers (planner → worker → reviewer → worker → reviewer → merge_gate) and that no event
 has the source `task_scheduler` and none restates another machine's act; `tests/unit/test_measures.py`
 checks the Prometheus text and that the scheduler writes no point;
-`test_gate.py` and `test_staging.py` drive the gate and staging directly; `test_demo_e2e.py` runs
+`test_external_e2e.py` drives external review with the pull-request bridge's events published
+by the test (feedback back to the same worker, a failing label, a close, stale feedback, a merge
+while the worker has it, a restart, a review's comments gathered); `test_gate.py` and
+`test_staging.py` drive the gate and staging directly; `test_demo_e2e.py` runs
 the demo as processes against a real `orchestra run` and `orchestra web`, reads everything back
 over HTTP, and executes the Tickets page in a headless Chrome when one is at hand (README).

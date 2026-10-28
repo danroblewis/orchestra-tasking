@@ -60,7 +60,8 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
 
     counts = {s.value: sum(1 for t in tickets if t.state == s) for s in State}
     return {
-        "project": {"key": project.key, "repo_root": str(project.repo_root), "base_branch": cfg.base_branch, "work": cfg.work},
+        "project": {"key": project.key, "repo_root": str(project.repo_root), "base_branch": cfg.base_branch, "work": cfg.work,
+                    "external_review": cfg.external_review},
         "scheduler": {"running": alive(sch.get("pid")), "pid": sch.get("pid")},
         "blocked": [{"id": t.id, "title": t.title, "reason": _first_paragraph(t.blocked_reason)} for t in tickets if t.state == State.BLOCKED],
         "workers": workers,
@@ -74,6 +75,8 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
         "next_gate": [{"id": t.id, "title": t.title, "waiting": round(now - (epoch(t.state_since) or now))} for t in approved[:1]],
         "queued": [{"id": t.id, "title": t.title} for t in approved[1:]],
         "on_the_way": [{"id": t.id, "title": t.title, "state": t.state.value} for t in on_the_way],
+        "external": [{"id": t.id, "title": t.title, "pull": t.pull, "pull_state": t.pull_state, "head": t.pull_head}
+                     for t in tickets if t.state == State.IN_EXTERNAL_REVIEW],
         "counts": {k: v for k, v in counts.items() if v},
         "staging": staging,
     }
@@ -96,7 +99,8 @@ def render(d: dict) -> str:
     p = d["project"]
     code = p["work"] == "code"
     L.append(f"{p['key']}  {p['repo_root']}  base={p['base_branch']}  "
-             + ("work=code: a branch per ticket, landed by the merge gate" if code else "work=tasks: a folder per ticket, nothing merged"))
+             + (("work=code: a branch per ticket, handed off for a pull request (external review)" if p.get("external_review")
+                 else "work=code: a branch per ticket, landed by the merge gate") if code else "work=tasks: a folder per ticket, nothing merged"))
     if d["blocked"]:
         L.append("")
         L.append(f"needs a decision: {len(d['blocked'])} blocked ticket{'s' if len(d['blocked']) != 1 else ''}")
@@ -125,6 +129,8 @@ def render(d: dict) -> str:
             L.append(f"  next:     {t['id']} {t['title'][:50]}  (approved {_ago(t['waiting'])} ago)")
         for t in d["queued"]:
             L.append(f"  queued:   {t['id']} {t['title'][:50]}")
+    for t in d.get("external", []):
+        L.append(f"  external:  {t['id']} {(t['pull'] or 'no pull request yet') + ' at ' + (t['head'] or '?')[:10]:30} {t['title'][:40]}")
     for t in d["on_the_way"]:
         L.append(f"  in flight: {t['id']} {t['state']:17} {t['title'][:40]}")
     L.append("tickets:   " + ("  ".join(f"{k}={v}" for k, v in d["counts"].items()) or "none"))

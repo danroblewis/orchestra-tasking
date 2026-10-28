@@ -1,9 +1,10 @@
 """The runtime half of the store: what the scheduler holds while it runs, in ``runtime.json``:
-assignments, the offers nobody took, worktrees, the worktree pool, gate runs, capacity, pickup, kill requests, probes, the pipeline, the
-scheduler's own record, staging and builds. The operator's changes are published as the operator's
-console (``task_web``: ``capacity.changed``, ``pickup.*``, ``kill.requested``) and the gate's pause
-as the gate (``pipeline.paused``); a change a planner asked for is answered by ``request.done``
-alone, since its request already said what it asks (tasking/events.py)."""
+assignments, the offers nobody took, worktrees, the worktree pool, gate runs, capacity, pickup,
+kill requests, probes, the pipeline, the scheduler's own record, staging and builds, and where
+external review reads the bus. The operator's changes are published as the operator's console
+(``task_web``: ``capacity.changed``, ``pickup.*``, ``kill.requested``) and the gate's pause as the
+gate (``pipeline.paused``); a change a planner asked for is answered by ``request.done`` alone,
+since its request already said what it asks (tasking/events.py)."""
 
 from __future__ import annotations
 
@@ -16,7 +17,8 @@ from .files import read, write
 
 EMPTY_RUNTIME = {"assignments": {}, "untaken": {}, "worktrees": {}, "pool": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
                  "capacity": {}, "operator_capacity": {}, "pickup_paused": False, "scheduler": None, "staging": {},
-                 "pipeline": {"paused": False, "reason": None}, "desk": None, "pool_waiting": 0}
+                 "pipeline": {"paused": False, "reason": None}, "desk": None, "pool_waiting": 0,
+                 "external": None}
 
 
 class Runtime:
@@ -254,6 +256,15 @@ class Runtime:
 
     def set_desk(self, offset: int, answered: list[str]) -> None:
         self._mutate_runtime(lambda d: d.__setitem__("desk", {"offset": offset, "answered": list(answered), "at": now()}))
+
+    def external(self) -> dict | None:
+        """Where external review reads the bus from next (an offset), the ids of the pull-request
+        events it applied lately, and the feedback it is gathering per ticket (tasking/external.py),
+        or None before it ever ran."""
+        return self._r()["external"]
+
+    def set_external(self, offset: int, seen: list[str], pending: dict[str, dict]) -> None:
+        self._mutate_runtime(lambda d: d.__setitem__("external", {"offset": offset, "seen": list(seen), "pending": pending, "at": now()}))
 
     def staging(self) -> dict:
         return dict(self._r()["staging"])

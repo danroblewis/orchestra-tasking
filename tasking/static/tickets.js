@@ -117,7 +117,7 @@ function render() {
       return `<g class="ms ${n.cls} ${n.open ? "msopen" : ""}" transform="translate(${tx},${ty})" onclick="toggleMs('${n.m.id}')"><rect width="${n.w}" height="${n.h}"/>
         <text x="${n.w / 2}" y="19" style="font-weight:700">${n.open ? "▼ " : ""}${esc(n.m.id)} · ${esc(n.m.name.slice(0, 18))}</text><text class="sub" x="${n.w / 2}" y="35">${esc(sub)}${n.open ? " · open" : ""}</text><title>${esc(n.m.name)}: click to ${n.open ? "close" : "open"}</title></g>`;
     }
-    const t = n.t, active = ACTIVE.has(t.state), queued = t.state === "APPROVED" || t.state === "READY_FOR_REVIEW", done = DONE.has(t.state), waiting = t.state === "OPEN" && !t.ready;
+    const t = n.t, active = ACTIVE.has(t.state), queued = t.state === "APPROVED" || t.state === "READY_FOR_REVIEW" || t.state === "IN_EXTERNAL_REVIEW", done = DONE.has(t.state), waiting = t.state === "OPEN" && !t.ready;
     const label = t.state === "OPEN" ? (t.ready ? "READY" : (t.waiting_on && t.waiting_on.length ? "WAITS " + t.waiting_on.join(",") : "CLOSED")) : t.state.replace(/_/g, " ");
     const cls = ["node", active ? "active" : "", queued ? "queued" : "", done ? "done" : "", waiting ? "waiting" : ""].join(" ");
     return `<g class="${cls}" style="--c:${color(t.state)}" transform="translate(${tx},${ty})" onclick="openTicket('${t.id}')">

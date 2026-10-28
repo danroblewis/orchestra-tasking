@@ -22,7 +22,7 @@ from orchestra.config import ConfigError, parse_duration
 from orchestra.config import Project as OrchestraProject
 from orchestra.config import load_project as load_orchestra_project
 
-__all__ = ["Config", "ConfigError", "Project", "TestSpec", "init_project", "load_project", "parse_duration"]
+__all__ = ["Config", "ConfigError", "External", "Project", "TestSpec", "init_project", "load_project", "parse_duration"]
 
 
 @dataclass
@@ -30,6 +30,26 @@ class TestSpec:
     name: str
     command: str
     timeout: float = 900.0
+
+
+@dataclass
+class External:
+    """``[gate.external]``: how a ticket follows its pull request (tasking/external.py). Which
+    labels mean what is the owner's, not the bridge's: the bridge only names labels."""
+    repository: str | None = None      # owner/repo: only this repository's pull requests (any, when unset)
+    failing_labels: tuple[str, ...] = ()   # a label added that re-engages the worker (SAIL-failed)
+    passing_labels: tuple[str, ...] = ()   # a label added that is noted; only a merge closes the ticket
+    line_comments: bool = True         # review comments on lines (and a commenting review with some) re-engage
+    conversation_comments: bool = False    # comments on the conversation re-engage
+    failing_checks: bool = True        # a check that ends failure, timed_out or error re-engages
+    settle: float = 15.0               # feedback is gathered until none came for this long, then the worker is re-engaged once
+
+    @classmethod
+    def from_raw(cls, x: dict[str, Any]) -> External:
+        names = lambda k: tuple(str(v) for v in (x.get(k) or ()))
+        return cls(repository=x.get("repository") or None, failing_labels=names("failing_labels"), passing_labels=names("passing_labels"),
+                   line_comments=bool(x.get("line_comments", True)), conversation_comments=bool(x.get("conversation_comments", False)),
+                   failing_checks=bool(x.get("failing_checks", True)), settle=parse_duration(x.get("settle"), 15.0))
 
 
 @dataclass
@@ -54,6 +74,8 @@ class Config:
     acceptance_ready: str | None = None
     acceptance_ready_timeout: float = 60.0
     gate_timeout: float = 900.0
+    gate_mode: str = "land"      # land: the gate merges and lands | external: it hands the branch off for a pull request
+    external: External = field(default_factory=External)
     unit: list[TestSpec] = field(default_factory=list)
     acceptance: list[TestSpec] = field(default_factory=list)
     staging_start: str | None = None
@@ -68,6 +90,12 @@ class Config:
     @property
     def staging_configured(self) -> bool:
         return bool(self.staging_start)
+
+    @property
+    def external_review(self) -> bool:
+        """The gate hands approved branches off for a pull request instead of landing them: code
+        mode with ``[gate] mode = "external"`` (in tasks mode there is no branch to hand off)."""
+        return self.work == "code" and self.gate_mode == "external"
 
     @classmethod
     def from_toml(cls, text: str) -> Config:
@@ -106,6 +134,8 @@ class Config:
             acceptance_ready=acc.get("ready"),
             acceptance_ready_timeout=parse_duration(acc.get("ready_timeout"), 60.0),
             gate_timeout=gt,
+            gate_mode=str(g.get("mode", "land")),
+            external=External.from_raw(g.get("external") or {}),
             unit=specs(g.get("unit", [])),
             acceptance=specs(g.get("acceptance", [])),
             staging_start=st.get("start"),
@@ -146,6 +176,16 @@ aging_days_per_level = 2        # a ticket gains one priority level per N days o
 
 [gate]
 timeout = "900s"
+# mode = "external"      # code mode: hand approved branches off for a pull request instead of landing them
+
+# [gate.external]        # with mode = "external": the ticket follows its pull request (a bridge publishes github.pr.*)
+# repository = "acme/service"
+# failing_labels = ["SAIL-failed"]   # re-engage the worker that wrote it
+# passing_labels = ["SAIL-passed"]   # noted; only a merge closes the ticket
+# line_comments = true               # review comments re-engage
+# conversation_comments = false
+# failing_checks = true
+# settle = "15s"                     # gather a review's comments before re-engaging, once
 
 [[gate.unit]]
 name = "unit"

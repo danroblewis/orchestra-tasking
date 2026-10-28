@@ -39,6 +39,7 @@ from .assignments import (
 )
 from .config import Project
 from .events import GATE, SCHEDULER, SUPERVISOR, Events
+from .external import External
 from .gate import run_gate
 from .git import Git, GitError
 from .model import ACTIVE, Note, State, Ticket, TransitionError, effective_priorities, is_ready, now
@@ -98,6 +99,9 @@ class Scheduler:
         self.pool = Pool(project, store, self.git, log)    # used only with [tasks] reuse_worktrees
         self.pool_waiting: set[tuple[str, str]] = set()     # (ticket, role or "gate") waiting for a free worktree
         self.offset = events.end()                   # read on from here: what the assignees say back (tasking/assignments.py)
+        # external review: tickets follow their pull requests (tasking/external.py); it reads the bus on from its own record
+        self.external = External(project, store, events, self.gate_store, self.gate_events, self.git,
+                                 offer=self._offer_back, withdraw=self._withdraw, log=log)
 
     def recover(self) -> None:
         """What the previous scheduler left: whoever still holds work is told to stop and every
@@ -227,6 +231,8 @@ class Scheduler:
         self._reap()
         self._service_kills()
         self._follow()
+        if self.cfg.external_review:
+            self.external.follow()
         tickets = self.store.tickets_by_id()
         milestones = self.store.milestones_by_id()
         cap = self.store.capacity()
@@ -270,6 +276,13 @@ class Scheduler:
         the pool's, claimed here before any offer is made, so landing comes before new work; with
         the pool full it waits like any other turn."""
         approved = sorted((t for t in ordered if t.state == State.APPROVED), key=lambda t: t.state_since)
+        if self.cfg.external_review:                 # nothing lands here: each is handed off for its pull request
+            for t in approved:
+                try:
+                    self.external.hand_off(t)
+                except (Conflict, StoreError, TransitionError) as e:
+                    log(f"gate: {t.id}: cannot hand it off: {e}")
+            return
         if not approved:
             return
         tid, slot = approved[0].id, None
@@ -359,13 +372,16 @@ class Scheduler:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _assign(self, t: Ticket, role: str) -> bool:
+    def _assign(self, t: Ticket, role: str, *, type: str = ASSIGNED, source: str | None = None, cause: str | None = None,
+                extra: dict | None = None) -> bool:
         """Offer a waiting ticket to a role (the queue): get its place ready (a folder, or a branch
         in code mode), record the assignment with its lease, and say so on the bus. Whatever
         serves the role takes it; the ticket moves (IN_PROGRESS, IN_REVIEW) and gets its owner
         when one claims it (``_follow``), so an offer nobody takes changes nothing. Rejected work
         is offered first to the worker that did it (``to``), for the return timeout, unless it
-        already waited for that worker since it was rejected."""
+        already waited for that worker since it was rejected. Published as the role's machine
+        (its queue), or for external review as ``source`` with ``type`` ``changes.requested``,
+        ``cause`` and ``extra`` (``_offer_back``)."""
         tasks = self.cfg.work != "code"
         aid = new_id(t.id, role)
         try:
@@ -407,16 +423,38 @@ class Scheduler:
             offer["to"] = to
         if not tasks and self.cfg.unit:
             offer["unit_command"] = self.cfg.unit[0].command
+        if extra:
+            offer.update(extra)
         if role == "reviewer":                       # what the worker said and ran when it asked for the review, as recorded
             offer["review"] = {"summary": self._worker_summary(t.id), "commit": None if tasks else t.reviewed_commit,
                                "test_output": None if tasks else t.test_output, "worker": t.worker}
         record = {"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch, "to": to,
                   "assigned_at": time.time(), "lease_until": time.time() + lease, "instance": None, "accepted_at": None,
                   "offered_since": untaken.get("since") or time.time()}   # the first of the offers nobody took
+        if source:
+            record.update(by=source, cause=cause)
         self.store.put_assignment(record)
-        self.events.publish(ASSIGNED, offer, source=role, subject=t.id)     # as the role's machine: its queue offers it
-        log(f"{t.id}: assigned to " + (f"{to} (the worker that did it)" if to else f"a {role}") + f" ({aid})")
+        # as the role's machine: its queue offers it; or as the pull request's reviewer, whose side it stands in for
+        self.events.publish(type, offer, source=source or role, subject=t.id, **({"causationid": cause} if cause else {}))
+        log(f"{t.id}: {'assigned' if type == ASSIGNED else type + ' from ' + str(source) + ','} to "
+            + (f"{to} (the worker that did it)" if to else f"a {role}") + f" ({aid})")
         return True
+
+    def _offer_back(self, t: Ticket, source: str, cause: str | None, fields: dict) -> bool:
+        """External review: the feedback on a pull request sends the work back to the worker that
+        did it, as ``changes.requested`` from whoever gave the feedback (tasking/external.py)."""
+        return self._assign(t, "worker", type=CHANGES_REQUESTED, source=source, cause=cause, extra=fields)
+
+    def _withdraw(self, tid: str, reason: str) -> None:
+        """Whoever holds the ticket, or is offered it, is released and the ticket goes back to
+        waiting, without counting against anyone (as the operator's stop): its pull request was
+        merged meanwhile (tasking/external.py)."""
+        for a in self.store.assignments().values():
+            if a["ticket"] == tid:
+                log(f"{tid}: the {a['role']}'s turn withdrawn: {reason}")
+                self._release(a, reason)
+                if a.get("instance") is not None:
+                    self._settle(a, lambda a=a: self.reports.back_to_waiting(tid, f"{reason} during the {a['role']}'s turn"))
 
     def _worker_summary(self, tid: str) -> str:
         return next((n.get("text", "") for n in reversed(self.store.notes(tid)) if n.get("author") == "worker"), "")
@@ -441,6 +479,8 @@ class Scheduler:
                 if kind not in FOLLOWED:
                     continue
                 aid = ev.get("ends") if kind in ENDS else ev.get("assignment")
+                if kind == CHANGES_REQUESTED and aid is None and ev.get("pull"):
+                    continue                          # external review's own offer, recorded when it was made
                 if aid not in out:
                     self._not_held(ev, aid)
                     continue

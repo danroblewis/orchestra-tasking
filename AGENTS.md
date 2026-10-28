@@ -10,7 +10,11 @@ broken without updating the spec and saying so in the commit.
    worker that did the work, an approval for the gate); the scheduler records each step, by the
    transition table in `tasking/model.py`, and is the only writer of the record. Never add a path
    where the scheduler relays between machines, where anything else writes the record, or where a
-   machine's words are translated into another state.
+   machine's words are translated into another state. **The one exception is external review**
+   (`[gate] mode = "external"`, SPEC section 5, 2026-10-27): the people and checks on a pull
+   request speak no protocol, so what the pull-request bridge publishes of them (`github.pr.*`) moves
+   the ticket, and feedback there is offered back to the worker as `changes.requested` published
+   as whoever gave it, by `tasking/external.py` alone, with the bridge's event as its cause.
    **The scheduler is no machine** (the owner's decision of 2026-10-27, D17 refined). It is one
    daemon standing in for each machine's own scheduling: the worker's and the reviewer's queues,
    the merge gate, the answers to a planner's requests. It never announces itself and never
@@ -45,7 +49,9 @@ broken without updating the spec and saying so in the commit.
    the observation families in SPEC section 3; another package implements the same names, so
    change them deliberately and say so.
 5. **Merging is programmatic.** No machine merges, pushes, touches the base branch or starts
-   staging. Only the gate lands code; only a landing deploys staging.
+   staging. Only the gate lands code; only a landing deploys staging. With external review the
+   gate lands nothing: it hands the branch off, the owner pushes it and opens the pull request, and
+   the merge happens on the pull request; the task system never pushes or opens one.
 6. **State lives in `~/.orchestrator/<key>/tasks/`**, except the events (Orchestra's bus) and the
    metrics (Orchestra's metrics store, filled by the instrument `tasks.tickets` from the counters
    the record keeps). Only `tasking/store/` reads or writes the JSON files, under

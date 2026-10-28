@@ -57,6 +57,36 @@ is free. With the pool full a turn waits; the scheduler's log says so, and
 `tasks_worktrees{state="waiting"}` counts it (read by the instrument `tasks.tickets`, which
 `orchestra run` runs every discovery step: `tasking metrics`). SPEC.md section 5 has the details.
 
+**External review (pull requests).** Where code reaches the base branch through your company's
+pull requests, the gate can hand an approved branch off instead of landing it, and the ticket
+follows the pull request until it is merged:
+
+    [project]
+    work = "code"
+
+    [gate]
+    mode = "external"                 # land (the default) | external
+
+    [gate.external]
+    repository = "acme/service"       # only this repository's pull requests
+    failing_labels = ["SAIL-failed"]  # re-engage the worker that wrote the change
+    passing_labels = ["SAIL-passed"]  # noted; only a merge closes the ticket
+    line_comments = true              # review comments on lines re-engage it
+    conversation_comments = false
+    failing_checks = true             # a failing check re-engages it
+    settle = "15s"                    # gather a review's comments first, then re-engage once
+
+An approved ticket goes to `IN_EXTERNAL_REVIEW`, and `gate.handed_off` names its branch and commit.
+You push the branch (under the ticket's branch name, `orchestra/<ticket>-<slug>`) and open the pull
+request yourself: the task system never pushes or opens one. orchestra-bridges' pull-request
+bridge (`[bridges.github_prs]`) publishes what happens on it. Changes requested, line comments, a
+failing check or a failing label send the work back to the worker instance that did it (it resumes
+its own work on the same branch), with the feedback as metadata: who, how many comments, which
+files and lines, which label or check; the texts stay on the pull request. Its next approval hands
+the new commit off again, for you to push. Feedback about an older commit is noted, not acted on.
+The merge makes the ticket `DONE`; a close without a merge blocks it for a planner; a reopen
+resumes it. SPEC.md section 5 has the details.
+
 ## Writing tickets for the demo's worker
 
 The demo's worker (`demo/machines/shell_worker.py`) runs the ```` ```sh ```` blocks of a ticket's

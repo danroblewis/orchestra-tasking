@@ -14,11 +14,11 @@ def store(project):
 def test_transitions():
     check_transition(State.OPEN, State.IN_PROGRESS)
     with pytest.raises(TransitionError):
-        check_transition(State.OPEN, State.DONE)
+        check_transition(State.IN_PROGRESS, State.DONE)       # done only by an approval, a landing or a merged pull request
     with pytest.raises(TransitionError):
         check_transition(State.DONE, State.OPEN)
     # only a waiting ticket may be cancelled: an active one is held, and settles first
-    for waiting in (State.OPEN, State.REJECTED, State.READY_FOR_REVIEW, State.APPROVED, State.BLOCKED):
+    for waiting in (State.OPEN, State.REJECTED, State.READY_FOR_REVIEW, State.APPROVED, State.BLOCKED, State.IN_EXTERNAL_REVIEW):
         check_transition(waiting, State.CANCELLED)
     for active in (State.IN_PROGRESS, State.IN_REVIEW, State.MERGING):
         with pytest.raises(TransitionError):

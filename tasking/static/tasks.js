@@ -23,7 +23,8 @@ function turnsWhy(t) {
   const why = [];
   if (t.reviewer_rejections) why.push(`${t.reviewer_rejections} after a reviewer rejection`);
   if (t.gate_rejections) why.push(`${t.gate_rejections} after the merge gate sent it back`);
-  const other = (t.worker_turns || 0) - 1 - (t.reviewer_rejections || 0) - (t.gate_rejections || 0);
+  if (t.pull_rejections) why.push(`${t.pull_rejections} after feedback on its pull request`);
+  const other = (t.worker_turns || 0) - 1 - (t.reviewer_rejections || 0) - (t.gate_rejections || 0) - (t.pull_rejections || 0);
   if (other > 0) why.push(`${other} after a crash, timeout or operator stop`);
   return why;
 }
@@ -50,6 +51,7 @@ function taskSummary(D, { finished = true } = {}) {
     start: n("OPEN") + n("REJECTED") - of(offers, "worker") - of(resting, "worker"),
     review: n("READY_FOR_REVIEW") - of(offers, "reviewer") - of(resting, "reviewer"),
     landing: n("APPROVED") + n("MERGING"),
+    external: n("IN_EXTERNAL_REVIEW"),
     done: n("DONE"), cancelled: n("CANCELLED") };
   const parts = [`${k.working} being worked`];
   if (k.offered) parts.push(`${k.offered} offered`);
@@ -58,6 +60,7 @@ function taskSummary(D, { finished = true } = {}) {
   parts.push(`${k.start} waiting to start`);
   if (k.review) parts.push(`${k.review} waiting for review`);
   if (k.landing) parts.push(`${k.landing} landing`);
+  if (k.external) parts.push(`${k.external} in external review`);
   if (finished && k.done) parts.push(`${k.done} done`);
   if (finished && k.cancelled) parts.push(`${k.cancelled} cancelled`);
   return { ...k, text: parts.join(" · ") };
@@ -75,7 +78,7 @@ async function openTicket(id) {
   const row = (k, v) => (v ? `<div>${k}</div><div class="num">${esc(v)}</div>` : "");
   openDrawer(`${alerts}<h3><span class="pill" style="--c:${stateColor};background:${stateColor}">${t.state.replace(/_/g, " ")}</span><span style="font-family:var(--mono)">${esc(t.id)}</span> ${esc(t.title)}</h3>
     <div class="kv"><div>milestone</div><div>${esc(t.milestone_id)}</div><div>priority</div><div>${priorityText(t, live)}</div><div>depends on</div><div>${t.depends_on.join(", ") || "—"}</div>
-    ${row("held by", t.owner)}${row("branch", t.branch)}${row("reviewed commit", (t.reviewed_commit || "").slice(0, 10))}<div>worker turns</div><div>${turnsText(t)}</div>
+    ${row("held by", t.owner)}${row("branch", t.branch)}${row("reviewed commit", (t.reviewed_commit || "").slice(0, 10))}${row("pull request", t.pull && `${t.pull} (${t.pull_state || "?"}) at ${(t.pull_head || "").slice(0, 10)}`)}<div>worker turns</div><div>${turnsText(t)}</div>
     ${live && live.state === "OPEN" && live.ready ? `<div>waiting</div><div>${esc(live.why_waiting)}</div>` : ""}</div>
     ${t.objective ? `<h2>Objective</h2>${tasksMd(t.objective)}` : ""}
     <h2>Description</h2>${tasksMd(t.description) || '<div class="empty">none</div>'}<h2>Acceptance</h2>${tasksMd(t.acceptance) || '<div class="empty">none</div>'}

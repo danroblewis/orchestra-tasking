@@ -27,6 +27,7 @@ class State(StrEnum):
     READY_FOR_REVIEW = "READY_FOR_REVIEW"
     REJECTED = "REJECTED"
     APPROVED = "APPROVED"
+    IN_EXTERNAL_REVIEW = "IN_EXTERNAL_REVIEW"   # external review: handed off for a pull request, which people outside review and merge
     IN_PROGRESS = "IN_PROGRESS"
     IN_REVIEW = "IN_REVIEW"
     MERGING = "MERGING"
@@ -39,16 +40,19 @@ TERMINAL = {State.DONE, State.CANCELLED}
 
 # Only a waiting state may be cancelled: an active ticket is held by a machine (or a gate run),
 # and cancelling it underneath the holder would leave an assignment on a terminal ticket. It
-# settles first (SPEC.md section 2).
+# settles first (SPEC.md section 2). With external review (``[gate] mode = "external"``) a
+# ticket's pull request merged on the other side is final, whatever state the ticket waits in:
+# DONE from any waiting state (an active one is released first; tasking/external.py).
 TRANSITIONS: dict[State, set[State]] = {
-    State.OPEN: {State.IN_PROGRESS, State.CANCELLED},
+    State.OPEN: {State.IN_PROGRESS, State.CANCELLED, State.DONE},
     State.IN_PROGRESS: {State.READY_FOR_REVIEW, State.BLOCKED, State.OPEN},
-    State.READY_FOR_REVIEW: {State.IN_REVIEW, State.REJECTED, State.CANCELLED},   # REJECTED: its folder or worktree is missing at review time
+    State.READY_FOR_REVIEW: {State.IN_REVIEW, State.REJECTED, State.CANCELLED, State.DONE},   # REJECTED: its folder or worktree is missing at review time
     State.IN_REVIEW: {State.APPROVED, State.REJECTED, State.READY_FOR_REVIEW},
-    State.REJECTED: {State.IN_PROGRESS, State.CANCELLED},
-    State.APPROVED: {State.MERGING, State.DONE, State.CANCELLED},     # DONE directly when nothing is merged (work = "tasks")
+    State.REJECTED: {State.IN_PROGRESS, State.CANCELLED, State.DONE},
+    State.APPROVED: {State.MERGING, State.DONE, State.CANCELLED, State.IN_EXTERNAL_REVIEW},   # DONE directly when nothing is merged (work = "tasks")
+    State.IN_EXTERNAL_REVIEW: {State.REJECTED, State.DONE, State.BLOCKED, State.CANCELLED},
     State.MERGING: {State.DONE, State.REJECTED, State.APPROVED},
-    State.BLOCKED: {State.OPEN, State.CANCELLED},
+    State.BLOCKED: {State.OPEN, State.CANCELLED, State.IN_EXTERNAL_REVIEW, State.DONE},   # IN_EXTERNAL_REVIEW: its closed pull request reopened
     State.DONE: set(),
     State.CANCELLED: set(),
 }
@@ -77,7 +81,7 @@ class MilestoneStatus(StrEnum):
 
 @dataclass
 class Note:
-    author: str  # worker | reviewer | merge_gate | task_scheduler (the task system itself) | a planner's role
+    author: str  # worker | reviewer | merge_gate | task_scheduler (the task system itself) | a planner's role | who acted on its pull request
     text: str
     kind: str = "note"  # note | review | gate | blocker | crash
     created_at: str = field(default_factory=now)
@@ -134,6 +138,10 @@ class Ticket:
     worker_turns: int = 0         # times a worker took this ticket
     reviewer_rejections: int = 0  # how many of those turns followed a reviewer rejection
     gate_rejections: int = 0      # how many followed a merge-gate send-back (test failure or conflict)
+    pull_rejections: int = 0      # how many followed feedback on its pull request (external review)
+    pull: str | None = None       # external review: its pull request, ``owner/repo#n``, once linked
+    pull_head: str | None = None  # the commit its pull request carries, or is about to: what feedback must be about to count
+    pull_state: str | None = None  # open | closed | merged, as the bridge last said
     created_by: str = ""         # the role that asked for it
     version: int = 1
     created_at: str = field(default_factory=now)
