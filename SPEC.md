@@ -1039,7 +1039,11 @@ Inside Orchestra's web UI, under the plugin name `tasks`:
 - **Tickets** (`/tickets`): the graph of milestones and tickets (dagre), done tickets collapsed
   into "via n done" edges, a drawer per ticket (what needs attention first: the blocker, the
   rejection, why it waits; then its fields, texts and notes). The gate's result is on the ticket
-  as the `merge_gate` note and feedback.
+  as the `merge_gate` note and feedback. The drawer is the one extension point other packages
+  have on a ticket: each drawer opened is announced on `document` as the DOM event
+  `tasks:ticket-drawer`, detail `{id, ticket, mount}`, where `mount` is an empty element under
+  the ticket's fields for a listener to fill (the agents show the sessions that worked on the
+  ticket there). The task system knows nothing of who listens.
 - **The Tasks panel** on the Dashboard (`tasks-panel.js`): the tickets in flight with the
   instance that holds each and since when, or to whom it is offered, the queue by state, the
   capacity and pause controls, and the recurring tickets' next due times (read-only; how many

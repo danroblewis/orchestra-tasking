@@ -1,5 +1,5 @@
-// The task system's shared page code: the ticket drawer, priorities, worker turns, the operator's
-// controls. Loaded after Orchestra's /static/app.js (esc, color, openDrawer are its), by the
+// The task system's shared page code: the ticket drawer (and its extension point,
+// "tasks:ticket-drawer"), priorities, worker turns, the operator's controls. Loaded after Orchestra's /static/app.js (esc, color, openDrawer are its), by the
 // Tickets page and by tasks-boot.js on every other page. The look every page needs (tasks.css: the
 // ticket states, the Tasks panel's cards, the drawer) is a stylesheet the plugin declares, which
 // Orchestra links in every page's head.
@@ -80,11 +80,23 @@ async function openTicket(id) {
     <div class="kv"><div>milestone</div><div>${esc(t.milestone_id)}</div><div>priority</div><div>${priorityText(t, live)}</div><div>depends on</div><div>${t.depends_on.join(", ") || "—"}</div>
     ${row("held by", t.owner)}${row("branch", t.branch)}${row("reviewed commit", (t.reviewed_commit || "").slice(0, 10))}${row("pull request", t.pull && `${t.pull} (${t.pull_state || "?"}) at ${(t.pull_head || "").slice(0, 10)}`)}<div>worker turns</div><div>${turnsText(t)}</div>
     ${live && live.state === "OPEN" && live.ready ? `<div>waiting</div><div>${esc(live.why_waiting)}</div>` : ""}</div>
+    <div id="ticket-plugins"></div>
     ${t.objective ? `<h2>Objective</h2>${tasksMd(t.objective)}` : ""}
     <h2>Description</h2>${tasksMd(t.description) || '<div class="empty">none</div>'}<h2>Acceptance</h2>${tasksMd(t.acceptance) || '<div class="empty">none</div>'}
     ${t.verification ? `<h2>Verification</h2>${tasksMd(t.verification)}` : ""}
     ${t.state !== "REJECTED" && t.feedback ? `<h2>${t.rejected_by ? "Last feedback from " + esc(t.rejected_by) : "Note for the worker"}</h2>${tasksMd(t.feedback)}` : ""}
     <h2>Notes</h2>${t.notes.slice().reverse().map((n) => `<div class="note"><b>${esc(n.author)} · ${esc(n.kind)} · ${esc(n.created_at)}</b>${tasksMd(n.text)}</div>`).join("") || '<div class="empty">none</div>'}`);
+  ticketDrawerOpened(t);
+}
+
+// The ticket drawer's one extension point, for the packages that know more about a ticket than the
+// task system does (the agents show the sessions that worked on it): every drawer opened is
+// announced as "tasks:ticket-drawer" on document, with detail {id, ticket, mount}. `ticket` is
+// the ticket as /tickets/<id> gives it; `mount` is an empty element in the drawer, under the
+// ticket's fields, that a listener fills. Nothing here knows who listens.
+function ticketDrawerOpened(t) {
+  const mount = document.getElementById("ticket-plugins");
+  if (mount) document.dispatchEvent(new CustomEvent("tasks:ticket-drawer", { detail: { id: t.id, ticket: t, mount } }));
 }
 
 function priorityText(t, live) {
