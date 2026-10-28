@@ -183,6 +183,34 @@ def cmd_stack(args) -> int:
               + ("" if r["on_base"] else "  [needs restack]") + (f"  {r['pull']}" if r["pull"] else ""))
     if not rows:
         print("no branches")
+
+
+def cmd_recurring(args) -> int:
+    """``check``: the [[tasks.recurring]] definitions, and what is wrong with each (exit 1 when
+    anything is); ``list``: each with its schedule, next due time and last occurrence."""
+    from datetime import datetime
+
+    from . import recurring
+
+    project = _project(args)
+    store, _ = _store(project)
+    v = recurring.view(project, store)
+    if args.json:
+        print(json.dumps(v, indent=1))
+        return 0 if v["ok"] or args.action == "list" else 1
+    for r in v["recurring"]:
+        last = r["last"] or {}
+        nxt = r["next_local"] or "disabled"
+        print(f"{r['name']:24} {r['schedule']:44} next {nxt}" + (f"  last {last.get('occurrence')}: {last.get('outcome')}"
+                                                                  + (f" {last['ticket']}" if last.get("ticket") else "") if last else ""))
+    for label, why in v["problems"].items():
+        print(f"{label}: not used:\n" + "\n".join(f"  - {w}" for w in why))
+    if args.action == "check":
+        n = len(v["recurring"])
+        print("ok" if v["ok"] else f"{len(v['problems'])} definition(s) refused", f"({n} valid, as of {datetime.now().astimezone():%Y-%m-%d %H:%M %Z})")
+        return 0 if v["ok"] else 1
+    if not v["recurring"] and not v["problems"]:
+        print("no recurring tickets ([[tasks.recurring]] in orchestra.toml)")
     return 0
 
 
@@ -266,6 +294,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("stack", help="code mode: each ticket's branch and the branch its pull request is based on (stacked branches)")
     s.add_argument("--json", action="store_true", help="the same as JSON")
     s.set_defaults(fn=cmd_stack)
+    s = sub.add_parser("recurring", help="recurring tickets: check the [[tasks.recurring]] definitions, or list them with their next due times")
+    s.add_argument("action", choices=["check", "list"], help="check: what is wrong with each definition (exit 1 if any); list: next due times")
+    s.add_argument("--json", action="store_true", help="the same as JSON")
+    s.set_defaults(fn=cmd_recurring)
 
     s = sub.add_parser("doctor", help="orphan worktrees (a ticket's or the pool's) and, in code mode, missing gate specs")
     s.add_argument("--fix", action="store_true", help="remove the orphan worktrees")

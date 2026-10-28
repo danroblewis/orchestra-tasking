@@ -37,7 +37,7 @@ REQUESTS = {"create_ticket": "task.requested", "update_ticket": "task.change_req
 OP_OF = {v: k for k, v in REQUESTS.items()}
 QUERY = "task.query_requested"
 QUERIES = ("list_tickets", "get_ticket", "project_status", "list_milestones", "get_capacity", "snapshot",
-           "list_gate_runs", "get_gate_run", "get_staging_status")
+           "list_gate_runs", "get_gate_run", "get_staging_status", "check_recurring")
 DONE, REFUSED = "request.done", "request.refused"
 WAIT_S = 30.0            # how long an asker waits for the answer
 RESUME_S = 2 * WAIT_S    # a request older than this when the desk reads it is refused, not applied

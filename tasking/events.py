@@ -55,11 +55,11 @@ DISPATCH = f"{COORDINATOR}/dispatch"   # the queue: the coordinator's dispatch, 
 
 def flat(ev: dict) -> dict:
     """An event as this package reads it: its data's fields, with ``type``, ``ts``, ``source``,
-    ``id``, ``subject`` and ``causationid`` from the envelope."""
+    ``id``, ``subject``, ``causationid`` and ``correlationid`` from the envelope."""
     data = ev.get("data")
     out = dict(data) if isinstance(data, dict) else {"data": data}
     out.update(type=ev.get("type"), ts=ev.get("time"), source=ev.get("source"), id=ev.get("id"),
-               subject=ev.get("subject"), causationid=ev.get("causationid"))
+               subject=ev.get("subject"), causationid=ev.get("causationid"), correlationid=ev.get("correlationid"))
     return out
 
 
@@ -74,13 +74,17 @@ class Events(OrchestraEvents):
             raise ValueError(f"{type}: the scheduler publishes as the machine whose responsibility it implements, never as {SCHEDULER}")
         return super().publish(type, data, source=src, **ext)
 
-    def emit(self, type: str, *, src: str | None = None, cause: str | None = None, **data: Any) -> dict:
+    def emit(self, type: str, *, src: str | None = None, cause: str | None = None, correlation: str | None = None,
+             **data: Any) -> dict:
         """Publish ``type`` with ``data`` as ``src`` (this publisher's own source when None).
-        ``cause``: the id of the event this one answers or acts on, named as its causationid."""
+        ``cause``: the id of the event this one answers or acts on, named as its causationid;
+        ``correlation``: what it belongs to, as its correlationid (a recurring ticket's occurrence)."""
         subject = data.get("ticket") or data.get("milestone")
         ext = {"subject": str(subject)} if subject else {}
         if cause:
             ext["causationid"] = cause
+        if correlation:
+            ext["correlationid"] = correlation
         return flat(self.publish(type, data or None, source=src, **ext))
 
     def attention(self, to: str, reason: str, ticket: str | None = None, *, src: str | None = None) -> dict:

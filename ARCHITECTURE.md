@@ -111,6 +111,7 @@ flowchart LR
 | `tasking/events.py` | `Events`, a thin layer over `orchestra.events.Events`: `emit(type, src=..., cause=...)` publishes as `src` with the ticket or milestone as subject and `cause` as `causationid`; `read()` flattens `data` into the event dict. Refuses a publish as `task_scheduler`. Attention helper. |
 | `tasking/gate.py`, `tasking/appends.py`, `tasking/git.py` | The merge gate, its one automatic conflict resolution, and thin `git` wrappers. |
 | `tasking/staging.py`, `tasking/probes.py` | The staging instance and the `[[probes]]` checks. |
+| `tasking/recurring.py`, `tasking/schedule.py`, `tasking/store/occurrences.py` | Recurring tickets (D7): the `[[tasks.recurring]]` definitions and their check, the engagement the scheduler ticks (`Recurring`, as `planner/recurring`), the schedules on a zone's wall clock, and the record of the last due time handled per definition, written in the same locked write that makes the ticket. SPEC section 7. |
 | `tasking/measures.py` | The counters kept in the record and the Prometheus text an instrument reads (`tasking metrics`, `/metrics`). |
 | `tasking/config.py` | The task system's sections of `orchestra.toml`, and the state paths. |
 | `tasking/web.py`, `tasking/static/` | The plugin: pages, every-page scripts, API routes, the scheduler's process and the instrument. |
@@ -411,6 +412,8 @@ Everything the scheduler publishes, and as whom. It is the same table as SPEC.md
 | asks a planner about a ticket blocked by the worker's report, a worker turn that keeps failing, nothing beyond the base | `worker` (whose work is stuck) | `task.attention_needed` |
 | asks a planner about a ticket rejected at a multiple of the threshold by reviews (or by reviews that kept ending without a verdict) | `reviewer` | `task.attention_needed` |
 | asks a planner about gate rejections at the threshold, the base broken, a gate error, a landed `orchestra.toml` the root did not follow, the pipeline still paused after a restart, staging failed | `merge_gate` | `task.attention_needed` |
+| makes a recurring ticket at its due time | `planner/recurring`; `correlationid` = the occurrence (`<name>@<local due time>`) | `ticket.created` {…, recurring, occurrence, late}; `orchestra.machine.started` {mode: scheduled} once there is a definition |
+| asks about a recurring ticket it could not make | `planner/recurring` | `task.attention_needed` (to `supervisor`) |
 | runs the `[[probes]]` | `probes` (the condition checks; whether they should become instruments is open: Orchestra's `docs/roadmap/story-placement.md` §7 item 2) | `probe.failed`, `probe.recovered` |
 | the operator's controls (web) | `task_web` | `capacity.changed`, `pickup.paused`/`resumed`, `kill.requested` |
 
@@ -603,7 +606,7 @@ milestones, not who asks.
 | `milestone.close_requested` | `close_milestone` | `id` |
 | `capacity.change_requested` | `set_capacity` | `workers`, `reviewers`, `note` (the planner's dial) |
 | `pipeline.resume_requested` | `resume_pipeline` | none |
-| `task.query_requested` | in `data.op`: `list_tickets` (`state`, `milestone_id`), `get_ticket` (`id`), `project_status`, `list_milestones`, `get_capacity`, `snapshot`, `list_gate_runs`, `get_gate_run` (`id`), `get_staging_status` | as listed |
+| `task.query_requested` | in `data.op`: `list_tickets` (`state`, `milestone_id`), `get_ticket` (`id`), `project_status`, `list_milestones`, `get_capacity`, `snapshot`, `list_gate_runs`, `get_gate_run` (`id`), `get_staging_status`, `check_recurring` (`definitions`, optional: a draft to check instead of the configured ones) | as listed |
 
 Answers:
 
@@ -888,12 +891,14 @@ changes, so a failing probe wakes listeners once.
 | `tasks_tickets_created_total` | counter | `by` |
 | `tasks_ticket_transitions_total` | counter | `from`, `to`, `by` |
 | `tasks_worktrees` | level (gauge) | `state` (`in_use`, `free`, `waiting`); with reused worktrees only |
+| `tasks_recurring_occurrences_total` | counter | `recurring` (the definition), `outcome` (`created`, `late`, `skipped`, `missed`, `failed`) |
 
 Orchestra adds `project` and `instrument="tasks.tickets"` to every point.
 
 - **Where they come from.** The counters are cumulative, kept in `tickets.json`
   (`metric_counts`) and moved in the same locked write as the change they count
-  (`measures.count`, from `Tickets.create_ticket` and `Tickets.transition`). The levels are
+  (`measures.count`, from `Tickets.create_ticket`, `Tickets.transition` and
+  `Occurrences.settle_occurrence`). The levels are
   counted from the tickets as they stand. `Tickets.metrics_text` prints both as Prometheus text
   (`measures.exposition`), with the pool's worktrees from `runtime.json` (the scheduler keeps the
   number of waiting turns there, `Runtime.set_pool_waiting`).
@@ -1105,7 +1110,8 @@ A planner is a machine too: it publishes requests (section 8) and listens for
 ```
 ~/.orchestrator/<key>/
   tasks/
-    tickets.json        tickets, milestones, notes, id counters, metric counters
+    tickets.json        tickets, milestones, notes, id counters, metric counters, and per recurring
+                        definition the last due time handled (``recurring``)
     runtime.json        scheduler pid, assignments, untaken offers, capacity (dial and ceiling),
                         pickup pause, kill requests, worktrees, the worktree pool and the turns waiting
                         for it, gate runs, builds, pipeline, probes, staging, the desk's offset

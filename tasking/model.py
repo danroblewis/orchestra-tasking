@@ -146,6 +146,7 @@ class Ticket:
     merged_as: str | None = None  # external review: the commit its pull request was merged as (a squash's), as the bridge said
     stacked_on: str | None = None  # with stacking: the unlanded ticket whose branch its branch is based on (tasking/stacks.py)
     created_by: str = ""         # the role that asked for it
+    occurrence: str | None = None   # a recurring ticket's occurrence, ``<definition>@<local due time>`` (tasking/recurring.py)
     version: int = 1
     created_at: str = field(default_factory=now)
     updated_at: str = field(default_factory=now)

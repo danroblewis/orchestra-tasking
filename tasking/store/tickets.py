@@ -25,7 +25,8 @@ from ..model import (
 from .base import Conflict, StoreError
 from .files import read, write
 
-EMPTY_TICKETS = {"tickets": {}, "milestones": {}, "notes": {}, "counters": {"ticket": 0, "milestone": 0}, "metric_counts": {}}
+EMPTY_TICKETS = {"tickets": {}, "milestones": {}, "notes": {}, "counters": {"ticket": 0, "milestone": 0}, "metric_counts": {},
+                 "recurring": {}}
 
 
 class Tickets:
@@ -57,21 +58,27 @@ class Tickets:
         ``src``: the source the creation is published as (the asker's); ``cause``: the request's id."""
         with self._locked():
             data = self._t()
-            ms = data["milestones"].get(fields.get("milestone_id") or "")
-            if ms is None:
-                raise StoreError(f"ticket needs an existing milestone; got {fields.get('milestone_id')!r}")
-            if ms["status"] != MilestoneStatus.OPEN:
-                raise StoreError(f"milestone {ms['id']} is closed and cannot receive tickets")
-            for dep in fields.get("depends_on") or []:
-                if dep not in data["tickets"]:
-                    raise StoreError(f"unknown dependency {dep}")
-            data["counters"]["ticket"] += 1
-            tid = f"{self.prefix}-{data['counters']['ticket']}"
-            t = Ticket(id=tid, **fields)
-            data["tickets"][tid] = t.to_dict()
-            measures.count(data["metric_counts"], "created", {"by": by or (src or "").partition("/")[0] or self.machine})
+            t = self._add_ticket(data, by or (src or "").partition("/")[0] or self.machine, fields)
             write(self.project.tickets_file, data)
-        self.events.emit("ticket.created", src=src, cause=cause, ticket=tid, title=t.title, by=t.created_by)
+        self.events.emit("ticket.created", src=src, cause=cause, ticket=t.id, title=t.title, by=t.created_by)
+        return t
+
+    def _add_ticket(self, data: dict, by: str, fields: dict[str, Any]) -> Ticket:
+        """A new ticket in ``data`` (the record read under the lock, written by the caller), counted
+        as created ``by`` that machine. Refused without an open milestone or with an unknown dependency."""
+        ms = data["milestones"].get(fields.get("milestone_id") or "")
+        if ms is None:
+            raise StoreError(f"ticket needs an existing milestone; got {fields.get('milestone_id')!r}")
+        if ms["status"] != MilestoneStatus.OPEN:
+            raise StoreError(f"milestone {ms['id']} is closed and cannot receive tickets")
+        for dep in fields.get("depends_on") or []:
+            if dep not in data["tickets"]:
+                raise StoreError(f"unknown dependency {dep}")
+        data["counters"]["ticket"] += 1
+        tid = f"{self.prefix}-{data['counters']['ticket']}"
+        t = Ticket(id=tid, **fields)
+        data["tickets"][tid] = t.to_dict()
+        measures.count(data["metric_counts"], "created", {"by": by})
         return t
 
     def update_ticket(self, ticket_id: str, **changes: Any) -> Ticket:

@@ -166,7 +166,8 @@ publishes it as that machine. So:
   as `coordinator/dispatch`), as for any rejected work. This
   is the one place where the task system turns another machine's words into a state (its rule 1
   says so): the feedback's words are the bridge's event, and the offer is the reviewer's;
-- the task system speaks when dispatch offers waiting work (`task.assigned`, as
+- the task system speaks when a recurring ticket is due (`ticket.created`, as
+  `planner/recurring`: section 7), when dispatch offers waiting work (`task.assigned`, as
   `coordinator/dispatch`), takes work back (`task.released`: an offer nobody claimed as
   `coordinator/dispatch`, a held turn as its role), runs the gate (as `merge_gate`), answers a request (as the asker), or asks a planner (`task.attention_needed`, as
   the machine whose work is stuck). The table "Who publishes what" at the end of this section is
@@ -179,7 +180,8 @@ reworked ticket therefore reads planner → coordinator (via `ticket.created`) �
 merge_gate (`review.approved`), with nothing in between; after a gate rejection, merge_gate →
 coordinator (`gate.rejected`) → worker (`task.assigned`, addressed to the worker that did it); a
 held turn taken back, worker → coordinator (`task.released`) → worker. A ticket the Supervisor
-asked for reads supervisor → coordinator (`ticket.created`). The hand-offs into dispatch rest on
+asked for reads supervisor → coordinator (`ticket.created`); a recurring one, planner →
+coordinator (`ticket.created`, as `planner/recurring`, section 7). The hand-offs into dispatch rest on
 its announcement (**Announcement**, below): those are what make it act. With external review, reviewer → merge_gate (`review.approved`) → the pull request's
 reviewer (`gate.handed_off`) → worker (`changes.requested`) → reviewer → merge_gate; when that
 worker does not take the work back within the return timeout, the work falls back to the queue
@@ -267,7 +269,7 @@ here; their drift test reads this package's source.
 `milestone.close_requested`, `capacity.change_requested`, `pipeline.resume_requested`; and reads
 with `task.query_requested` naming the `op` (`list_tickets`, `get_ticket`, `project_status`,
 `list_milestones`, `get_capacity`, `snapshot`, `list_gate_runs`, `get_gate_run`,
-`get_staging_status`); a query and its answer carry no subject, since a read acts on no ticket.
+`get_staging_status`, `check_recurring`); a query and its answer carry no subject, since a read acts on no ticket.
 A ticket's state and notes are read this way (`get_ticket`, `list_tickets`, `snapshot`): no event
 restates them.
 Each carries `request` (an id), `args` and `by`: the label the asker
@@ -361,6 +363,8 @@ What the scheduler does, and the source it publishes it as. It never publishes a
 | asks a planner about a ticket blocked by the worker's report, a worker turn that keeps failing, nothing beyond the base | `worker` (whose work is stuck) | `task.attention_needed` |
 | asks a planner about a ticket rejected at a multiple of the threshold by reviews (or by reviews that kept ending without a verdict) | `reviewer` | `task.attention_needed` |
 | asks a planner about gate rejections at the threshold, the base broken, a gate error, a landed `orchestra.toml` the root did not follow, the pipeline still paused after a restart, staging failed | `merge_gate` | `task.attention_needed` |
+| makes a recurring ticket at its due time (`[[tasks.recurring]]`, section 7) | `planner/recurring`, the planner's scheduled engagement: deciding what the work is, is a planner's; `correlationid` = the occurrence (`<name>@<local due time>`), no `causationid` (nothing caused it but the clock); the map reads planner → coordinator (`ticket.created`) | `ticket.created` {ticket, title, by, recurring, occurrence, late}; at the first tick with a definition, `orchestra.machine.started` {mode: scheduled, kind: program, listens_for: [], recurring: [names]} |
+| asks about a recurring ticket it could not make (no open milestone) | `planner/recurring` | `task.attention_needed` (to `supervisor`) |
 | runs the `[[probes]]` | `probes` (the condition checks; whether they should become instruments is an open question: Orchestra's `docs/roadmap/story-placement.md` §7 item 2) | `probe.failed`, `probe.recovered` |
 | the operator's controls (web) | `task_web` | `capacity.changed`, `pickup.paused`/`resumed`, `kill.requested` |
 
@@ -400,7 +404,9 @@ per project: a second `tasking run` for the same project exits, naming the pid t
    pipeline is not paused (with reused worktrees, section 5, this comes before step 3, so the
    gate's claim on the pool comes before any offer's), and drops the worktrees of cancelled
    tickets;
-5. keeps staging running (section 5) and runs the due **probes** (`tasking/probes.py`:
+5. between steps 2 and 3, makes the **recurring tickets** that are due (section 7, "Recurring
+   tickets"), so one is offered in the tick it is made;
+6. keeps staging running (section 5) and runs the due **probes** (`tasking/probes.py`:
    `[[probes]]` commands on an interval; `probe.failed`/`probe.recovered`, as `probes`, fire on
    the transition).
 
@@ -822,6 +828,80 @@ every = "5m"             # Orchestra's durations: ms, s, m, h (a day is "24h")
 timeout = "60s"
 ```
 
+### Recurring tickets (`tasking/recurring.py`, `tasking/schedule.py`)
+
+Datetime scheduling is the task system's (Orchestra's decision D7): a scheduled piece of work is
+a ticket made from a template at each due time of a schedule. Each `[[tasks.recurring]]` table is
+one definition. It is read through Orchestra like every setting (so the owner's private overlay
+may hold some), re-read every tick, and checked by `tasking recurring check` (exit 1 and a reason
+per problem), by the query `check_recurring` on the bus (`tasking api check_recurring`; with
+`{"definitions": [...]}` it checks a draft instead, before it is written: the answer has `valid`,
+each valid definition with its next due time, and `problems`, the reasons per definition), or by
+`tasking.recurring.check(project.config.raw, store)` from a program: a
+definition with any problem is not used, and the others are; the scheduler says each problem
+once in its log. A program that sets them up on request (the Supervisor) changes them through
+Orchestra's `config_edit` and runs the check after. An occurrence is made at the first tick at
+or after its due time (`[tasks] tick`, 3 s by default).
+
+```toml
+[[tasks.recurring]]
+name = "morning-brief"        # required: [a-z0-9][a-z0-9_.-]*, at most 64, unique; the occurrence ids and the series label use it
+every = "day"                 # "day" | "week" | "month" (or daily, weekly, monthly) ...
+at = "07:30"                  #   ... at this 24-hour local time (required with every)
+on = ["mon", "tue", "wed", "thu", "fri"]   # day: optional weekdays; week: required weekday(s);
+                              #   month: required day(s) 1-31 or "last" (29-31 fall on a shorter month's last day)
+# cron = "30 7 * * mon-fri"   # ... or five crontab fields instead of every/at/on (minute hour day-of-month month
+                              #   day-of-week; *, a-b, */n, lists, jan..dec, sun..sat, 0 and 7 Sunday;
+                              #   both day fields restricted: either matches, as cron)
+timezone = "Europe/London"    # required: an IANA zone; the schedule is that zone's wall clock
+title = "Morning brief for {weekday} {date}"   # required
+description = "Write the brief for {date}."    # optional, as are acceptance, objective, verification
+acceptance = "- the brief is in briefs/{date}.md"
+milestone = "M1"              # required: an open milestone's id, or its name when only one has it
+priority = 2                  # 1 (soonest) to 9; default 5
+if_open = "skip"              # skip (default): make nothing while the previous occurrence's ticket is not
+                              #   DONE or CANCELLED, with a note on it | create: make one anyway
+catch_up = true               # default true: after a gap, make the latest missed occurrence (late);
+                              #   false: an occurrence later than late_after is missed, not made
+late_after = "10m"            # default 10m: made later than this after its due time, it is late
+enabled = true                # default true; false stops it (back on, it counts from then)
+```
+
+The placeholders in the texts are the occurrence's local due time: `{date}` 2026-10-27, `{time}`
+07:30, `{weekday}` Tuesday, `{day}` 27, `{month}` 10, `{month_name}` October, `{year}` 2026,
+`{week}` 2026-W44 (ISO), `{quarter}` Q4, `{due}` 2026-10-27T07:30+00:00; `{{` and `}}` for braces.
+Any other key is refused with the reason: `role`, `worker_kind` and `kind` because every ticket
+goes to the worker role (the task system has no worker kinds yet, goal G3), `depends_on` because
+an occurrence waits for the previous one only through `if_open`.
+
+**The rules.**
+
+- **A due time** is a wall-clock time in the zone, so it follows daylight saving. A time the
+  clocks skip (02:30 when they spring forward) is due when they reach it (03:30 on the wall); a
+  time that happens twice (01:30 when they fall back) is due once, the first time. Cron's way.
+- **Once.** The record keeps per definition the due time of the last occurrence handled
+  (`tickets.json`, `recurring`), and the store checks it in the same locked write that makes the
+  ticket. A restart, a second tick or a second writer never makes an occurrence twice; the
+  occurrence's id is `<name>@<local due time, YYYY-MM-DDTHH:MM>`, on the ticket (`occurrence`)
+  and as the `correlationid` of its `ticket.created`.
+- **Catch-up.** When the scheduler was not running across due times (the laptop slept), the
+  next tick makes **at most one**: the latest due one, marked late (`late: true`) when it is made
+  more than `late_after` after its due time. The ones before it are counted as missed, never
+  made. With `catch_up = false` a late one is missed too.
+- **If the last one is open** (`if_open = "skip"`): the occurrence is skipped (counted, and noted
+  on the open ticket), and the next due time is tried as usual.
+- **New, changed, back.** A definition seen for the first time, or back after it was removed,
+  disabled or invalid, counts from that tick: nothing before it is owed. A changed schedule counts
+  from the last occurrence handled.
+- **Cannot be made** (the milestone is gone or closed): the occurrence is counted as failed, and
+  the Supervisor is asked once (`task.attention_needed` to `supervisor`, as `planner/recurring`);
+  it is not tried again every tick.
+
+From there the ticket is like any other: dispatch offers it, a worker does it, a reviewer judges
+it, the gate lands it in code mode, and a worker that cannot do it blocks it for a planner. The
+next due times are on the Tasks panel and at `GET /api/plugins/tasks/recurring` (section 9), and
+in `tasking recurring list`; what became of each due time is counted (section 8).
+
 `[events]` and `[metrics]` are Orchestra's: the task system opens the bus through Orchestra's own
 project (`tasking.config.Project.orchestra`), and its measurements reach the metrics store through
 the instrument `orchestra run` runs (section 8), so where they go is decided in one place. Capacity and the config are re-read every tick, so a change is live.
@@ -832,7 +912,8 @@ the instrument `orchestra run` runs (section 8), so where they go is decided in 
 ~/.orchestrator/<key>/                 # Orchestra's; <key> is <repo name>-<hash of its path>
   events.jsonl                         # the file bus (when [events] url is "file")
   tasks/                               # the task system's
-    tickets.json                       # tickets, milestones, notes, counters, the metric counters
+    tickets.json                       # tickets, milestones, notes, counters, the metric counters,
+                                       # per recurring definition the last due time handled
     runtime.json                       # scheduler pid, assignments, capacity, pause, kill requests,
                                        # worktrees, the worktree pool, gate runs, builds, pipeline, probes, staging,
                                        # where the desk reads requests from next, the turns waiting for a pool worktree
@@ -865,6 +946,11 @@ configure per project; the text is the same. The series:
 - `tasks_ticket_transitions_total{from,to,by}`: state changes;
 - with stacking (section 5), `tasks_restacks_total{outcome,by}`: branches restacked
   (`outcome="restacked"`) and restacks that conflicted (`"conflict"`), `by` `merge_gate`;
+- `tasks_recurring_occurrences_total{recurring,outcome}`: each recurring ticket's due times and
+  what became of them: `created` (on time), `late` (made more than `late_after` after its time),
+  `skipped` (the previous one still open), `missed` (not made: a later one was, after a gap, or
+  `catch_up = false`), `failed` (no open milestone). A recurring ticket made is also counted in
+  `tasks_tickets_created_total{by="planner"}`;
 - with reused worktrees (section 5), `tasks_worktrees{state}`: the pool's worktrees `in_use` and
   `free`, and the turns `waiting` for one (kept in `runtime.json`).
 
@@ -896,7 +982,8 @@ Inside Orchestra's web UI, under the plugin name `tasks`:
   as the `merge_gate` note and feedback.
 - **The Tasks panel** on the Dashboard (`tasks-panel.js`): the tickets in flight with the
   instance that holds each and since when, or to whom it is offered, the queue by state, the
-  capacity and pause controls.
+  capacity and pause controls, and the recurring tickets' next due times (read-only; how many
+  definitions are not used, when any is not).
 - **The blocked-ticket banner** on every page (`attention.js`): which tickets wait for a
   decision; a package that shows them itself calls `TaskAttention.standAside()`.
 
@@ -917,6 +1004,7 @@ API at `/api/plugins/tasks`:
 | `GET /board` | the Tasks panel: tickets in flight (held or offered) with their assignment (instance, since when), counts by state, capacity, pause, scheduler |
 | `GET /attention` | the blocked tickets |
 | `GET /tickets/{id}` | one ticket with its notes |
+| `GET /recurring` | the recurring tickets (section 7): each definition's schedule in words, next due time (epoch and local), and last occurrence (id, outcome, ticket); `problems`: what is wrong with the definitions not used. Read-only; `/board` carries the same list for the Tasks panel |
 | `GET /metrics` | the measurements as Prometheus text (section 8), the same text `tasking metrics` prints |
 | `POST /control` | the operator's controls: `{action: pause\|resume}`, `{action: capacity, workers, reviewers}` (omit both to return to the file), `{action: kill, ticket}` (release whoever holds it, and the ticket goes back; or withdraw an offer nobody took) |
 
@@ -944,6 +1032,7 @@ These controls are the only writes a person has; tickets change only through the
 | `tasking api [--as ROLE] OP [--args JSON]` | one request over the bus, answered by the running scheduler |
 | `tasking staging status\|logs\|deploy\|restart\|stop` | staging |
 | `tasking stack [--json]` | code mode: each unfinished ticket's branch, the branch its pull request is to be based on (its parent's with stacking, else the base), whether it is on that base's head, and its pull request. Read only |
+| `tasking recurring check\|list [--json]` | the `[[tasks.recurring]]` definitions: `check` says what is wrong with each (exit 1 when anything is, milestones checked against the record), `list` their next due times and last occurrences |
 | `tasking doctor [--fix]` | orphan worktrees; in code mode, missing gate specs |
 
 `--repo` names the repository (default `ORCHESTRA_REPO`, else the current directory).

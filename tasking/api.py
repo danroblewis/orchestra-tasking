@@ -108,6 +108,17 @@ def handle(project: Project, store: LocalStore, events: Events, command: str, ar
                              feedback=f"the blocker was resolved by {author}: {a.get('note', '')}")
         return {"ok": True, "ticket": t.to_dict()}
 
+    if command == "check_recurring":
+        # the [[tasks.recurring]] in use, or the ``definitions`` given (a planner's draft, checked
+        # before it writes them through Orchestra's config_edit): valid ones with their next due
+        # times, and the reasons the others are refused (tasking/recurring.py)
+        from . import recurring
+        draft = a.get("definitions")
+        if draft is not None and not isinstance(draft, list):
+            raise StoreError("definitions is a list of recurring definitions (tables), as in [[tasks.recurring]]")
+        v = recurring.view(project, store, raw=None if draft is None else {"tasks": {"recurring": draft}})
+        return {"ok": True, "valid": v["ok"], "recurring": v["recurring"], "problems": v["problems"]}
+
     if command == "get_capacity":
         return {"ok": True, "capacity": store.capacity()}
 
