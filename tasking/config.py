@@ -22,7 +22,7 @@ from orchestra.config import ConfigError, parse_duration
 from orchestra.config import Project as OrchestraProject
 from orchestra.config import load_project as load_orchestra_project
 
-__all__ = ["Config", "ConfigError", "External", "Project", "TestSpec", "init_project", "load_project", "parse_duration"]
+__all__ = ["Config", "ConfigError", "External", "Project", "TestReports", "TestSpec", "init_project", "load_project", "parse_duration"]
 
 
 @dataclass
@@ -53,6 +53,21 @@ class External:
 
 
 @dataclass
+class TestReports:
+    """``[gate.test_reports]``: the instrument ``tasks.tests`` that reads the gate's reports
+    (tasking/web.py; Orchestra's ``orchestra.instruments.test_reports``)."""
+    enabled: bool = True
+    kinds: tuple[str, ...] = ()      # KIND=PATTERN rules, before the instrument's defaults
+    window: int = 10
+    confirm: int = 3
+
+    @classmethod
+    def from_raw(cls, x: dict[str, Any]) -> TestReports:
+        return cls(enabled=bool(x.get("enabled", True)), kinds=tuple(str(k) for k in (x.get("kinds") or ())),
+                   window=int(x.get("window", 10)), confirm=int(x.get("confirm", 3)))
+
+
+@dataclass
 class Config:
     base_branch: str = "main"
     ticket_prefix: str = "ORC"
@@ -75,6 +90,8 @@ class Config:
     acceptance_ready_timeout: float = 60.0
     gate_timeout: float = 900.0
     gate_mode: str = "land"      # land: the gate merges and lands | external: it hands the branch off for a pull request
+    rerun_failures: int = 0      # a failed stage spec is run again up to this many times; a pass after a failure is flaky
+    test_reports: TestReports = field(default_factory=TestReports)
     external: External = field(default_factory=External)
     stacking: str = ""           # "git-spice": a ticket that depends on unlanded work branches from it (tasking/stacks.py) | "": off
     stack_depth: int = 4         # with stacking: at most this many unlanded branches below a new one
@@ -147,6 +164,8 @@ class Config:
             acceptance_ready_timeout=parse_duration(acc.get("ready_timeout"), 60.0),
             gate_timeout=gt,
             gate_mode=str(g.get("mode", "land")),
+            rerun_failures=max(0, int(g.get("rerun_failures", 0))),
+            test_reports=TestReports.from_raw(g.get("test_reports") or {}),
             external=External.from_raw(g.get("external") or {}),
             stacking="" if stacking == "off" else stacking,
             stack_depth=max(1, int(g.get("stack_depth", 4))),
@@ -193,6 +212,7 @@ timeout = "900s"
 # mode = "external"      # code mode: hand approved branches off for a pull request instead of landing them
 # stacking = "git-spice"  # code mode: a ticket that depends on unlanded work branches from it, kept restacked
 # stack_depth = 4         # with stacking: at most this many unlanded branches below a new one
+# rerun_failures = 1     # run a failed spec again up to N times; a pass after a failure lands, noted as flaky
 
 # [gate.external]        # with mode = "external": the ticket follows its pull request (a bridge publishes github.pr.*)
 # repository = "acme/service"
@@ -286,6 +306,11 @@ class Project:
     @property
     def logs_dir(self) -> Path:
         return self.state_dir / "logs"
+
+    @property
+    def reports_dir(self) -> Path:
+        """The gate's test reports, a directory per run (``<run>``, ``<run>.rerun<n>``): tasking/gate.py."""
+        return self.state_dir / "reports"
 
     @property
     def staging_dir(self) -> Path:

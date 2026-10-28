@@ -541,6 +541,32 @@ when the root is updated. A failure: the base is checked alone; if the base itse
 the pipeline pauses and the supervisor role is told; otherwise the ticket is rejected with the
 failing stage's output as feedback.
 
+**Reruns and flaky stages** (`[gate] rerun_failures = N`, default 0). A stage spec that fails is
+run again, in the same worktree, up to N times; the build's command too. One that passes on a
+rerun passed: the run goes on, and lands if everything else passes. The spec is marked
+**flaky** in the run's record (`flaky: true`, its `attempts`, `reruns`, and each failed attempt's
+exit code, log and output in `failed_attempts`), the run lists it (`flaky: ["unit:tests"]`), and
+the landing says so: in its summary, in the ticket's `merge_gate` note ("flaky: unit:tests failed,
+then passed on rerun 1") and in `gate.landed` (`flaky`). A spec that fails every rerun fails the
+run as before; the base check reruns it too. Each attempt's output is
+`logs/<run>/<stage>-<spec>.log`, then `….rerun<n>.log`. A rerun costs the spec's time again, a
+time-out included, so N stays small; a flaky stage that lands is still a defect to fix, which is
+what the counts are for. The record counts every finished run (section 8):
+`tasks_gate_runs_total{status}`, `tasks_gate_reruns_total{stage,name}` and
+`tasks_gate_flaky_stages_total{stage,name}`.
+
+**Test reports** (`tasking/gate_reports.py`). Each run keeps `<state>/reports/<run>/`, and
+`{reports}` in a stage command is that directory, so a spec can write its runner's report there
+(`pytest --junitxml={reports}/tests.xml`); a rerun's attempt gets a sibling,
+`<run>.rerun<n>/`, so each attempt is a run of its own and a failure followed by a pass reads as
+flaky. The base check's reports stay with its logs. The gate also writes `gate.xml` there: the
+run's stage specs as JUnit test cases (`classname="merge_gate.<stage>"`, `name` the spec), with
+`<failure>`, Surefire's `<flakyFailure>` for each failed attempt of a spec that then passed, and
+`<rerunFailure>` for each rerun of one that never did. The newest 100 report directories are
+kept. A worker's copy of the unit command (`unit_command` in an offer) has `{reports}` pointing
+at `logs/worker-reports/<ticket>/`, read by nobody: the gate's runs are what is counted. The
+instrument `tasks.tests` reads the reports (section 8).
+
 **External review** (`[gate] mode = "external"`, code mode; `tasking/external.py`; goal G6 in
 Orchestra's `docs/roadmap/goals.md`). Where code reaches the base branch through a company's
 pull requests and CI/CD, the gate lands nothing. It hands the approved branch off for a pull
@@ -793,6 +819,13 @@ timeout = "900s"         # per spec
 mode = "land"            # land: the gate merges and lands | external: it hands the branch off for a pull request (code mode)
 stacking = "git-spice"   # code mode, optional: a ticket that depends on unlanded work branches from it, kept restacked (section 5)
 stack_depth = 4          # with stacking: at most this many unlanded branches in one stack
+rerun_failures = 0       # run a failed spec again up to N times; a pass on a rerun lands, marked flaky (section 5)
+
+[gate.test_reports]      # code: the instrument tasks.tests over the gate's reports (section 8)
+enabled = true
+kinds = ["e2e=tests/e2e/*"]        # KIND=PATTERN rules before the defaults (e2e, acceptance, unit by path)
+window = 10              # runs per report stream judged for flakiness
+confirm = 3              # consecutive passing runs that confirm a test
 
 [gate.external]          # with mode = "external" (section 5, "External review")
 repository = "acme/service"        # only this repository's pull requests (any, when unset)
@@ -805,7 +838,7 @@ settle = "15s"                     # gather feedback until none came for this lo
 
 [[gate.unit]]
 name = "unit"
-command = "uv run pytest -q tests/unit"
+command = "uv run pytest -q tests/unit --junitxml={reports}/unit.xml"   # {reports}: the run's report directory
 
 [[gate.acceptance]]
 name = "acceptance"
@@ -923,7 +956,9 @@ the instrument `orchestra run` runs (section 8), so where they go is decided in 
     pool/<n>/                          # code mode with reused worktrees
     stack/                             # code mode with stacking: where a branch with no worktree of its own is restacked
     gate/<run>/  artifacts/<run>/  staging/
-    logs/scheduler.log  logs/<run>/<stage>-<spec>.log  logs/review/<ticket>/
+    reports/<run>/  reports/<run>.rerun<n>/     # code: the gate's test reports and gate.xml (section 5)
+    test_reports_history.json          # the instrument tasks.tests: the runs it has seen, its counters
+    logs/scheduler.log  logs/<run>/<stage>-<spec>.log  logs/<run>/<stage>-<spec>.rerun<n>.log  logs/review/<ticket>/
 ```
 
 Only `tasking/store/` reads or writes these JSON files (`store/tickets.py` the first,
@@ -952,7 +987,27 @@ configure per project; the text is the same. The series:
   `catch_up = false`), `failed` (no open milestone). A recurring ticket made is also counted in
   `tasks_tickets_created_total{by="planner"}`;
 - with reused worktrees (section 5), `tasks_worktrees{state}`: the pool's worktrees `in_use` and
-  `free`, and the turns `waiting` for one (kept in `runtime.json`).
+  `free`, and the turns `waiting` for one (kept in `runtime.json`);
+- code mode, `tasks_gate_runs_total{status}`: the gate's runs as they ended (`landed`, `rejected`,
+  `conflict`, `base_broken`, `error`), counted when the run's record is saved for the last time;
+- `tasks_gate_reruns_total{stage,name}`: the times a failed spec was run again
+  (`[gate] rerun_failures`), the base check's included;
+- `tasks_gate_flaky_stages_total{stage,name}`: the specs that failed and then passed on a rerun.
+
+**The tests** (code mode, unless `[gate.test_reports] enabled = false`). The plugin declares a
+second instrument, `tasks.tests`: Orchestra's test-report instrument
+(`<python> -m orchestra.instruments.test_reports`, Orchestra's USING_ORCHESTRA.md section 3.4) over
+`<state>/tasks/reports/*/*.xml` (and `*.jsonl`, pytest's report log), with its history in
+`<state>/tasks/test_reports_history.json`, every discovery step. It prints `tests{kind}`,
+`test_outcomes{kind,outcome}`, `tests_flaky{kind}`, `tests_confirmed{kind}`,
+`tests_duration_seconds{kind}`, `test_report_files{state}` and the counters
+`tests_added_total{kind}` and `tests_removed_total{kind}`. The gate's `gate.xml` is read as tests
+of the kind `gate` (one per stage spec; `--kind gate=merge_gate/*`, before the project's
+`kinds`). The definitions are the instrument's: a test is **flaky** when within its stream's last
+`window` runs it both failed and passed, or a report marks it passing on a rerun (a test broken
+and then fixed within the window counts too); **confirmed** when it passed in each of its last
+`confirm` runs, none of them flaky. Not declared when the Orchestra installed has no such
+instrument.
 
 `by` is the machine whose act or responsibility moved the ticket, never `task_scheduler`: a claim,
 the holder's machine; `review.requested`, `worker`; a verdict, and approval to `DONE` in tasks
@@ -992,8 +1047,8 @@ code and the controls) and then the two scripts above (`tasks-panel.js`, `attent
 stylesheet the plugin declares (`stylesheets`), which Orchestra links in every page's head. The
 Tickets page adds its own `tickets.js` (the graph) and `tickets.css`. The plugin declares no
 machine: the scheduler is a process (`Plugin.processes`), shown on the Core page, and its
-machine card is gone; the Tasks panel keeps the queue and the controls. It declares one
-instrument, `tasks.tickets` (`Plugin.collectors`, section 8). The operator's controls publish as
+machine card is gone; the Tasks panel keeps the queue and the controls. It declares the
+instrument `tasks.tickets`, and in code mode `tasks.tests` (`Plugin.collectors`, section 8). The operator's controls publish as
 `task_web` and appear on the Machines page once used.
 
 API at `/api/plugins/tasks`:

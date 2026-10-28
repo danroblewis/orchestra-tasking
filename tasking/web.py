@@ -2,13 +2,15 @@
 Tickets page (the ticket graph), the Tasks panel, the blocked-ticket
 banner, and the API they read, at ``/api/plugins/tasks``; the scheduler, which ``orchestra run``
 keeps running (``Plugin.processes``) and which is no machine (tasking/events.py), so nothing is
-declared for it; and the instrument that reads the task system's measurements
-(``Plugin.collectors``: ``tasks.tickets``, tasking/measures.py), also served at ``/metrics``. The operator controls (pause pickup,
+declared for it; and the instruments: ``tasks.tickets``, which reads the task system's measurements
+(``Plugin.collectors``, tasking/measures.py), also served at ``/metrics``, and in code mode
+``tasks.tests``, which counts the tests in the gate's reports (tasking/gate_reports.py). The operator controls (pause pickup,
 capacity, stop whoever works a ticket) are the only writes here, published as the machine
 ``task_web``; tickets change only through the scheduler (tasking/requests.py)."""
 
 from __future__ import annotations
 
+import importlib.util
 import shlex
 import sys
 import time
@@ -63,7 +65,38 @@ def collectors(project: Project) -> list[Collector]:
     if not set_up(project):
         return []
     step = max(1.0, float(project.orchestra.config.discovery_step))
-    return [Collector.collect("tickets", f"{shlex.quote(sys.executable)} -m tasking metrics", every_s=step, timeout_s=min(step, 10.0))]
+    out = [Collector.collect("tickets", f"{shlex.quote(sys.executable)} -m tasking metrics", every_s=step, timeout_s=min(step, 10.0))]
+    tests = tests_command(project)
+    if tests:
+        out.append(Collector.collect("tests", tests, every_s=step, timeout_s=min(step, 10.0)))
+    return out
+
+
+def has_test_reports() -> bool:
+    """Whether the Orchestra installed ships the test-report instrument (from 2026-10-27)."""
+    try:
+        return importlib.util.find_spec("orchestra.instruments.test_reports") is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def tests_command(project: Project) -> str | None:
+    """The instrument that counts the tests in the gate's reports (``tasks.tests``, code mode,
+    unless ``[gate.test_reports] enabled = false``): Orchestra's test-report instrument
+    (``orchestra.instruments.test_reports``, USING_ORCHESTRA.md section 3.4) over every run's
+    reports (tasking/gate_reports.py), with a history beside them so it counts tests added and
+    removed. The gate's own ``gate.xml`` is read as tests of the kind ``gate``, one per stage spec.
+    None when the Orchestra installed has no such instrument."""
+    cfg = project.config
+    if cfg.work != "code" or cfg.external_review or not cfg.test_reports.enabled or not has_test_reports():
+        return None
+    tr = cfg.test_reports
+    args = [sys.executable, "-m", "orchestra.instruments.test_reports", "--reports", str(project.reports_dir / "*" / "*.xml"),
+            "--reports", str(project.reports_dir / "*" / "*.jsonl"), "--history", str(project.state_dir / "test_reports_history.json"),
+            "--window", str(tr.window), "--confirm", str(tr.confirm), "--kind", "gate=merge_gate/*"]
+    for rule in tr.kinds:
+        args += ["--kind", rule]
+    return shlex.join(args)
 
 
 def router(project: Project) -> APIRouter:

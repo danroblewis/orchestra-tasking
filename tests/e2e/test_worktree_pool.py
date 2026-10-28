@@ -60,7 +60,8 @@ def test_five_tickets_in_a_row_use_at_most_two_worktrees_each_clean_on_its_branc
         if s["role"] == "worker":
             assert s["at_base"], s                                                # a new branch from the base as it stands
     assert len(store.pool()) <= 2 and all(p["free"] for p in store.pool().values())
-    assert len(git("worktree", "list", "--porcelain", cwd=repo).split("\n\n")) <= 3   # the root and two
+    listed = [ln for ln in git("worktree", "list", "--porcelain", cwd=repo).splitlines() if ln.startswith("worktree ")]
+    assert len(listed) <= 3, listed                                                # the root and two
     assert not list(project.gate_dir.glob("*")) and not list(project.worktrees_dir.glob("*"))
     assert not git("branch", "--list", "orchestra/*", cwd=repo).strip()          # every branch and gate branch deleted
     assert all(r["status"] == "landed" for r in store.gate_runs())

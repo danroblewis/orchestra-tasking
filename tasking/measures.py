@@ -13,7 +13,13 @@ what they measure (Orchestra's discovery decides what is a stock and what is a f
   after the scheduler missed its time), ``skipped`` (the previous one still open), ``missed``
   (not made: a later one was, or ``catch_up = false``), ``failed`` (no open milestone);
 - ``tasks_worktrees{state}``: with reused worktrees (tasking/pool.py), the pool's worktrees
-  ``in_use`` and ``free``, and the turns ``waiting`` for one because the pool is full.
+  ``in_use`` and ``free``, and the turns ``waiting`` for one because the pool is full;
+- ``tasks_gate_runs_total{status}``: the merge gate's runs as they ended (landed, rejected,
+  conflict, base_broken, error);
+- ``tasks_gate_reruns_total{stage, name}``: the times the gate ran a failed stage spec again
+  (``[gate] rerun_failures``), the base check's included;
+- ``tasks_gate_flaky_stages_total{stage, name}``: the specs that failed and then passed on a rerun
+  in a run: flaky, and the run went on as if they had passed.
 
 ``by`` is the machine whose act or responsibility moved the ticket: the ``worker`` that asked for
 a review or whose turn ran out, the ``reviewer`` whose verdict it was, the ``merge_gate`` that
@@ -42,20 +48,38 @@ from .model import State
 CREATED, TRANSITIONS, RESTACKS = "tasks_tickets_created_total", "tasks_ticket_transitions_total", "tasks_restacks_total"
 OCCURRENCES = "tasks_recurring_occurrences_total"
 LEVELS, WORKTREES = "tasks_tickets", "tasks_worktrees"
+GATE_RUNS, GATE_RERUNS, GATE_FLAKY = "tasks_gate_runs_total", "tasks_gate_reruns_total", "tasks_gate_flaky_stages_total"
 HELP = {LEVELS: ("gauge", "tickets in each state"),
         CREATED: ("counter", "tickets created, by the machine that asked for them"),
         TRANSITIONS: ("counter", "ticket state changes, by the machine whose act or responsibility moved the ticket"),
         RESTACKS: ("counter", "stacked branches restacked, and restacks that conflicted, by the machine that did them"),
         WORKTREES: ("gauge", "the worktree pool: worktrees in use and free, and turns waiting for one"),
-        OCCURRENCES: ("counter", "recurring tickets' due times, by definition and outcome: created, late, skipped, missed, failed")}
-_KEYS = {"created": CREATED, "transition": TRANSITIONS, "restack": RESTACKS, "recurring": OCCURRENCES}
+        OCCURRENCES: ("counter", "recurring tickets' due times, by definition and outcome: created, late, skipped, missed, failed"),
+        GATE_RUNS: ("counter", "merge gate runs, by how they ended"),
+        GATE_RERUNS: ("counter", "failed gate stage specs run again"),
+        GATE_FLAKY: ("counter", "gate stage specs that failed and then passed on a rerun")}
+_KEYS = {"created": CREATED, "transition": TRANSITIONS, "restack": RESTACKS, "recurring": OCCURRENCES,
+         "gate_run": GATE_RUNS, "gate_rerun": GATE_RERUNS, "gate_flaky": GATE_FLAKY}
 
 
 def count(counts: dict, kind: str, labels: dict, n: int = 1) -> None:
-    """Add ``n`` to a cumulative counter kept in ``counts`` (a dict saved with the tickets, under the
-    store's lock). ``kind``: created | transition | restack | recurring."""
+    """Add ``n`` to a cumulative counter kept in ``counts`` (a dict saved with the tickets, under
+    the store's lock). ``kind``: created | transition | restack | recurring | gate_run | gate_rerun |
+    gate_flaky."""
     key = kind + "|" + "|".join(f"{k}={v}" for k, v in sorted(labels.items()))
     counts[key] = counts.get(key, 0) + n
+
+
+def count_gate_run(counts: dict, run: dict) -> None:
+    """A finished gate run's counts: the run by its status, and for every stage spec it ran (the
+    base check's too) its reruns and whether it was flaky."""
+    count(counts, "gate_run", {"status": run.get("status") or "unknown"})
+    for s in [*run.get("stages", []), *run.get("base_check", [])]:
+        labels = {"stage": s.get("stage", ""), "name": s.get("name", "")}
+        if s.get("reruns"):
+            count(counts, "gate_rerun", labels, int(s["reruns"]))
+        if s.get("flaky"):
+            count(counts, "gate_flaky", labels)
 
 
 def counters(counts: dict) -> dict[tuple[str, tuple], int]:

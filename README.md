@@ -65,6 +65,30 @@ is free. With the pool full a turn waits; the scheduler's log says so, and
 `tasks_worktrees{state="waiting"}` counts it (read by the instrument `tasks.tickets`, which
 `orchestra run` runs every discovery step: `tasking metrics`). SPEC.md section 5 has the details.
 
+**Flaky tests and test counts.** The gate can run a failed stage again, and counts your tests from
+the reports your runner writes:
+
+    [gate]
+    rerun_failures = 1                # run a failed spec again up to 1 time (default 0: never)
+
+    [[gate.unit]]
+    name = "tests"
+    command = "uv run pytest -q --junitxml={reports}/tests.xml"   # {reports}: this run's report directory
+
+    [gate.test_reports]               # optional
+    kinds = ["e2e=tests/e2e/*"]       # how to tell kinds apart, before the defaults (e2e, acceptance, unit by path)
+    confirm = 3                       # passing runs in a row that confirm a test
+
+A spec that passes on a rerun lands, and the run, the ticket's note and `gate.landed` say it was
+flaky. The task system's instrument counts the gate's runs, reruns and flaky stages
+(`tasks_gate_runs_total{status}`, `tasks_gate_reruns_total`, `tasks_gate_flaky_stages_total`), and
+in code mode a second instrument, `tasks.tests` (Orchestra's test-report instrument over the gate's
+reports), counts the tests by kind and outcome, the flaky and confirmed ones, and the tests added
+and removed, so growth in tests is a stock in the model and a regression a rise in failures. The
+gate's own stages are there too, as tests of the kind `gate` (`gate.xml`, one per run). A test is
+flaky when it both failed and passed within the last 10 runs (or passed on a rerun), confirmed
+when it passed its last 3 runs. SPEC.md sections 5 and 8.
+
 **External review (pull requests).** Where code reaches the base branch through your company's
 pull requests, the gate can hand an approved branch off instead of landing it, and the ticket
 follows the pull request until it is merged:
