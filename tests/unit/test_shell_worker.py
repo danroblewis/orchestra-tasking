@@ -1,4 +1,4 @@
-"""The demo's worker (demo/machines/shell_worker.py): it runs a ticket's commands in the ticket's
+"""The program worker (tasking/machines/shell_worker.py): it runs a ticket's commands in the ticket's
 own folder with ORCHESTRA_REPO naming the repository, says where it ran, and asks the reviewers
 itself; on a rejection it cannot act on it reports BLOCKED with the reviewer's words in the reason;
 a release stops it, and so does another worker's claim that came first. In code mode it commits in
@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
-from demo.machines.shell_worker import Job
+from tasking.machines.shell_worker import Job
 
 
 class Recorder:
@@ -137,7 +137,7 @@ def test_in_code_mode_the_commands_run_in_the_worktree_and_are_committed_without
 def test_with_only_commands_an_offer_without_commands_is_left_for_another_worker(tmp_path, monkeypatch):
     """--only-commands: the offer for a prose ticket is not accepted (another machine serving the
     role takes it); one with commands is."""
-    from demo.machines import shell_worker
+    from tasking.machines import shell_worker
 
     said = []
 

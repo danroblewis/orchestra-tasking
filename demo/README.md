@@ -19,7 +19,7 @@ removes the state a previous run left for that path (under `~/.orchestrator/<nam
 | `orchestra web --port 8071` | Orchestra's web UI, with the task system's Tickets page and Tasks panel (its plugin) |
 | `tasking run --wait` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back. `orchestra run` starts it (the task system's plugin declares it; `tasks.scheduler` on the Core page). It is no machine: what it publishes goes out as the machine it acts for (an offer as `coordinator/dispatch`: dispatch is the coordinator's), so the Machines page does not list it |
 | `tasking metrics` | the instrument `tasks.tickets`: `orchestra run` runs it every discovery step (the plugin declares it) and writes the ticket levels and transition counters it prints to the metrics store |
-| `machines/shell_worker.py` | the machine `worker` (instance `worker/1`): runs the `sh` code blocks of a ticket's description in its workspace (the ticket's own empty folder; `ORCHESTRA_REPO` names the repository), writes RESULT.md |
+| `python -m tasking.machines.shell_worker` | the machine `worker` (instance `worker/1`): runs the `sh` code blocks of a ticket's description in its workspace (the ticket's own empty folder; `ORCHESTRA_REPO` names the repository), writes RESULT.md |
 | `machines/check_reviewer.py` | the machine `reviewer` (`reviewer/1`): approves when RESULT.md exists and the acceptance text's `` `files` `` and `"lines"` are there |
 
 `run.py` starts only `orchestra run` and `orchestra web`; `orchestra run` starts the scheduler, the
@@ -27,7 +27,9 @@ instrument and the two machines (declared under `[[machines]]` in this folder's 
 running.
 
 The two machines are each a page of Python that imports only Orchestra (`orchestra.config`,
-`orchestra.events`) and speaks the contract in `tasking/assignments.py`. They are the example of
+`orchestra.events`): the reviewer is `machines/check_reviewer.py` here, and the worker ships in
+the task system's package (`tasking/machines/shell_worker.py`) so that other projects install it
+rather than copy it. Both and speaks the contract in `tasking/assignments.py`. They are the example of
 how to write a machine that takes work from the task system.
 
 ## What you will see

@@ -1,5 +1,6 @@
 # The task system's demo project: Orchestra, the task system, and two programs that fill the
-# worker and reviewer roles (machines/). demo/run.py copies this folder to a fresh git repository
+# worker and reviewer roles (the package's tasking/machines/shell_worker.py and
+# machines/check_reviewer.py). demo/run.py copies this folder to a fresh git repository
 # and starts `orchestra run` and `orchestra web`; `orchestra run` starts the task system's
 # scheduler (the plugin declares it) and the two machines below. See README.md.
 
@@ -7,7 +8,7 @@
 # project with another worker, `--only-commands` leaves the tickets without commands to it.
 [[machines]]
 name = "worker"
-command = "python machines/shell_worker.py"
+command = "python -m tasking.machines.shell_worker"   # shipped in the task system's package (tasking/machines/)
 
 [[machines]]
 name = "reviewer"

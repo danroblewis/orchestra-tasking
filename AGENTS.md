@@ -67,8 +67,10 @@ broken without updating the spec and saying so in the commit.
    ticket. A person who wants a ticket created or changed does it through a planner machine's
    request (`tasking api` is one), never through a UI form.
 8. **Every ticket has a milestone, and closed milestones are final.** The store enforces it.
-9. **Orchestra is a library, and the only one the machines need.** `demo/machines/` import only
-   `orchestra.config` and `orchestra.events`; they are the example of how to fill a role and must
+9. **Orchestra is a library, and the only one the machines need.** `tasking/machines/` (the
+   shell worker, shipped so that projects install it rather than copy it) and `demo/machines/`
+   import only `orchestra.config` and `orchestra.events`, and nothing in the task system imports
+   or starts them (`tests/unit/test_machines_stand_alone.py`); they are the example of how to fill a role and must
    stay a few pages each, readable, with no words from any other package.
 10. **One package, no path hacks.** Everything importable is under `tasking/`; `demo/` is a
     template project and its runner, not a package. No `sys.path` manipulation; the one

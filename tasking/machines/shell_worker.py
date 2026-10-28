@@ -28,7 +28,11 @@ AI worker, say) to take; use it whenever something else serves the role too. A `
 for its assignment stops the command running, the ones after it, the heartbeat and the report:
 nothing more is written or said for it.
 
-    python machines/shell_worker.py [instance] [--only-commands]   # the machine ``worker``, instance 1 by default
+    python -m tasking.machines.shell_worker [instance] [--only-commands]   # the machine ``worker``, instance 1 by default
+
+It ships in the task system's package so that a project installs it rather than copying it; it
+imports nothing from that package, so it stays the example of a machine written with Orchestra's
+library alone.
 """
 
 from __future__ import annotations

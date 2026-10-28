@@ -11,7 +11,8 @@ It runs no machine of its own besides the merge gate (code mode); its scheduler 
 either, only the daemon that does each role's scheduling and publishes as the machine it acts for
 (SPEC.md section 3, "Who publishes what"). Whatever fills a role is another program that speaks the
 contract in `tasking/assignments.py`: the demo's are a shell runner and a file checker, each a
-page of Python using only Orchestra's library (`demo/machines/`). `SPEC.md` is the design;
+page of Python using only Orchestra's library (`tasking/machines/shell_worker.py`, shipped in
+the package and run as `python -m tasking.machines.shell_worker`, and `demo/machines/check_reviewer.py`). `SPEC.md` is the design;
 `AGENTS.md` the rules.
 
 ## Try it
@@ -34,7 +35,7 @@ repository need not have Orchestra or the task system installed:
     uv run --project <this repo> tasking api --as planner create_milestone --args '{"name": "First"}'
     uv run --project <this repo> tasking api --as planner create_ticket --args '{"title": "…", "milestone_id": "M1", "description": "…", "acceptance": "…"}'
 
-Then run something that fills the roles: the demo's programs (`demo/machines/` as they are),
+Then run something that fills the roles: the demo's programs (`python -m tasking.machines.shell_worker`, `demo/machines/check_reviewer.py`),
 your own, or any other package's machines that speak the same contract over the bus
 (orchestra-agents is one). Settings are the `[project]`, `[tasks]`, `[gate]`, … sections of `orchestra.toml`; state is in
 `~/.orchestrator/<key>/tasks/`; events go on Orchestra's bus. If your tasks live seconds, set
@@ -121,7 +122,7 @@ resumes it. SPEC.md section 5 has the details.
 
 ## Writing tickets for the demo's worker
 
-The demo's worker (`demo/machines/shell_worker.py`) runs the ```` ```sh ```` blocks of a ticket's
+The demo's worker (`tasking/machines/shell_worker.py`) runs the ```` ```sh ```` blocks of a ticket's
 description, in order, each with `bash -c`, **in the ticket's workspace**: a folder of the
 ticket's own under `~/.orchestrator/<key>/tasks/workspaces/<ticket>/`, empty at the first turn
 and kept for later turns and for the reviewer. Nothing of the repository is there. So a ticket:

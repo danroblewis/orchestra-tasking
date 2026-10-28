@@ -19,7 +19,6 @@ answers over the bus from this process (tests/fake_machine.py). The gate runs py
 
 Skipped when the Orchestra installed has no test-report instrument."""
 
-import shutil
 import sys
 import textwrap
 from pathlib import Path
@@ -28,7 +27,7 @@ import pytest
 from conftest import free_port, git
 from fake_machine import FakeMachine
 
-from demo.run import HERE, start, stop, wait_until
+from demo.run import start, stop, wait_until
 from tasking.web import has_test_reports
 
 pytestmark = pytest.mark.skipif(not has_test_reports(),
@@ -37,7 +36,7 @@ pytestmark = pytest.mark.skipif(not has_test_reports(),
 TOML = """
 [[machines]]
 name = "worker"
-command = "python machines/shell_worker.py"
+command = "python -m tasking.machines.shell_worker"
 
 [events]
 url = "file"
@@ -107,8 +106,7 @@ def running(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("ORCHESTRATOR_HOME", str(home))
     target = tmp_path / "project"
-    (target / "machines").mkdir(parents=True)
-    shutil.copy(HERE / "machines" / "shell_worker.py", target / "machines")
+    target.mkdir(parents=True)
     (target / "orchestra.toml").write_text(TOML.format(python=sys.executable))
     (target / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
     (target / "README.md").write_text("# a sample with tests\n")

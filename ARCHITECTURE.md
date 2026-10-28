@@ -43,7 +43,7 @@ What it is not:
   dispatch, the leases of the worker's and the reviewer's turns, the gate, the answers to requests) and publishes only as the machine it acts for
   (section 6, "Who publishes what"). Whatever fills a role is another program that speaks the
   contract in section 6. In this repository that is a shell runner and a file checker
-  (`demo/machines/`); elsewhere it can be anything, an AI agent included.
+  (`tasking/machines/shell_worker.py`, `demo/machines/check_reviewer.py`); elsewhere it can be anything, an AI agent included.
 - It knows nothing about what a machine is made of. It reads a claim's `source` (who holds the
   work) and what the holder ended its turn with (a review requested, a verdict, a report).
   Nothing else.
@@ -1063,7 +1063,8 @@ deliberately, and say so in the commit.
 ## 16. Write a worker or a reviewer
 
 The full guide is `SPEC.md` section 6. The reference programs are
-`demo/machines/shell_worker.py` and `demo/machines/check_reviewer.py`, a few pages each. A
+`tasking/machines/shell_worker.py` (`python -m tasking.machines.shell_worker`) and
+`demo/machines/check_reviewer.py`, a few pages each. A
 machine needs Orchestra's library and nothing from this package. Neither changed when the
 scheduler stopped being a machine (2026-10-27), and a copy of either needs no change: nothing in
 them reads an offer's or a release's source (now `worker` or `reviewer`, before

@@ -713,9 +713,10 @@ previous build and tells the supervisor role. `tasking staging status|logs|deplo
 
 A machine is a program that reads Orchestra's bus, takes offers for its role, does the work, and
 passes it on. It needs Orchestra as a library and nothing from this package; the contract is the
-events of section 3. The demo's `demo/machines/shell_worker.py` and
-`demo/machines/check_reviewer.py` are each a few pages and are the reference (a copy of the shell
-worker lives in projects made from it, such as orchestra-sample-live; a copy speaks the contract it
+events of section 3. The shell worker (`tasking/machines/shell_worker.py`,
+shipped in the package and run as `python -m tasking.machines.shell_worker`, importing nothing
+from it) and the demo's `demo/machines/check_reviewer.py` are each a few pages and are the
+reference (an older copy of the shell worker lives in projects made from it, such as orchestra-sample-live; a copy speaks the contract it
 was copied with). The changes of 2026-10-27 (the scheduler is no machine; offers published as
 `coordinator/dispatch`, releases as it or the role) changed neither program and need no change in a copy:
 nothing in them reads an offer's or a release's source, and the claim rule (`holder`) is the
