@@ -44,6 +44,6 @@ def test_probe_emits_only_on_transitions(project, tmp_path):
 def test_probes_are_declared_in_orchestra_toml(project):
     toml = project.repo_root / "orchestra.toml"
     toml.write_text(toml.read_text() + '\n[[probes]]\nname = "always"\ncommand = "true"\nevery = "1h"\ntimeout = "30s"\n'
-                    '\n[[probes]]\nname = "bad"\ncommand = "true"\nevery = "1d"\n')      # Orchestra's durations: ms, s, m, h; no d
+                    '\n[[probes]]\nname = "bad"\ncommand = "true"\nevery = "1y"\n')      # not a unit Orchestra knows
     project.reload_config()
     assert [(s.name, s.every, s.timeout) for s in config_probes(project)] == [("always", 3600, 30)]
