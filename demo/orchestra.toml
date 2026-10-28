@@ -1,6 +1,6 @@
 # The task system's demo project: Orchestra, the task system, and two programs that fill the
 # worker and reviewer roles (the package's tasking/machines/shell_worker.py and
-# machines/check_reviewer.py). demo/run.py copies this folder to a fresh git repository
+# tasking/machines/check_reviewer.py). demo/run.py copies this folder to a fresh git repository
 # and starts `orchestra run` and `orchestra web`; `orchestra run` starts the task system's
 # scheduler (the plugin declares it) and the two machines below. See README.md.
 
@@ -12,7 +12,7 @@ command = "python -m tasking.machines.shell_worker"   # shipped in the task syst
 
 [[machines]]
 name = "reviewer"
-command = "python machines/check_reviewer.py"
+command = "python -m tasking.machines.check_reviewer"   # shipped in the package too
 
 [events]
 url = "file"             # Orchestra's bus: a JSONL file in ~/.orchestrator/<key>/

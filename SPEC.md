@@ -530,7 +530,9 @@ that each appended a `[[collect]]` entry, it keeps both, the base's first, if th
 and says so in the run's summary), then the
 stages from `orchestra.toml`: `[build]` (the artifact is copied to `<state>/artifacts/<run>/`),
 every `[[gate.unit]]` spec, and if `[acceptance]` and `[[gate.acceptance]]` are set, the artifact
-started on a free port and the acceptance specs run against it. All pass: the base branch is
+started on a free port and the acceptance specs run against it. Every stage command runs in the tree it
+checks, with `ORCHESTRA_REPO` naming that tree (the gate's worktree, or the base's in the base
+check), never the main checkout, so a script that reads `ORCHESTRA_REPO` checks the merged files. All pass: the base branch is
 fast-forwarded (pushed if `push = true`), the ticket is `DONE`, its worktree and branch removed,
 and the build deployed to staging. The repository root's files follow only when it has the base
 branch checked out, clean: then it is fast-forwarded there (an untracked file at a path the landing
@@ -715,7 +717,9 @@ A machine is a program that reads Orchestra's bus, takes offers for its role, do
 passes it on. It needs Orchestra as a library and nothing from this package; the contract is the
 events of section 3. The shell worker (`tasking/machines/shell_worker.py`,
 shipped in the package and run as `python -m tasking.machines.shell_worker`, importing nothing
-from it) and the demo's `demo/machines/check_reviewer.py` are each a few pages and are the
+from it) and the check reviewer (`tasking/machines/check_reviewer.py`, `python -m
+tasking.machines.check_reviewer`: a task's result against its acceptance text; code by a check
+command run in the ticket's worktree) are each a few pages and are the
 reference (an older copy of the shell worker lives in projects made from it, such as orchestra-sample-live; a copy speaks the contract it
 was copied with). The changes of 2026-10-27 (the scheduler is no machine; offers published as
 `coordinator/dispatch`, releases as it or the role) changed neither program and need no change in a copy:
@@ -790,7 +794,7 @@ itself ignores. `tasking init` writes starters for them after Orchestra's own.
 
 ```toml
 [project]
-base_branch = "main"
+base_branch = "main"     # init writes the repository's own: the remote's default branch, else the one checked out
 ticket_prefix = "ORC"
 work = "tasks"           # tasks: a folder per ticket, nothing merged | code: a branch per ticket, the merge gate
 push = false             # code: push the base branch after a landing
@@ -1080,7 +1084,7 @@ These controls are the only writes a person has; tickets change only through the
 
 | Command | What |
 |---|---|
-| `tasking init [--prefix P] [--unit-command C]` | write the task system's sections into `orchestra.toml` and register the project with Orchestra |
+| `tasking init [--prefix P] [--unit-command C] [--base-branch B]` | write the task system's sections into `orchestra.toml` and register the project with Orchestra |
 | `tasking run [--once] [--wait]` | the scheduler (`orchestra run` starts it with `--wait`; §4) |
 | `tasking metrics` | the measurements as Prometheus text, from the record: the command the instrument `tasks.tickets` runs (§8) |
 | `tasking status [--json]` | one screen: what needs a decision, scheduler, who holds what, queue; the gate in code mode, staging when configured |

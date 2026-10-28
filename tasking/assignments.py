@@ -82,7 +82,7 @@ def pass_on(offer: dict, type: str, *, source: str, **fields) -> dict:
     ticket, workspace, branch, base, lease and unit command, a new assignment for the next role
     (a review for ``review.requested``, the worker's for ``changes.requested``), ``ends`` naming
     the turn it ends, and ``fields`` on top. For machines that may import this package (its own
-    tests); others write the same few lines (tasking/machines/, demo/machines/)."""
+    tests); others write the same few lines (tasking/machines/)."""
     role = "reviewer" if type == REVIEW_REQUESTED else "worker"
     keep = {k: offer.get(k) for k in ("ticket", "workspace", "branch", "base", "lease_s", "unit_command") if k in offer}
     out = {**keep, "assignment": new_id(offer["ticket"], role), "role": role, "ends": offer["assignment"],

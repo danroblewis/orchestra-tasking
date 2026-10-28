@@ -2,7 +2,7 @@
 
     uv run demo/run.py [target] [--port 8071]       # target: a new directory, default ~/orchestra-tasking-demo
 
-It copies the template beside it (orchestra.toml, README.md, machines/) to the target, makes it
+It copies the template beside it (orchestra.toml, README.md) to the target, makes it
 a git repository (Orchestra wants orchestra.toml at a repository root), removes any state a
 previous run left for it, starts Orchestra's host (`orchestra run`, which starts the task
 system's scheduler, declared by its plugin, and the two machines, declared in the template's

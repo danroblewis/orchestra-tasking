@@ -68,7 +68,7 @@ broken without updating the spec and saying so in the commit.
    request (`tasking api` is one), never through a UI form.
 8. **Every ticket has a milestone, and closed milestones are final.** The store enforces it.
 9. **Orchestra is a library, and the only one the machines need.** `tasking/machines/` (the
-   shell worker, shipped so that projects install it rather than copy it) and `demo/machines/`
+   shell worker and the check reviewer, shipped so that projects install them rather than copy them)
    import only `orchestra.config` and `orchestra.events`, and nothing in the task system imports
    or starts them (`tests/unit/test_machines_stand_alone.py`); they are the example of how to fill a role and must
    stay a few pages each, readable, with no words from any other package.

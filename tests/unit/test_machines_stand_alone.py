@@ -1,5 +1,4 @@
-"""The machines shipped in the package (tasking/machines/) and the demo's (demo/machines/) are
-examples of a machine written with Orchestra's library alone (AGENTS.md rule 9): they import only
+"""The machines shipped in the package (tasking/machines/) are examples of a machine written with Orchestra's library alone (AGENTS.md rule 9): they import only
 orchestra.config and orchestra.events, and nothing in the task system imports them."""
 
 import ast
@@ -8,7 +7,7 @@ from pathlib import Path
 import tasking
 
 PACKAGE = Path(tasking.__file__).parent
-MACHINES = [*sorted((PACKAGE / "machines").glob("*.py")), *sorted((PACKAGE.parent / "demo" / "machines").glob("*.py"))]
+MACHINES = sorted((PACKAGE / "machines").glob("*.py"))
 
 
 def imported(path: Path) -> set[str]:
@@ -22,7 +21,7 @@ def imported(path: Path) -> set[str]:
 
 
 def test_the_machines_import_only_orchestras_config_and_events():
-    assert any(p.name == "shell_worker.py" for p in MACHINES)
+    assert {"shell_worker.py", "check_reviewer.py"} <= {p.name for p in MACHINES}
     for path in MACHINES:
         foreign = {n for n in imported(path) if n.split(".")[0] in ("orchestra", "tasking", "demo")}
         assert foreign <= {"orchestra.config", "orchestra.events"}, f"{path} imports {sorted(foreign)}"

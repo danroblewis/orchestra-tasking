@@ -31,6 +31,16 @@ class Git:
     def current_branch(self) -> str:
         return self.run("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
+    def default_branch(self) -> str | None:
+        """The branch work lands on, as the repository says: the remote's default (``origin/HEAD``)
+        when there is one, else the branch checked out (even one with no commit yet); None when
+        HEAD is detached and there is no remote default."""
+        p = self.run("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD", check=False)
+        if p.returncode == 0 and p.stdout.strip().startswith("origin/"):
+            return p.stdout.strip().removeprefix("origin/")
+        p = self.run("symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+        return (p.stdout.strip() or None) if p.returncode == 0 else None
+
     def is_clean(self) -> bool:
         return self.run("status", "--porcelain", "--untracked-files=no").stdout.strip() == ""
 

@@ -22,6 +22,8 @@ from orchestra.config import ConfigError, parse_duration
 from orchestra.config import Project as OrchestraProject
 from orchestra.config import load_project as load_orchestra_project
 
+from .git import Git
+
 __all__ = ["Config", "ConfigError", "External", "Project", "TestReports", "TestSpec", "init_project", "load_project", "parse_duration"]
 
 
@@ -183,7 +185,7 @@ class Config:
 
 
 STARTER_TOML = """[project]
-base_branch = "main"
+base_branch = "{base_branch}"   # where approved work lands: the repository's default branch when init ran
 ticket_prefix = "{prefix}"
 work = "tasks"           # tasks: a scratch folder per ticket | code: a git branch per ticket and the merge gate
 push = false
@@ -342,15 +344,19 @@ def load_project(repo: Path | str | None = None) -> Project:
     return Project.from_orchestra(load_orchestra_project(repo))
 
 
-def init_project(repo: Path, *, prefix: str | None = None, unit_command: str = "uv run pytest -q") -> Project:
+def init_project(repo: Path, *, prefix: str | None = None, unit_command: str = "uv run pytest -q",
+                 base_branch: str | None = None) -> Project:
     """Orchestra's starter ``orchestra.toml`` (if there is none) with the task system's sections
     added (if the configuration has no ``[project]``), through Orchestra (``config_edit``, which
-    keeps the starter's comments), and the project registered with Orchestra."""
+    keeps the starter's comments), and the project registered with Orchestra. ``base_branch``
+    defaults to the repository's own (``Git.default_branch``: the remote's default, else the branch
+    checked out), and to ``main`` only when git names none."""
     from orchestra.config import init_project as init_orchestra
     o = init_orchestra(Path(repo))
     if "project" not in o.config.raw:
         pfx = prefix or re.sub(r"[^A-Za-z]", "", o.repo_root.name.upper())[:4] or "ORC"
-        starter = tomlkit.parse(STARTER_TOML.format(prefix=pfx, unit_command=unit_command))
+        base = base_branch or Git(o.repo_root).default_branch() or "main"
+        starter = tomlkit.parse(STARTER_TOML.format(prefix=pfx, unit_command=unit_command, base_branch=base))
         for section in starter:
             if section not in o.config.raw:
                 o.config_edit.set(section, starter[section])

@@ -20,16 +20,16 @@ removes the state a previous run left for that path (under `~/.orchestrator/<nam
 | `tasking run --wait` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back. `orchestra run` starts it (the task system's plugin declares it; `tasks.scheduler` on the Core page). It is no machine: what it publishes goes out as the machine it acts for (an offer as `coordinator/dispatch`: dispatch is the coordinator's), so the Machines page does not list it |
 | `tasking metrics` | the instrument `tasks.tickets`: `orchestra run` runs it every discovery step (the plugin declares it) and writes the ticket levels and transition counters it prints to the metrics store |
 | `python -m tasking.machines.shell_worker` | the machine `worker` (instance `worker/1`): runs the `sh` code blocks of a ticket's description in its workspace (the ticket's own empty folder; `ORCHESTRA_REPO` names the repository), writes RESULT.md |
-| `machines/check_reviewer.py` | the machine `reviewer` (`reviewer/1`): approves when RESULT.md exists and the acceptance text's `` `files` `` and `"lines"` are there |
+| `python -m tasking.machines.check_reviewer` | the machine `reviewer` (`reviewer/1`): approves when RESULT.md exists and the acceptance text's `` `files` `` and `"lines"` are there (in code mode: when a check command passes in the ticket's worktree) |
 
 `run.py` starts only `orchestra run` and `orchestra web`; `orchestra run` starts the scheduler, the
 instrument and the two machines (declared under `[[machines]]` in this folder's `orchestra.toml`) and keeps them
 running.
 
 The two machines are each a page of Python that imports only Orchestra (`orchestra.config`,
-`orchestra.events`): the reviewer is `machines/check_reviewer.py` here, and the worker ships in
-the task system's package (`tasking/machines/shell_worker.py`) so that other projects install it
-rather than copy it. Both and speaks the contract in `tasking/assignments.py`. They are the example of
+`orchestra.events`), shipped in the task system's package (`tasking/machines/shell_worker.py`,
+`tasking/machines/check_reviewer.py`) so that other projects install them rather than copy
+them. Both speak the contract in `tasking/assignments.py`. They are the example of
 how to write a machine that takes work from the task system.
 
 ## What you will see
