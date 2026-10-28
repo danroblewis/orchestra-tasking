@@ -11,7 +11,7 @@ from tasking import measures
 from tasking.events import Events
 from tasking.model import State
 from tasking.store import LocalStore, StoreError
-from tasking.web import collectors
+from tasking.web import collectors, has_test_reports
 
 
 @pytest.fixture
@@ -90,3 +90,27 @@ def test_the_plugin_declares_the_instrument_and_its_command_prints_the_record(pr
                          check=True).stdout
     assert parsed(out)[("tasks_tickets", (("state", "OPEN"),))] == 1
     assert parsed(out)[("tasks_tickets_created_total", (("by", "planner"),))] == 1
+
+
+@pytest.mark.skipif(not has_test_reports(),
+                    reason="this Orchestra has no test-report instrument (orchestra.instruments.test_reports)")
+def test_in_code_mode_the_plugin_also_declares_the_test_report_instrument(project, tmp_path):
+    """``tasks.tests``: Orchestra's test-report instrument over the gate's reports, the gate's own
+    stages as the kind ``gate``, the project's kind rules after it; its command runs and prints."""
+    toml = project.repo_root / "orchestra.toml"
+    toml.write_text(toml.read_text().replace('work = "tasks"', 'work = "code"')
+                    + '\n[gate.test_reports]\nkinds = ["smoke=tests/smoke/*"]\nconfirm = 2\n')
+    project.reload_config()
+    tickets, tests = collectors(project)
+    assert (tickets.name, tests.name, tests.kind) == ("tickets", "tests", "collect")
+    argv = tests.argv()
+    assert argv[1:3] == ["-m", "orchestra.instruments.test_reports"] and str(project.reports_dir) in argv[4]
+    assert ["--kind", "gate=merge_gate/*", "--kind", "smoke=tests/smoke/*"] == argv[-4:] and "2" == argv[argv.index("--confirm") + 1]
+    run = project.reports_dir / "abc"
+    run.mkdir(parents=True)
+    (run / "tests.xml").write_text('<testsuite><testcase classname="tests.smoke.test_a" name="t"/></testsuite>')
+    out = parsed(subprocess.run(argv, capture_output=True, text=True, check=True, cwd=project.repo_root).stdout)
+    assert out[("tests", (("kind", "smoke"),))] == 1 and out[("tests_added_total", (("kind", "smoke"),))] == 1
+    toml.write_text(toml.read_text().replace("confirm = 2", "enabled = false"))
+    project.reload_config()
+    assert [c.name for c in collectors(project)] == ["tickets"]

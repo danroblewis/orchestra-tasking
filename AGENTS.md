@@ -56,7 +56,7 @@ broken without updating the spec and saying so in the commit.
    the merge happens on the pull request; the task system never pushes or opens one.
 6. **State lives in `~/.orchestrator/<key>/tasks/`**, except the events (Orchestra's bus) and the
    metrics (Orchestra's metrics store, filled by the instrument `tasks.tickets` from the counters
-   the record keeps). Only `tasking/store/` reads or writes the JSON files, under
+   the record keeps, and in code mode `tasks.tests` from the gate's test reports). Only `tasking/store/` reads or writes the JSON files, under
    the file lock. Nothing else touches a backend directly.
 7. **Humans are read-only, except the operator controls.** The pages and CLI read; the only
    writes a person has are pausing pickup, the capacity ceiling and stopping whoever holds a

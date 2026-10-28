@@ -109,7 +109,8 @@ flowchart LR
 | `tasking/requests.py` | Request names, the `Desk` that answers them, and `ask()` for callers. |
 | `tasking/api.py` | The operations the desk applies (`create_ticket`, `cancel_ticket`, ...). |
 | `tasking/events.py` | `Events`, a thin layer over `orchestra.events.Events`: `emit(type, src=..., cause=...)` publishes as `src` with the ticket or milestone as subject and `cause` as `causationid`; `read()` flattens `data` into the event dict. Refuses a publish as `task_scheduler`. Attention helper. |
-| `tasking/gate.py`, `tasking/appends.py`, `tasking/git.py` | The merge gate, its one automatic conflict resolution, and thin `git` wrappers. |
+| `tasking/gate.py`, `tasking/appends.py`, `tasking/git.py` | The merge gate (with its reruns of a failed spec), its one automatic conflict resolution, and thin `git` wrappers. |
+| `tasking/gate_reports.py` | The gate's test reports: `gate.xml` per run (its stages as JUnit, flaky ones Surefire's way) and pruning the report directories. |
 | `tasking/staging.py`, `tasking/probes.py` | The staging instance and the `[[probes]]` checks. |
 | `tasking/measures.py` | The counters kept in the record and the Prometheus text an instrument reads (`tasking metrics`, `/metrics`). |
 | `tasking/config.py` | The task system's sections of `orchestra.toml`, and the state paths. |
@@ -867,8 +868,15 @@ changes, so a failing probe wakes listeners once.
 | `tasks_tickets_created_total` | counter | `by` |
 | `tasks_ticket_transitions_total` | counter | `from`, `to`, `by` |
 | `tasks_worktrees` | level (gauge) | `state` (`in_use`, `free`, `waiting`); with reused worktrees only |
+| `tasks_gate_runs_total` | counter | `status`; code mode |
+| `tasks_gate_reruns_total` | counter | `stage`, `name`; with `[gate] rerun_failures` |
+| `tasks_gate_flaky_stages_total` | counter | `stage`, `name`; a spec that passed on a rerun |
 
-Orchestra adds `project` and `instrument="tasks.tickets"` to every point.
+Orchestra adds `project` and `instrument="tasks.tickets"` to every point. The gate's counters are
+moved once per run, when its record is saved for the last time (`Tickets.count_gate_run`,
+`measures.count_gate_run`). In code mode a second instrument, `tasks.tests`, runs Orchestra's
+test-report instrument over the gate's reports (`tasking/gate_reports.py`; SPEC.md section 8 has
+its series), labelled `instrument="tasks.tests"`.
 
 - **Where they come from.** The counters are cumulative, kept in `tickets.json`
   (`metric_counts`) and moved in the same locked write as the change they count
@@ -955,7 +963,7 @@ Orchestra calls `plugin(orchestra_project)` and gets an `orchestra.plugins.Plugi
 | `stylesheets` | `tasks.css` | linked on every page |
 | `machines` | empty | the scheduler is no machine, so nothing is declared for the Machines page; it has no machine card |
 | `processes` | `Process("scheduler", [python, "-m", "tasking", "run", "--wait"])`, only if `orchestra.toml` has `[project]` or `[tasks]` | `orchestra run` keeps it running as `tasks.scheduler` (on the Core page) |
-| `collectors` | `Collector.collect("tickets", "<python> -m tasking metrics", every_s=<[discovery] step>)`, under the same condition | `orchestra run` runs it every step and writes its points labelled `instrument=tasks.tickets` (section 13) |
+| `collectors` | `Collector.collect("tickets", "<python> -m tasking metrics", every_s=<[discovery] step>)`, under the same condition; in code mode also `Collector.collect("tests", "<python> -m orchestra.instruments.test_reports --reports <state>/tasks/reports/*/*.xml …")` (`tests_command`) | `orchestra run` runs them every step and writes their points labelled `instrument=tasks.tickets` and `instrument=tasks.tests` (section 13) |
 | `router` | the routes below | mounted at `/api/plugins/tasks` |
 
 | Route | What |

@@ -21,6 +21,7 @@ from pathlib import Path
 from .appends import CONFIG, resolve_appends
 from .config import Project, TestSpec
 from .events import COORDINATOR, SUPERVISOR, Events
+from .gate_reports import prune_reports, write_report
 from .git import Git, GitError
 from .model import Note, State, now
 from .pool import Pool
@@ -29,26 +30,52 @@ from .staging import Staging, build_python
 from .store import LocalStore
 
 
+def _attempt(cmd: str, cwd: Path, timeout: float) -> tuple[int, str]:
+    try:
+        p = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, timeout=timeout, check=False)
+        return p.returncode, (p.stdout or "") + ("\n" + p.stderr if p.stderr else "")
+    except subprocess.TimeoutExpired as e:
+        return 124, f"timed out after {timeout}s\n{(e.stdout or b'')[-4000:]!r}"
+
+
+def reports_for(reports: Path, attempt: int) -> Path:
+    """Where attempt ``attempt`` (0: the first) writes its reports: the run's directory, and a
+    sibling per rerun (``<run>.rerun1``), so each attempt is a run of its own to a reader of the
+    reports (Orchestra's test-report instrument) and a failure followed by a pass reads as flaky."""
+    return reports if attempt == 0 else reports.with_name(f"{reports.name}.rerun{attempt}")
+
+
 def run_specs(specs: list[TestSpec], cwd: Path, log_dir: Path, placeholders: dict[str, str] | None = None,
-              stage: str = "unit") -> tuple[bool, list[dict]]:
+              stage: str = "unit", reruns: int = 0, reports: Path | None = None) -> tuple[bool, list[dict]]:
+    """Each spec in turn, stopping at the first that fails. A failed spec is run again up to
+    ``reruns`` times (``[gate] rerun_failures``); one that passes on a rerun passed, and is marked
+    ``flaky``, with each failed attempt kept. ``{reports}`` in a command is a directory for the
+    attempt's test reports (``reports_for``; under ``log_dir`` when ``reports`` is None)."""
     results = []
     ok = True
+    base_reports = reports or log_dir / "reports"
+    log_dir.mkdir(parents=True, exist_ok=True)
     for spec in specs:
-        cmd = spec.command.format(**(placeholders or {}))
         t0 = time.time()
-        try:
-            p = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, timeout=spec.timeout, check=False)
-            rc, out = p.returncode, (p.stdout or "") + ("\n" + p.stderr if p.stderr else "")
-        except subprocess.TimeoutExpired as e:
-            rc, out = 124, f"timed out after {spec.timeout}s\n{(e.stdout or b'')[-4000:]!r}"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / f"{stage}-{spec.name}.log"
-        log_path.write_text(out, encoding="utf-8")
-        passed = rc == 0 or rc == 5  # pytest 5: no tests collected
+        failed: list[dict] = []
+        for attempt in range(reruns + 1):
+            where = reports_for(base_reports, attempt)
+            where.mkdir(parents=True, exist_ok=True)
+            cmd = spec.command.format(**(placeholders or {}), reports=str(where))
+            rc, out = _attempt(cmd, cwd, spec.timeout)
+            log_path = log_dir / (f"{stage}-{spec.name}.log" if attempt == 0 else f"{stage}-{spec.name}.rerun{attempt}.log")
+            log_path.write_text(out, encoding="utf-8")
+            passed = rc == 0 or rc == 5  # pytest 5: no tests collected
+            if passed:
+                break
+            failed.append({"returncode": rc, "log": str(log_path), "tail": out[-3000:]})
         ok = ok and passed
-        results.append({"stage": stage, "name": spec.name, "command": cmd, "status": "passed" if passed else "failed",
-                        "returncode": rc, "duration": round(time.time() - t0, 1), "log": str(log_path),
-                        "tail": out[-3000:]})
+        rec = {"stage": stage, "name": spec.name, "command": cmd, "status": "passed" if passed else "failed",
+               "returncode": rc, "duration": round(time.time() - t0, 1), "log": str(log_path), "tail": out[-3000:],
+               "attempts": attempt + 1, "reruns": attempt}
+        if passed and failed:
+            rec.update(flaky=True, failed_attempts=failed)
+        results.append(rec)
         if not passed:
             break
     return ok, results
@@ -59,7 +86,8 @@ def build(project: Project, cwd: Path, log_dir: Path, into: str) -> tuple[list[d
     copied to ``artifacts/<into>/``. Returns the stage results and the artifact's path (None when
     the stage failed, or no artifact is configured)."""
     cfg = project.config
-    ok, res = run_specs([TestSpec("build", cfg.build_command, timeout=cfg.build_timeout)], cwd, log_dir, stage="build")
+    ok, res = run_specs([TestSpec("build", cfg.build_command, timeout=cfg.build_timeout)], cwd, log_dir, stage="build",
+                        reruns=cfg.rerun_failures)
     if not ok or not cfg.build_artifact:
         return res, None
     matches = sorted(glob.glob(str(cwd / cfg.build_artifact)))
@@ -123,9 +151,12 @@ class _Target:
         self.log.close()
 
 
-def _stages(project: Project, cwd: Path, log_dir: Path, run: dict) -> bool:
-    """Run build, unit, start+acceptance in cwd. Appends stage results to run['stages']."""
+def _stages(project: Project, cwd: Path, log_dir: Path, run: dict, reports: Path | None = None) -> bool:
+    """Run build, unit, start+acceptance in cwd. Appends stage results to run['stages']. Test
+    reports go to ``reports`` (the run's directory; a base check passes None: its reports stay
+    with its logs)."""
     cfg = project.config
+    again = cfg.rerun_failures
     artifact = None
     log_dir.mkdir(parents=True, exist_ok=True)       # the target's log goes here even when no spec ran before it
     if cfg.build_command:
@@ -135,7 +166,7 @@ def _stages(project: Project, cwd: Path, log_dir: Path, run: dict) -> bool:
             return False
         if artifact:
             run["artifact"] = artifact
-    ok, res = run_specs(cfg.unit, cwd, log_dir, stage="unit")
+    ok, res = run_specs(cfg.unit, cwd, log_dir, stage="unit", reruns=again, reports=reports)
     run["stages"] += res
     if not ok:
         return False
@@ -146,12 +177,20 @@ def _stages(project: Project, cwd: Path, log_dir: Path, run: dict) -> bool:
                 run["stages"].append({"stage": "start", "name": "target", "status": "failed",
                                       "tail": (log_dir / "target.log").read_text()[-3000:]})
                 return False
-            ok, res = run_specs(cfg.acceptance, cwd, log_dir, target.placeholders, stage="acceptance")
+            ok, res = run_specs(cfg.acceptance, cwd, log_dir, target.placeholders, stage="acceptance", reruns=again, reports=reports)
             run["stages"] += res
             return ok
         finally:
             target.stop()
     return True
+
+
+def _flaky_note(run: dict) -> str:
+    """What a landing says of the specs that passed only on a rerun."""
+    flaky = [s for s in run["stages"] if s.get("flaky")]
+    if not flaky:
+        return ""
+    return "; flaky: " + ", ".join(f"{s['stage']}:{s['name']} failed, then passed on rerun {s['reruns']}" for s in flaky)
 
 
 def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str, slot: Path | None = None,
@@ -232,7 +271,10 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
             events.emit("gate.conflict", gate_run=run_id, ticket=ticket_id)
             return run
 
-        ok = _stages(project, path, log_dir, run)
+        ok = _stages(project, path, log_dir, run, project.reports_dir / run_id)
+        flaky = [f"{s['stage']}:{s['name']}" for s in run["stages"] if s.get("flaky")]
+        if flaky:
+            run["flaky"] = flaky
         if ok:
             gate_commit = git.rev_parse("HEAD", cwd=path)
             run["gate_commit"] = gate_commit
@@ -245,7 +287,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
                 git.run("push", "origin", base, check=False)
             t = store.get_ticket(ticket_id)
             store.transition(ticket_id, t.version, State.DONE)
-            store.add_note(ticket_id, Note(author="merge_gate", kind="gate", text=f"landed on {base} as {gate_commit[:10]}"))
+            store.add_note(ticket_id, Note(author="merge_gate", kind="gate", text=f"landed on {base} as {gate_commit[:10]}" + _flaky_note(run)))
             wt = store.worktree(ticket_id)
             if wt:
                 git.worktree_remove(Path(wt["path"]))
@@ -257,8 +299,8 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
                 git.branch_delete(t.branch)
             run["status"] = "landed"
             run["summary"] = (f"landed {ticket_id} on {base} at {gate_commit[:10]}" + (f" ({run['resolved']})" if run.get("resolved") else "")
-                              + (f"; {unseen}" if unseen else ""))
-            events.emit("gate.landed", gate_run=run_id, ticket=ticket_id, commit=gate_commit)
+                              + _flaky_note(run) + (f"; {unseen}" if unseen else ""))
+            events.emit("gate.landed", gate_run=run_id, ticket=ticket_id, commit=gate_commit, **({"flaky": flaky} if flaky else {}))
             if unseen:
                 events.attention(COORDINATOR, unseen, ticket=ticket_id)
             if run.get("artifact") and cfg.staging_configured:
@@ -301,4 +343,9 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
     finally:
         drop(gate_branch, path)
         run["finished_at"] = now()
+        run["reruns"] = sum(int(s.get("reruns") or 0) for s in [*run["stages"], *run.get("base_check", [])])
         store.save_gate_run(run)
+        store.count_gate_run(run)
+        with contextlib.suppress(OSError):           # a report is for reading; failing to write one never fails a run
+            write_report(project.reports_dir / run_id, run)
+            prune_reports(project.reports_dir)

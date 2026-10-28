@@ -421,7 +421,7 @@ class Scheduler:
         if to:
             offer["to"] = to
         if not tasks and self.cfg.unit:
-            offer["unit_command"] = self.cfg.unit[0].command
+            offer["unit_command"] = self.cfg.unit[0].command.replace("{reports}", str(self.project.logs_dir / "worker-reports" / t.id))
         if extra:
             offer.update(extra)
         if role == "reviewer":                       # what the worker said and ran when it asked for the review, as recorded

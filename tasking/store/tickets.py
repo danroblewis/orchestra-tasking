@@ -132,6 +132,13 @@ class Tickets:
             t = Ticket.from_dict(d)
         return t
 
+    def count_gate_run(self, run: dict) -> None:
+        """A finished gate run counted (measures.py), under the lock like every counter."""
+        with self._locked():
+            data = self._t()
+            measures.count_gate_run(data["metric_counts"], run)
+            write(self.project.tickets_file, data)
+
     def metrics_text(self) -> str:
         """The measurements as Prometheus text, from the record as it stands (measures.py)."""
         data = self._t()

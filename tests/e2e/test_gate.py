@@ -6,6 +6,7 @@ conflict (the branch does not merge), a build whose artifact is missing, and the
 build + start + acceptance stage run. The ticket state, notes, feedback, pipeline flag,
 and attention each outcome must produce are asserted, not just the run status."""
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -328,3 +329,71 @@ def test_keys_added_under_a_shared_plain_table_header_stay_a_conflict(env):
     assert run_gate(project, store, events, a.id)["status"] == "landed"
     b = merging_ticket(store, ms, repo, "B", _insert_before("keep = 1\n", "beta = 2\n"), base=base)
     assert run_gate(project, store, events, b.id)["status"] == "conflict"
+
+
+def flaky_config(project, repo, tmp_path, reruns: int, fails: int = 1):
+    """A unit spec that fails its first ``fails`` attempts in each gate worktree and passes after,
+    writing a report into ``{reports}`` each time; ``[gate] rerun_failures = reruns``."""
+    marks = tmp_path / "marks"
+    marks.mkdir(exist_ok=True)
+    cmd = (f'echo "<testsuite/>" > {{reports}}/unit.xml; M={marks}/$(basename "$PWD"); echo x >> "$M"; '
+           f'test "$(wc -l < "$M")" -gt {fails}')
+    set_config(project, repo, f"[gate]\nrerun_failures = {reruns}\n[[gate.unit]]\nname = \"unit\"\ncommand = '{cmd}'\n")
+
+
+def counted(store) -> dict[tuple[str, tuple], int]:
+    from tasking.measures import counters
+    return {k: n for k, n in counters(store._t()["metric_counts"]).items() if k[0].startswith("tasks_gate_")}
+
+
+def test_a_flaky_stage_is_rerun_counted_and_lands(env, tmp_path):
+    """[gate] rerun_failures = 2: the unit spec fails once and passes on its first rerun. The run
+    lands, the stage is marked flaky with its failed attempt kept, the landing note and gate.landed
+    say so, each attempt's reports are a run of their own, gate.xml marks it Surefire's way, and
+    the record counts one rerun and one flaky stage."""
+    project, store, events, ms, repo = env
+    flaky_config(project, repo, tmp_path, reruns=2)
+    t = merging_ticket(store, ms, repo, "flaky", lambda wt: (wt / "NEW.md").write_text("ok\n"))
+    run = run_gate(project, store, events, t.id)
+    assert run["status"] == "landed" and store.get_ticket(t.id).state == State.DONE
+    [unit] = run["stages"]
+    assert unit["status"] == "passed" and unit["flaky"] is True and unit["attempts"] == 2 and unit["reruns"] == 1
+    assert [a["returncode"] for a in unit["failed_attempts"]] == [1]
+    assert run["flaky"] == ["unit:unit"] and run["reruns"] == 1 and "flaky: unit:unit" in run["summary"]
+    assert "failed, then passed on rerun 1" in store.notes(t.id)[-1]["text"]
+    [landed] = [e for e in events.read(0, limit=1000)[0] if e["type"] == "gate.landed"]
+    assert landed["flaky"] == ["unit:unit"]
+    reports = project.reports_dir
+    assert (reports / run["id"] / "unit.xml").exists() and (reports / f"{run['id']}.rerun1" / "unit.xml").exists()
+    case = ET.parse(reports / run["id"] / "gate.xml").getroot().find(".//testcase")
+    assert case.get("classname") == "merge_gate.unit" and [c.tag for c in case] == ["flakyFailure"]
+    assert counted(store) == {("tasks_gate_runs_total", (("status", "landed"),)): 1,
+                              ("tasks_gate_reruns_total", (("name", "unit"), ("stage", "unit"))): 1,
+                              ("tasks_gate_flaky_stages_total", (("name", "unit"), ("stage", "unit"))): 1}
+    assert "tasks_gate_flaky_stages_total{name=\"unit\",stage=\"unit\"} 1" in store.metrics_text()
+
+
+def test_a_stage_that_fails_every_rerun_is_rejected_not_flaky(env, tmp_path):
+    project, store, events, ms, repo = env
+    flaky_config(project, repo, tmp_path, reruns=1, fails=99)
+    t = merging_ticket(store, ms, repo, "broken", lambda wt: (wt / "NEW.md").write_text("ok\n"))
+    run = run_gate(project, store, events, t.id)
+    assert run["status"] == "base_broken"                 # this spec fails the base too: every worktree is new to it
+    [unit] = run["stages"]
+    assert unit["status"] == "failed" and unit["attempts"] == 2 and "flaky" not in unit and "flaky" not in run
+    assert run["reruns"] == 2                              # the run's rerun and the base check's
+    counts = counted(store)
+    assert counts[("tasks_gate_reruns_total", (("name", "unit"), ("stage", "unit")))] == 2
+    assert counts[("tasks_gate_runs_total", (("status", "base_broken"),))] == 1
+    assert not [k for k in counts if k[0] == "tasks_gate_flaky_stages_total"]
+    case = ET.parse(project.reports_dir / run["id"] / "gate.xml").getroot().find(".//testcase")
+    assert [c.tag for c in case] == ["failure", "rerunFailure"]          # failed, and failed again on its one rerun
+
+
+def test_without_reruns_a_failure_is_not_retried(env, tmp_path):
+    project, store, events, ms, repo = env
+    flaky_config(project, repo, tmp_path, reruns=0)
+    t = merging_ticket(store, ms, repo, "once", lambda wt: (wt / "NEW.md").write_text("ok\n"))
+    run = run_gate(project, store, events, t.id)
+    assert run["stages"][0]["status"] == "failed" and run["stages"][0]["attempts"] == 1 and run["reruns"] == 0
+    assert not (project.reports_dir / f"{run['id']}.rerun1").exists()
