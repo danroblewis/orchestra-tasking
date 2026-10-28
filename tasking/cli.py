@@ -167,6 +167,25 @@ def cmd_staging(args) -> int:
     return 0
 
 
+def cmd_stack(args) -> int:
+    """The tickets' branches with the base each one's pull request is to have (tasking/stacks.py):
+    what the owner needs to submit a stack. Read only."""
+    from .stacks import listing
+
+    project = _project(args)
+    store, _ = _store(project)
+    rows = listing(project, store)
+    if args.json:
+        print(json.dumps(rows, indent=1))
+        return 0
+    for r in rows:
+        print(f"{r['ticket']:10} {r['state']:18} {r['branch']}  <- {r['base']}" + (f" ({r['parent']})" if r["parent"] else "")
+              + ("" if r["on_base"] else "  [needs restack]") + (f"  {r['pull']}" if r["pull"] else ""))
+    if not rows:
+        print("no branches")
+    return 0
+
+
 def cmd_doctor(args) -> int:
     from .git import Git
 
@@ -243,6 +262,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("staging", help="staging environment: status, logs, deploy, restart, stop")
     s.add_argument("action", choices=["status", "logs", "deploy", "restart", "stop"])
     s.set_defaults(fn=cmd_staging)
+
+    s = sub.add_parser("stack", help="code mode: each ticket's branch and the branch its pull request is based on (stacked branches)")
+    s.add_argument("--json", action="store_true", help="the same as JSON")
+    s.set_defaults(fn=cmd_stack)
 
     s = sub.add_parser("doctor", help="orphan worktrees (a ticket's or the pool's) and, in code mode, missing gate specs")
     s.add_argument("--fix", action="store_true", help="remove the orphan worktrees")

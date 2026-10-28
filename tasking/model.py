@@ -49,7 +49,8 @@ TRANSITIONS: dict[State, set[State]] = {
     State.READY_FOR_REVIEW: {State.IN_REVIEW, State.REJECTED, State.CANCELLED, State.DONE},   # REJECTED: its folder or worktree is missing at review time
     State.IN_REVIEW: {State.APPROVED, State.REJECTED, State.READY_FOR_REVIEW},
     State.REJECTED: {State.IN_PROGRESS, State.CANCELLED, State.DONE},
-    State.APPROVED: {State.MERGING, State.DONE, State.CANCELLED, State.IN_EXTERNAL_REVIEW},   # DONE directly when nothing is merged (work = "tasks")
+    State.APPROVED: {State.MERGING, State.DONE, State.CANCELLED, State.IN_EXTERNAL_REVIEW,   # DONE directly when nothing is merged (work = "tasks")
+                     State.REJECTED},     # REJECTED: with stacking, restacking it on its parent conflicts (tasking/stacks.py)
     State.IN_EXTERNAL_REVIEW: {State.REJECTED, State.DONE, State.BLOCKED, State.CANCELLED},
     State.MERGING: {State.DONE, State.REJECTED, State.APPROVED},
     State.BLOCKED: {State.OPEN, State.CANCELLED, State.IN_EXTERNAL_REVIEW, State.DONE},   # IN_EXTERNAL_REVIEW: its closed pull request reopened
@@ -142,6 +143,8 @@ class Ticket:
     pull: str | None = None       # external review: its pull request, ``owner/repo#n``, once linked
     pull_head: str | None = None  # the commit its pull request carries, or is about to: what feedback must be about to count
     pull_state: str | None = None  # open | closed | merged, as the bridge last said
+    merged_as: str | None = None  # external review: the commit its pull request was merged as (a squash's), as the bridge said
+    stacked_on: str | None = None  # with stacking: the unlanded ticket whose branch its branch is based on (tasking/stacks.py)
     created_by: str = ""         # the role that asked for it
     version: int = 1
     created_at: str = field(default_factory=now)

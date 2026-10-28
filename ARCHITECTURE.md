@@ -825,6 +825,27 @@ then worker → coordinator → worker, as after any rejection. Only the turn ba
 did it is published as the pull request's reviewer; every offer from the queue is dispatch's. A merge while the worker has the work back goes through `Scheduler._withdraw`
 (the operator's stop, without counting) before `DONE`.
 
+### Stacked branches
+
+`tasking/stacks.py` (the policy) over `tasking/spice.py` (a thin git-spice wrapper), with
+`[gate] stacking = "git-spice"` in code mode; SPEC section 5 has the rules. The scheduler calls it
+at four points and nowhere else: `Scheduler._ready` (a ticket with one unlanded dependency whose
+work stands for review is ready), `_worktree` (`Stacks.prepare` makes a new branch from the parent's
+head and tracks it, before the worktree or the pool's reset checks it out; if the parent moved on
+since the queue looked, say the gate took it, the offer is not made, rather than a branch from a
+base that misses it), `_assign` (the offer's `base` is the parent's branch), `_start_gate` (only a
+ticket that is not `stacked_on` anything goes to the gate), and once a tick `Stacks.tick`, after the
+bus is followed and before any offer, restacks what moved. External review's hand-off takes its
+`base` from `Stacks.base`, and its merge keeps the bridge's `merge_commit` as `merged_as`.
+
+git-spice records the tree; the record keeps `stacked_on`. The two agree because the task system
+makes every change to the tree: `prepare` tracks, the landing (or the merge's `_drop`) deletes the
+parent's branch and git-spice, on its next command, moves the branches on it onto the base keeping
+the commit they were stacked on, and `Stacks._onto_base` restacks each and clears `stacked_on`.
+Restacks are the gate's acts: notes signed `merge_gate`, `stack.restacked` and `stack.conflict`
+published as it, the counters (`tasks_restacks_total`) under its name, and a conflict sent back
+through `reports.send_back` as a gate conflict is.
+
 ## 12. Staging and probes
 
 **Staging** (`tasking/staging.py`) runs when `[staging] start` is set. It is one long-lived
@@ -996,7 +1017,7 @@ when: section 6, "Who publishes what"):
 
 | Type | Source | Data |
 |---|---|---|
-| `orchestra.machine.started` | `coordinator/dispatch` | at each start: `mode: continuous`, `kind: program`, `listens_for: [gate.conflict, gate.rejected, task.released, ticket.created]` (what makes dispatch act), `log` |
+| `orchestra.machine.started` | `coordinator/dispatch` | at each start: `mode: continuous`, `kind: program`, `listens_for: [gate.conflict, gate.rejected, task.released, ticket.created]`, with stacking also `stack.conflict` (what makes dispatch act), `log` |
 | `ticket.created` | the asker; `causationid` = the request | `ticket`, `title`, `by` |
 | `milestone.created` | the asker; `causationid` = the request | `milestone`, `name` |
 | `capacity.changed` | `task_web` | `by`, `workers`, `reviewers`, `note` |
@@ -1010,7 +1031,9 @@ when: section 6, "Who publishes what"):
 | `gate.landed` | `merge_gate` | `gate_run`, `ticket`, `commit` |
 | `gate.base_broken` | `merge_gate` | `gate_run` |
 | `gate.error` | `merge_gate` | `gate_run`, `error` |
-| `gate.handed_off` | `merge_gate` | `ticket`, `branch`, `commit`, `base`, `repository`, `pull`; `causationid` = the approval (external review) |
+| `gate.handed_off` | `merge_gate` | `ticket`, `branch`, `commit`, `base`, `repository`, `pull`, with stacking `parent` (and `base` its branch); `causationid` = the approval (external review) |
+| `stack.restacked` | `merge_gate` | `ticket`, `branch`, `onto`, `onto_commit`, `previous`, `commit`, `parent`, `pull` (stacking) |
+| `stack.conflict` | `merge_gate` | `ticket`, `branch`, `onto`, `files`, `parent` (stacking) |
 | `changes.requested` (external review) | who gave the feedback on the pull request | `to`, `feedback`, `summary`, `commit`, `pull`, `pull_feedback`, the offer's fields; no `ends`; `causationid` = the bridge's event |
 | `staging.deployed` | `merge_gate` (`task_cli` for `tasking staging deploy`) | `build`, `commit`, `local_url`, `public_url` |
 | `staging.failed` | `merge_gate` (or `task_cli`) | `build`, and `reason` when the health check went stale or a restart failed |

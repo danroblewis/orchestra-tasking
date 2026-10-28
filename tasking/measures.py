@@ -5,6 +5,9 @@ what they measure (Orchestra's discovery decides what is a stock and what is a f
 - ``tasks_tickets{state}``: tickets in each state, every state;
 - ``tasks_tickets_created_total{by}``: tickets created;
 - ``tasks_ticket_transitions_total{from, to, by}``: state changes;
+- ``tasks_restacks_total{outcome, by}``: with stacking (tasking/stacks.py), branches restacked on
+  their parent's new head or onto the base after it landed (``outcome="restacked"``), and restacks
+  that conflicted and sent the work back to its worker (``outcome="conflict"``), by ``merge_gate``;
 - ``tasks_worktrees{state}``: with reused worktrees (tasking/pool.py), the pool's worktrees
   ``in_use`` and ``free``, and the turns ``waiting`` for one because the pool is full.
 
@@ -32,18 +35,19 @@ from __future__ import annotations
 
 from .model import State
 
-CREATED, TRANSITIONS = "tasks_tickets_created_total", "tasks_ticket_transitions_total"
+CREATED, TRANSITIONS, RESTACKS = "tasks_tickets_created_total", "tasks_ticket_transitions_total", "tasks_restacks_total"
 LEVELS, WORKTREES = "tasks_tickets", "tasks_worktrees"
 HELP = {LEVELS: ("gauge", "tickets in each state"),
         CREATED: ("counter", "tickets created, by the machine that asked for them"),
         TRANSITIONS: ("counter", "ticket state changes, by the machine whose act or responsibility moved the ticket"),
+        RESTACKS: ("counter", "stacked branches restacked, and restacks that conflicted, by the machine that did them"),
         WORKTREES: ("gauge", "the worktree pool: worktrees in use and free, and turns waiting for one")}
-_KEYS = {"created": CREATED, "transition": TRANSITIONS}
+_KEYS = {"created": CREATED, "transition": TRANSITIONS, "restack": RESTACKS}
 
 
 def count(counts: dict, kind: str, labels: dict) -> None:
     """Add one to a cumulative counter kept in ``counts`` (a dict saved with the tickets, under the
-    store's lock). ``kind``: created | transition."""
+    store's lock). ``kind``: created | transition | restack."""
     key = kind + "|" + "|".join(f"{k}={v}" for k, v in sorted(labels.items()))
     counts[key] = counts.get(key, 0) + 1
 

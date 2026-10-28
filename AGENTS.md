@@ -53,7 +53,9 @@ broken without updating the spec and saying so in the commit.
 5. **Merging is programmatic.** No machine merges, pushes, touches the base branch or starts
    staging. Only the gate lands code; only a landing deploys staging. With external review the
    gate lands nothing: it hands the branch off, the owner pushes it and opens the pull request, and
-   the merge happens on the pull request; the task system never pushes or opens one.
+   the merge happens on the pull request; the task system never pushes or opens one. With stacked
+   branches (`[gate] stacking`) only the gate restacks a ticket's branch, and fetching a squash
+   commit moves no branch.
 6. **State lives in `~/.orchestrator/<key>/tasks/`**, except the events (Orchestra's bus) and the
    metrics (Orchestra's metrics store, filled by the instrument `tasks.tickets` from the counters
    the record keeps). Only `tasking/store/` reads or writes the JSON files, under

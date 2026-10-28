@@ -103,8 +103,9 @@ class Reports:
                 said = f"names commit {str(commit)[:10]}, which is not on {branch}" if commit else "names no commit"
                 self.apply(a, None, f"the review request {said}", True)
                 return False
-            if self.git.is_ancestor(str(commit), self.cfg.base_branch):
-                self._block(t, "the worker asked for a review but the branch has no commits beyond the base branch")
+            base = a.get("base") or self.cfg.base_branch      # with stacking, the parent's branch it is based on
+            if self.git.branch_exists(base) and self.git.is_ancestor(str(commit), base):
+                self._block(t, f"the worker asked for a review but the branch has no commits beyond {base}")
                 return False
         self.store.add_note(t.id, Note(author="worker", text=str(review.get("summary") or "")))
         out = review.get("test_output")

@@ -76,6 +76,8 @@ class Config:
     gate_timeout: float = 900.0
     gate_mode: str = "land"      # land: the gate merges and lands | external: it hands the branch off for a pull request
     external: External = field(default_factory=External)
+    stacking: str = ""           # "git-spice": a ticket that depends on unlanded work branches from it (tasking/stacks.py) | "": off
+    stack_depth: int = 4         # with stacking: at most this many unlanded branches below a new one
     unit: list[TestSpec] = field(default_factory=list)
     acceptance: list[TestSpec] = field(default_factory=list)
     staging_start: str | None = None
@@ -97,6 +99,12 @@ class Config:
         mode with ``[gate] mode = "external"`` (in tasks mode there is no branch to hand off)."""
         return self.work == "code" and self.gate_mode == "external"
 
+    @property
+    def stacked(self) -> bool:
+        """Dependent tickets' branches stack on their dependency's (``[gate] stacking = "git-spice"``,
+        code mode; tasking/stacks.py)."""
+        return self.work == "code" and self.stacking == "git-spice"
+
     @classmethod
     def from_toml(cls, text: str) -> Config:
         """The settings in a TOML text (tests; the project's come from ``from_raw``)."""
@@ -109,6 +117,10 @@ class Config:
         a = raw.get("tasks") or {}
         tun = st.get("tunnel", {}) or {}
         gt = parse_duration(g.get("timeout"), 900.0)
+
+        stacking = str(g.get("stacking") or "")
+        if stacking not in ("", "off", "git-spice"):
+            raise ConfigError(f'[gate] stacking = "{stacking}": "git-spice" or "off"')
 
         def specs(items: list[dict]) -> list[TestSpec]:
             return [TestSpec(name=i["name"], command=i["command"], timeout=parse_duration(i.get("timeout"), gt)) for i in items]
@@ -136,6 +148,8 @@ class Config:
             gate_timeout=gt,
             gate_mode=str(g.get("mode", "land")),
             external=External.from_raw(g.get("external") or {}),
+            stacking="" if stacking == "off" else stacking,
+            stack_depth=max(1, int(g.get("stack_depth", 4))),
             unit=specs(g.get("unit", [])),
             acceptance=specs(g.get("acceptance", [])),
             staging_start=st.get("start"),
@@ -177,6 +191,8 @@ aging_days_per_level = 2        # a ticket gains one priority level per N days o
 [gate]
 timeout = "900s"
 # mode = "external"      # code mode: hand approved branches off for a pull request instead of landing them
+# stacking = "git-spice"  # code mode: a ticket that depends on unlanded work branches from it, kept restacked
+# stack_depth = 4         # with stacking: at most this many unlanded branches below a new one
 
 # [gate.external]        # with mode = "external": the ticket follows its pull request (a bridge publishes github.pr.*)
 # repository = "acme/service"
@@ -243,6 +259,11 @@ class Project:
     @property
     def pool_dir(self) -> Path:
         return self.state_dir / "pool"
+
+    @property
+    def stack_dir(self) -> Path:
+        """With stacking: the worktree a branch no worktree of a ticket has is restacked in."""
+        return self.state_dir / "stack"
 
     @property
     def workspaces_dir(self) -> Path:

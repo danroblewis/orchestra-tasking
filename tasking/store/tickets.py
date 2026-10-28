@@ -132,6 +132,14 @@ class Tickets:
             t = Ticket.from_dict(d)
         return t
 
+    def count(self, kind: str, **labels: str) -> None:
+        """One more of a counter that counts no transition (measures.py: ``restack``), kept with the
+        others under the store's lock."""
+        with self._locked():
+            data = self._t()
+            measures.count(data["metric_counts"], kind, labels)
+            write(self.project.tickets_file, data)
+
     def metrics_text(self) -> str:
         """The measurements as Prometheus text, from the record as it stands (measures.py)."""
         data = self._t()

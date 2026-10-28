@@ -48,6 +48,8 @@ from .pool import Pool
 from .probes import Prober, config_probes
 from .reports import Reports
 from .requests import Desk
+from .stacks import CONFLICT as STACK_CONFLICT
+from .stacks import Stacks
 from .staging import Staging
 from .store import Conflict, LocalStore, StoreError
 
@@ -103,6 +105,9 @@ class Scheduler:
         # external review: tickets follow their pull requests (tasking/external.py); it reads the bus on from its own record
         self.external = External(project, store, events, self.gate_store, self.gate_events, self.git,
                                  offer=self._offer_back, withdraw=self._withdraw, log=log)
+        # with [gate] stacking: dependent tickets' branches stack on their dependency's, kept restacked (tasking/stacks.py)
+        self.stacks = Stacks(project, store, self.git, self.gate_store, self.gate_events, log)
+        self.external.base_of = self.stacks.base
 
     def recover(self) -> None:
         """What the previous scheduler left: whoever still holds work is told to stop and every
@@ -208,11 +213,13 @@ class Scheduler:
         for and what it is: dispatch, an instance of the coordinator (no package: the coordinator is
         whoever fills that role, and Orchestra keeps each instance's card apart, so this erases
         nothing an agent coordinator said of itself), and in code mode the gate."""
-        self.events.publish(MACHINE_STARTED, {"mode": "continuous", "kind": "program", "listens_for": DISPATCH_LISTENS,
-                                              "log": str(LOG)}, source=DISPATCH)
+        stacked = self.cfg.stacked              # the gate restacks when a parent moves or lands; a conflict is rework to offer
+        self.events.publish(MACHINE_STARTED, {"mode": "continuous", "kind": "program", "log": str(LOG),
+                                              "listens_for": DISPATCH_LISTENS + ([STACK_CONFLICT] if stacked else [])}, source=DISPATCH)
         if self.cfg.work == "code":
-            self.gate_events.publish(MACHINE_STARTED, {"package": "tasks", "mode": "continuous", "kind": "program",
-                                                       "listens_for": [APPROVED], "log": str(LOG)})
+            self.gate_events.publish(MACHINE_STARTED, {"package": "tasks", "mode": "continuous", "kind": "program", "log": str(LOG),
+                                                       "listens_for": [APPROVED] + ([REVIEW_REQUESTED, "gate.landed", "github.pr.merged"]
+                                                                                    if stacked else [])})
 
     def _busy(self) -> bool:
         return bool(self.store.assignments()) or bool(self.gate_thread and self.gate_thread.is_alive())
@@ -232,6 +239,7 @@ class Scheduler:
         self._follow()
         if self.cfg.external_review:
             self.external.follow()
+        self.stacks.tick()
         tickets = self.store.tickets_by_id()
         milestones = self.store.milestones_by_id()
         cap = self.store.capacity()
@@ -255,7 +263,7 @@ class Scheduler:
                 break
             if t.id in taken or (t.id, "worker") in resting:
                 continue
-            if (t.state == State.REJECTED or (t.state == State.OPEN and is_ready(t, tickets, milestones))) \
+            if (t.state == State.REJECTED or (t.state == State.OPEN and self._ready(t, tickets, milestones))) \
                     and self._assign(t, "worker"):
                 busy["worker"] += 1
         if gate and not self.cfg.reuse_worktrees:
@@ -270,6 +278,10 @@ class Scheduler:
         except Exception as e:  # noqa: BLE001 - a broken probe never stops the scheduler
             log(f"probes: {e!r}")
 
+    def _ready(self, t: Ticket, tickets: dict, milestones: dict) -> bool:
+        """Ready to offer: its dependencies landed, or with stacking, all but the one it stacks on."""
+        return self.stacks.ready(t, tickets, milestones) if self.cfg.stacked else is_ready(t, tickets, milestones)
+
     def _start_gate(self, ordered: list[Ticket]) -> None:
         """The longest-approved ticket to the gate. With reused worktrees the gate holds one of
         the pool's, claimed here before any offer is made, so landing comes before new work; with
@@ -282,6 +294,7 @@ class Scheduler:
                 except (Conflict, StoreError, TransitionError) as e:
                     log(f"gate: {t.id}: cannot hand it off: {e}")
             return
+        approved = [t for t in approved if self.stacks.may_land(t)]     # with stacking, the bottom of a stack lands first
         if not approved:
             return
         tid, slot = approved[0].id, None
@@ -355,6 +368,7 @@ class Scheduler:
         """The worker's worktree on the ticket's branch: its own (made once, kept until it lands),
         or with reused worktrees one of the pool's reset for it (None: the pool is full)."""
         branch = t.branch or f"orchestra/{t.id}-{t.slug}"
+        self.stacks.prepare(t, branch)               # with stacking: a new branch from its parent's, tracked by git-spice
         if self.cfg.reuse_worktrees:
             return self.pool.claim_for(aid, t.id, branch), branch
         path = self.project.worktrees_dir / t.id
@@ -416,8 +430,9 @@ class Scheduler:
         to = t.worker if role == "worker" and t.state == State.REJECTED and t.worker and untaken.get("returned") != t.version else None
         lease = self.cfg.return_timeout if to else LEASE_S
         turns = {"worker_turns": t.worker_turns + 1, "branch": branch} if role == "worker" else {}   # as the ticket will read once accepted
+        base = None if tasks else self.stacks.base(self.store.get_ticket(t.id))     # with stacking, a parent's branch
         offer = {"assignment": aid, "role": role, "ticket": t.id, "workspace": str(path), "branch": branch,
-                 "base": None if tasks else self.cfg.base_branch, "lease_s": LEASE_S, "brief": {**brief(t), **turns}}
+                 "base": base, "lease_s": LEASE_S, "brief": {**brief(t), **turns}}
         if to:
             offer["to"] = to
         if not tasks and self.cfg.unit:
@@ -427,7 +442,7 @@ class Scheduler:
         if role == "reviewer":                       # what the worker said and ran when it asked for the review, as recorded
             offer["review"] = {"summary": self._worker_summary(t.id), "commit": None if tasks else t.reviewed_commit,
                                "test_output": None if tasks else t.test_output, "worker": t.worker}
-        record = {"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch, "to": to,
+        record = {"id": aid, "ticket": t.id, "role": role, "workspace": str(path), "branch": branch, "base": base, "to": to,
                   "assigned_at": time.time(), "lease_until": time.time() + lease, "instance": None, "accepted_at": None,
                   "offered_since": untaken.get("since") or time.time()}   # the first of the offers nobody took
         if source:
@@ -581,6 +596,7 @@ class Scheduler:
             to = ev.get("to") if role == "worker" else None
             lease = self.cfg.return_timeout if to else LEASE_S
             nxt = {"id": ev["assignment"], "ticket": a["ticket"], "role": role, "workspace": a.get("workspace"), "branch": a.get("branch"),
+                   "base": a.get("base"),
                    "to": to, "by": ev.get("source"), "cause": ev.get("id"), "assigned_at": time.time(), "lease_until": time.time() + lease,
                    "instance": None, "accepted_at": None, "offered_since": time.time()}
             self.store.hand_over(a["id"], nxt)

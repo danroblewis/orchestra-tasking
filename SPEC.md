@@ -48,13 +48,15 @@ scheduler keeps: `state`, `owner` (the machine instance that holds it now), `bra
 worker is told), `review_rounds`, `worker_turns`, `reviewer_rejections`, `gate_rejections`,
 with external review `pull` (its pull request, `owner/repo#n`), `pull_head` (the commit the pull
 request carries, or is about to), `pull_state` (`open`, `closed`, `merged`) and
-`pull_rejections`, `created_by` (the role that asked for it), a `version` for optimistic concurrency, and
+`pull_rejections`, with external review also `merged_as` (the commit its pull request was merged as),
+with stacking `stacked_on` (the unlanded ticket its branch is based on; section 5), `created_by` (the role that asked for it), a `version` for optimistic concurrency, and
 timestamps. **Notes** record what happened: the worker's summary, the reviewer's verdict, the
 gate's result, a blocker, a crash, a planner's note; with external review, what happened on its
 pull request, signed by the machine the bridge named for it (kind `pull`).
 
 **Readiness** is derived: a ticket is ready when it is `OPEN`, every ticket it depends on is
-`DONE`, and its milestone is open. **Effective priority** (`effective_priorities`) is the
+`DONE`, and its milestone is open; with stacking (section 5), also when all but one are `DONE` and
+that one's work stands for review, so it starts on that one's branch. **Effective priority** (`effective_priorities`) is the
 ticket's own, improved by the best priority of anything that depends on it (so prioritising a
 ticket pulls its prerequisites forward) and by one level per `aging_days_per_level` days of age.
 
@@ -95,6 +97,7 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | `BLOCKED` | `OPEN` | a planner unblocks it |
 | any waiting state | `CANCELLED` | a planner cancels it (an active ticket must settle first) |
 | `APPROVED` | `IN_EXTERNAL_REVIEW` | external review: the gate hands the branch off for its pull request (`gate.handed_off`) |
+| `READY_FOR_REVIEW`, `APPROVED`, `IN_EXTERNAL_REVIEW` | `REJECTED` | stacking: restacking its branch on its parent conflicts (`stack.conflict`; `rejected_by = merge_gate`, not a review round) |
 | `IN_EXTERNAL_REVIEW` | `REJECTED` | feedback on the pull request's head (changes requested, line comments, a failing label or check): back to the worker that did it (`review_rounds` + 1, `pull_rejections` + 1; `rejected_by` = whoever gave it) |
 | `IN_EXTERNAL_REVIEW` | `BLOCKED` | the pull request was closed without a merge (`blocked_reason` says by whom) |
 | `BLOCKED` | `IN_EXTERNAL_REVIEW` | that pull request was reopened |
@@ -313,10 +316,12 @@ listening, in families named up to the first dot (Orchestra's event map groups t
 `ticket.created`, `milestone.created`, `capacity.changed`, `pickup.paused`/`resumed`,
 `kill.requested`, `pipeline.paused`, `probe.failed`/`recovered`,
 `gate.started`/`conflict`/`landed`/`base_broken`/`rejected`/`error`/`handed_off`,
-`staging.deployed`/`failed`/`restarted`. Orchestra never reads their data. These families and the
+`stack.restacked`/`conflict`, `staging.deployed`/`failed`/`restarted`. Orchestra never reads their data. These families and the
 fields named here are part of what listeners may rely on, like the assignment table and the
 request names: `ticket.created` {ticket}, `gate.base_broken` {gate_run}, `probe.failed`/
-`probe.recovered` {probe}, `gate.handed_off` {ticket, branch, commit, base, repository, pull}; rename
+`probe.recovered` {probe}, `gate.handed_off` {ticket, branch, commit, base, repository, pull, and
+with stacking parent}, `stack.restacked` {ticket, branch, onto, onto_commit, previous, commit, parent,
+pull}, `stack.conflict` {ticket, branch, onto, files, parent}; rename
 them deliberately and say so in the commit.
 
 **No echoes** (the owner, 2026-10-27). Every change of a ticket's state is caused by an act some
@@ -347,6 +352,7 @@ What the scheduler does, and the source it publishes it as. It never publishes a
 | records a step another machine announced (a claim, a heartbeat, `review.requested`, `changes.requested`, `review.approved`, `task.reported`) | nothing: recorded in the store only | none |
 | runs the gate | `merge_gate` (a machine: it does work of its own, merging) | `gate.started` (`causationid` = the approval), `gate.landed`, `gate.rejected`, `gate.conflict`, `gate.error`, `gate.base_broken`; in code mode its announcement {package: tasks, mode: continuous, kind: program, listens_for: [review.approved], log} |
 | external review: hands an approved branch off for its pull request | `merge_gate`; `causationid` = the approval | `gate.handed_off` |
+| stacking: makes a dependent ticket's branch on its parent's, restacks a branch on its parent's new head or onto the base after the parent landed, sends a conflict back to the worker | `merge_gate` (keeping branches mergeable is the gate's; the offer back to the worker is then dispatch's, as after any gate rejection) | `stack.restacked`, `stack.conflict` |
 | external review: sends the work back to the worker that did it after feedback on its pull request | whoever gave the first of the feedback, as the bridge named them (`person.<login>`, a bot); `causationid` = that bridge event. Not taken within the return timeout: withdrawn and offered to any worker by `coordinator/dispatch` (the rows above) | `changes.requested` (to that worker) |
 | external review: asks a planner about a ticket sent back by its pull request at a multiple of the threshold | `merge_gate` | `task.attention_needed` |
 | external review: asks a planner about a pull request closed without a merge | `merge_gate` (whose hand-off it was) | `task.attention_needed` |
@@ -599,6 +605,70 @@ request, and the ticket follows that pull request until it is merged or closed.
   applied lately and the feedback it is gathering, in `runtime.json`), so a merge published while
   no scheduler ran is applied when one starts, and nothing is applied twice.
 
+**Stacked branches** (`[gate] stacking = "git-spice"`, code mode; `tasking/stacks.py`,
+`tasking/spice.py`; goal G7 in Orchestra's `docs/roadmap/goals.md`, and story 9 of its user
+stories). Dependent tickets build on each other's branches instead of waiting for each other to
+land, and their branches are kept rebased: a stack, and where several tickets depend on one, a tree.
+[git-spice](https://abhinav.github.io/git-spice/) (0.33 tried) records the branch tree in the
+repository (`refs/spice/data`: each branch's base and the base's commit it was last stacked on), so
+the branch structure is kept apart from the ticket graph; the ticket keeps its parent as
+`stacked_on`. Off (the default), nothing here applies.
+
+- *Stacking.* A ticket whose dependencies are all `DONE` branches from the base as before. One with
+  exactly one dependency not landed is ready once that work stands for review (`READY_FOR_REVIEW`,
+  `IN_REVIEW`, `APPROVED`, `IN_EXTERNAL_REVIEW`: it has a reviewed commit and nobody is changing
+  it), and its branch is made from that dependency's branch head, tracked by git-spice with that
+  branch as its base (`git-spice branch track --base`), and `stacked_on` is set. Two or more not
+  landed: it waits (a branch has one parent). At most `stack_depth` (4) unlanded branches stand in
+  one stack, this one included (story 9: no unreviewed depth beyond the cap). Every ticket branch is
+  tracked, so the owner can use git-spice on all of them. The offers name the parent's branch as
+  `base`, so the worker and the reviewer see only the ticket's own commits; a review request with
+  nothing beyond it is blocked as before.
+- *Restacking.* Every tick, a stacked branch whose parent's head is not in it is rebased onto it
+  (`git-spice branch restack`, one branch at a time, parents first, so a change climbs the tree in
+  one tick), unless the ticket is held or offered (a machine works in its worktree) or its parent
+  is `IN_PROGRESS` (its head is moving: it is restacked once the parent's worker asks for a review).
+  It runs in the ticket's own worktree when it has one on its branch (left on the branch, with
+  nothing uncommitted), else in the stack worktree `<state>/stack/` after detaching the branch from
+  any idle worktree of the pool; a worktree with uncommitted changes is skipped until it has none.
+  The reviewed commit moves with the rebase (as many commits below the new head as it was below the
+  old). **A clean restack is not a new review**: the change is the same patch on a new base, and it
+  is tested again where it lands, by the gate's stages or the pull request's checks.
+- *Conflicts go back to the worker.* A restack that conflicts is aborted, so the branch is as it
+  was, and the merge gate sends the ticket back: from `READY_FOR_REVIEW`, `APPROVED` or
+  `IN_EXTERNAL_REVIEW` it is `REJECTED` (`rejected_by = merge_gate`, `gate_rejections` + 1, not a
+  review round, like a gate conflict) and dispatch offers it to the worker that did it; one already
+  waiting for a worker has the conflict added to its feedback; a `BLOCKED` one gets a note. The
+  feedback names the conflicted files and the branch to rebase onto, and `stack.conflict` carries
+  them as metadata. The same conflict (the same two heads) is not tried again.
+- *Landing (`mode = "land"`).* The gate takes a stacked ticket only once its parent has landed and
+  its branch is on the base: the bottom of a stack lands first. The landing deletes the parent's
+  branch; git-spice notices and moves the branches on it onto the base, keeping the commit they were
+  stacked on, so the next tick restacks each onto the base with only its own commits (the parent's
+  are in the base already), clears `stacked_on`, and the gate takes it and runs every stage again.
+  A child may be reviewed and approved on top of its parent before the parent lands; it waits
+  `APPROVED` for the gate. A parent that is cancelled leaves its children unable to land: the gate
+  asks the coordinator once.
+- *External review.* The gate hands a stacked ticket off with its parent's branch as the base of its
+  pull request (`gate.handed_off` {base: the parent's branch, parent}); `tasking stack` lists every
+  branch with the base its pull request is to have. **Pushing and opening stay the owner's**: the
+  task system never pushes and never opens a pull request; `git-spice stack submit` does both with
+  the bases right, since every ticket branch is tracked (an outbox could, one day, with the owner's
+  approval). When the parent's pull request is merged, the bridge's `github.pr.merged` carries the
+  `merge_commit` (a squash's), kept as the parent's `merged_as`: if the base branch has it (the
+  owner pulled), the child is restacked onto the base, which drops the parent's own commits; if
+  not, the commit is fetched from the repository's remotes if it is not here (`git fetch`: read
+  only, the base branch is never moved) and the child's own commits are rebased onto the squash
+  commit itself with git (no branch for git-spice to restack onto), and tracked on the base. Each
+  restack of a branch in external review says `stack.restacked` {pull}: the owner force-pushes it
+  (GitHub retargets a pull request whose base branch is deleted on merge; otherwise its base is
+  changed to the base branch by hand). `pull_head` follows the push as before.
+- *What git-spice is not asked.* No `upstack restack` or `repo restack` from the repository root:
+  they check each branch out in the current worktree, skip (with exit 0) a branch checked out in
+  another worktree, and can leave the root on another branch. No `repo sync`: it needs the forge's
+  API and moves the local trunk. git-spice must be on `PATH`; without it no stacked branch is made
+  and the scheduler's log says why.
+
 **Staging** (`tasking/staging.py`): when `[staging] start` is set, one long-lived instance of the
 last build that passed the gate, started with the artifact and port as placeholders, probed at
 `health`, restarted by the scheduler if its process dies or its health check goes unanswered
@@ -715,6 +785,8 @@ ready_timeout = "60s"
 [gate]
 timeout = "900s"         # per spec
 mode = "land"            # land: the gate merges and lands | external: it hands the branch off for a pull request (code mode)
+stacking = "git-spice"   # code mode, optional: a ticket that depends on unlanded work branches from it, kept restacked (section 5)
+stack_depth = 4          # with stacking: at most this many unlanded branches in one stack
 
 [gate.external]          # with mode = "external" (section 5, "External review")
 repository = "acme/service"        # only this repository's pull requests (any, when unset)
@@ -768,6 +840,7 @@ the instrument `orchestra run` runs (section 8), so where they go is decided in 
     workspaces/<ticket>/               # tasks mode
     worktrees/<ticket>/                # code mode
     pool/<n>/                          # code mode with reused worktrees
+    stack/                             # code mode with stacking: where a branch with no worktree of its own is restacked
     gate/<run>/  artifacts/<run>/  staging/
     logs/scheduler.log  logs/<run>/<stage>-<spec>.log  logs/review/<ticket>/
 ```
@@ -790,6 +863,8 @@ configure per project; the text is the same. The series:
   included, 0 without external review);
 - `tasks_tickets_created_total{by}`: tickets created, `by` the machine that asked;
 - `tasks_ticket_transitions_total{from,to,by}`: state changes;
+- with stacking (section 5), `tasks_restacks_total{outcome,by}`: branches restacked
+  (`outcome="restacked"`) and restacks that conflicted (`"conflict"`), `by` `merge_gate`;
 - with reused worktrees (section 5), `tasks_worktrees{state}`: the pool's worktrees `in_use` and
   `free`, and the turns `waiting` for one (kept in `runtime.json`).
 
@@ -868,6 +943,7 @@ These controls are the only writes a person has; tickets change only through the
 | `tasking ticket list\|show ID`, `tasking milestone list\|show ID` | read the store |
 | `tasking api [--as ROLE] OP [--args JSON]` | one request over the bus, answered by the running scheduler |
 | `tasking staging status\|logs\|deploy\|restart\|stop` | staging |
+| `tasking stack [--json]` | code mode: each unfinished ticket's branch, the branch its pull request is to be based on (its parent's with stacking, else the base), whether it is on that base's head, and its pull request. Read only |
 | `tasking doctor [--fix]` | orphan worktrees; in code mode, missing gate specs |
 
 `--repo` names the repository (default `ORCHESTRA_REPO`, else the current directory).
@@ -892,6 +968,8 @@ checks the Prometheus text and that the scheduler writes no point;
 `test_external_e2e.py` drives external review with the pull-request bridge's events published
 by the test (feedback back to the same worker, a failing label, a close, stale feedback, a merge
 while the worker has it, a restart, a review's comments gathered); `test_gate.py` and
-`test_staging.py` drive the gate and staging directly; `test_demo_e2e.py` runs
+`test_staging.py` drive the gate and staging directly; `test_stacks_e2e.py` drives stacked branches
+with git-spice (skipped when it is not installed): a tree restacked and landed bottom first, a
+conflict back to its worker, a squash merge on the base and one only on a remote, and the pool; `test_demo_e2e.py` runs
 the demo as processes against a real `orchestra run` and `orchestra web`, reads everything back
 over HTTP, and executes the Tickets page in a headless Chrome when one is at hand (README).

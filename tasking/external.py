@@ -85,6 +85,7 @@ class External:
         self.project, self.store, self.events, self.git = project, store, events, git
         self.gate_store, self.gate_events = gate_store, gate_events      # the gate's (merge_gate): the hand-off is its
         self.offer, self.withdraw, self.log = offer, withdraw, log
+        self.base_of: Callable[[Ticket], str] = lambda t: project.config.base_branch     # with stacking, a parent's branch (tasking/stacks.py)
         rec = store.external()
         self.offset = events.end() if rec is None else min(int(rec.get("offset", 0)), events.end())
         self.seen: deque[str] = deque((rec or {}).get("seen") or [], maxlen=SEEN_KEPT)
@@ -105,7 +106,8 @@ class External:
         self.gate_store.add_note(t.id, Note(author=GATE, kind="gate", text=f"handed off {t.branch} at {short(commit)} for {where}; "
                                             "in external review the gate lands nothing: the ticket is done when the pull request is merged"))
         self.gate_events.emit(HANDED_OFF, cause=t.caused_by, ticket=t.id, branch=t.branch, commit=commit,
-                              base=self.project.config.base_branch, repository=self.cfg.repository, pull=t.pull)
+                              base=self.base_of(t), repository=self.cfg.repository, pull=t.pull,
+                              **({"parent": t.stacked_on} if t.stacked_on else {}))
         self.log(f"{t.id}: IN_EXTERNAL_REVIEW: {t.branch} at {short(commit)} handed off for {where}")
 
     def follow(self) -> None:
@@ -261,7 +263,8 @@ class External:
             self.log(f"{t.id}: {pull} merged, but the ticket is still {t.state}; left as it is")
             return
         self._note(t, who, f"{who} merged {pull} at {short(ev.get('head'))}" + (f" as {short(ev.get('merge_commit'))}" if ev.get("merge_commit") else ""))
-        self.store.transition(t.id, t.version, State.DONE, by=machine(who), cause=ev, pull_state="merged", pull_head=ev.get("head") or t.pull_head)
+        self.store.transition(t.id, t.version, State.DONE, by=machine(who), cause=ev, pull_state="merged", pull_head=ev.get("head") or t.pull_head,
+                              merged_as=ev.get("merge_commit") or None)
         self._drop(t)
         self.log(f"{t.id}: DONE: {pull} merged by {who}")
 
