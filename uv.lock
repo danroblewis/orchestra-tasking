@@ -430,6 +430,7 @@ source = { editable = "../orchestra_2" }
 dependencies = [
     { name = "fastapi" },
     { name = "psutil" },
+    { name = "tomlkit" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -467,6 +468,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "scipy", marker = "extra == 'sd'", specifier = ">=1.14" },
     { name = "sympy", marker = "extra == 'sd'", specifier = ">=1.13" },
+    { name = "tomlkit", specifier = ">=0.13" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 provides-extras = ["dev", "bus-redis", "bus-rabbitmq", "bus-kafka", "bus", "sd", "sd-research"]
