@@ -9,6 +9,8 @@ import time
 import pytest
 from conftest import claim, end, git, handoffs, on_bus, run_scheduler
 from fake_machine import FakeMachine
+from orchestra.metrics import for_project
+from orchestra.web.machines import machines_view
 
 from tasking import scheduler as scheduler_mod
 from tasking.assignments import (
@@ -71,6 +73,13 @@ def test_rejected_work_returns_to_the_same_worker_and_the_scheduler_is_no_hub(pr
                                       ("reviewer", APPROVED, "merge_gate")]
     evs = events.bus.read(0, limit=100000)[0]
     assert not [e for e in evs if e["source"] == "task_scheduler"]                       # no event as the scheduler, not even an announcement
+    # the provider is never the machine (Orchestra's AGENTS.md rule 2): no node, edge or hand-off
+    # on the Machines page is the scheduler's, and it wrote no metrics (its instrument reads the record)
+    view = machines_view(evs)
+    assert "task_scheduler" not in {m["id"] for m in view["machines"]}
+    assert not [x for x in view["edges"] + view["handoffs"] if "task_scheduler" in (x["from"], x["to"])]
+    written = for_project(project.orchestra)
+    assert not [n for n in ("tasks_tickets", "tasks_tickets_created_total", "tasks_ticket_transitions_total", "tasks_worktrees") if written.dump(n, {})]
     assert not [e for e in evs if e["type"] in ("ticket.transitioned", "ticket.note_added")]   # no echo of another machine's act
     queue = [e["type"] for e in evs if e.get("subject") == t.id and e["source"] == "worker"]
     assert queue == [ASSIGNED]                                                            # the worker's queue: the first offer, nothing else
