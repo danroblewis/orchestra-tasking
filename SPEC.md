@@ -321,6 +321,7 @@ What the scheduler does, and the source it publishes it as. It never publishes a
 | runs the gate | `merge_gate` (a machine: it does work of its own, merging) | `gate.started` (`causationid` = the approval), `gate.landed`, `gate.rejected`, `gate.conflict`, `gate.error`, `gate.base_broken`; in code mode its announcement {package: tasks, mode: continuous, kind: program, listens_for: [review.approved], log} |
 | external review: hands an approved branch off for its pull request | `merge_gate`; `causationid` = the approval | `gate.handed_off` |
 | external review: sends the work back to the worker that did it after feedback on its pull request | whoever gave the first of the feedback, as the bridge named them (`person.<login>`, a bot); `causationid` = that bridge event | `changes.requested` (to that worker) |
+| external review: asks a planner about a ticket sent back by its pull request at a multiple of the threshold | `merge_gate` | `task.attention_needed` |
 | external review: asks a planner about a pull request closed without a merge | `merge_gate` (whose hand-off it was) | `task.attention_needed` |
 | pauses the pipeline | `merge_gate` | `pipeline.paused` |
 | deploys or restarts staging | `merge_gate` | `staging.deployed`, `staging.failed`, `staging.restarted` |
@@ -525,7 +526,7 @@ request, and the ticket follows that pull request until it is merged or closed.
   feedback. It is gathered until none came for `settle` (15 s by default; a review's line comments
   arrive just after it, so a review waits for as many as it says it has, up to three settle
   periods), then the work goes back once: `REJECTED` (a review round, so the coordinator is asked
-  at the threshold as for any rejection; `pull_rejections` + 1; `rejected_by` the machine that gave
+  at the threshold as for any rejection, by the merge gate rather than in a person's name; `pull_rejections` + 1; `rejected_by` the machine that gave
   the feedback) and `changes.requested` addressed `to` the worker instance that did the work, with
   the return timeout, like a reviewer's (section 3). The worker resumes its own work (its session,
   if it keeps one) on the same branch, asks for a review as before, and an approval hands the new

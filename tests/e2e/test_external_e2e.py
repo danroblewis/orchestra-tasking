@@ -280,3 +280,22 @@ def test_a_reviews_line_comments_are_gathered_before_the_worker_is_reengaged(pro
     ticks(sched, 3)
     back = on_bus(events, CHANGES_REQUESTED, ticket=t.id)
     assert len(back) == 1 and [c["path"] for c in back[0]["data"]["pull_feedback"]["comments"]] == ["a.py", "b.py"]
+
+
+def test_feedback_at_the_threshold_is_escalated_by_the_merge_gate(project):
+    """A pull request's feedback is a review round like any other: at the threshold the coordinator
+    is asked, by the merge gate whose hand-off keeps coming back, not in a person's name."""
+    toml = project.repo_root / "orchestra.toml"
+    toml.write_text(toml.read_text().replace("review_rounds_before_escalation = 3", "review_rounds_before_escalation = 1"))
+    store, events, t = setup(project)
+    sched = started(project, store, events)
+    with FakeMachine(events, instance="1"):
+        until(sched, lambda: in_review(store, t.id))
+        t = store.get_ticket(t.id)
+        pr(events, "opened", "owner", t.reviewed_commit, t.branch)
+        pr(events, "review_submitted", "alice", t.reviewed_commit, t.branch, review=906, state="changes_requested", comments=0)
+        until(sched, lambda: on_bus(events, "task.attention_needed", ticket=t.id))
+    asked = on_bus(events, "task.attention_needed", ticket=t.id)
+    assert [(e["source"], e["data"]["to"]) for e in asked] == [("merge_gate", "coordinator")]
+    said = {e["type"] for e in events.bus.read(0, limit=100000)[0] if e["source"] == "person.alice"}
+    assert said == {"orchestra.machine.started", "github.pr.review_submitted", CHANGES_REQUESTED}    # the one act published for her

@@ -241,7 +241,7 @@ class External:
         summary, feedback, meta = describe(p)
         self.store.add_note(tid, Note(author=by, kind="review", text=f"REJECTED on the pull request: {summary}"))
         send_back(self.store, self.events, self.project.config.review_rounds_before_escalation, t, by, feedback, by=by,
-                  cause={"id": p["cause"]}, pull_rejections=t.pull_rejections + 1)
+                  cause={"id": p["cause"]}, ask_as=GATE, pull_rejections=t.pull_rejections + 1)
         t = self.store.get_ticket(tid)
         offered = bool(t.worker) and self.offer(t, p["source"], p["cause"],
                                                 {"feedback": feedback, "summary": summary, "commit": p["head"], "pull": p["pull"], "pull_feedback": meta})

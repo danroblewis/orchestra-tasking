@@ -399,6 +399,7 @@ Everything the scheduler publishes, and as whom. It is the same table as SPEC.md
 | runs the gate | `merge_gate` (a machine: it does work of its own, merging) | `gate.started` (`causationid` = the approval), `gate.landed`, `gate.rejected`, `gate.conflict`, `gate.error`, `gate.base_broken`; in code mode its announcement {package: tasks, mode: continuous, kind: program, listens_for: [review.approved], log} |
 | external review: hands an approved branch off | `merge_gate`; `causationid` = the approval | `gate.handed_off` |
 | external review: sends the work back after feedback on its pull request | whoever gave the first of it, as the bridge named them; `causationid` = that bridge event | `changes.requested` (`to` the worker that did it) |
+| external review: asks a planner about a ticket sent back by its pull request at a multiple of the threshold | `merge_gate` | `task.attention_needed` |
 | external review: asks a planner about a pull request closed unmerged | `merge_gate` | `task.attention_needed` |
 | pauses the pipeline | `merge_gate` | `pipeline.paused` |
 | deploys or restarts staging | `merge_gate` | `staging.deployed`, `staging.failed`, `staging.restarted` |

@@ -45,19 +45,21 @@ def unusable(role: str, report: dict | None) -> str | None:
 
 
 def send_back(store: LocalStore, events: Events, threshold: int, t: Ticket, rejected_by: str, feedback: str,
-              counted: bool = True, by: str | None = None, cause: dict | None = None, **fields) -> int:
+              counted: bool = True, by: str | None = None, cause: dict | None = None, ask_as: str | None = None, **fields) -> int:
     """The one way a ticket is rejected back to its worker, by a reviewer, the task system or the
     merge gate: the round is counted (unless ``counted`` is False: nothing was reviewed, or a
     merge conflict), and the planner (the coordinator role) is told when the round count reaches
     the threshold and at every further multiple of it, not on every rejection: it should decide
     once, not be told 38 times. ``by`` is the machine whose responsibility the rejection is (the
     reviewer's or the gate's): named in the metrics, and the attention is published as it (the
-    writer's own when None). Returns the ticket's review rounds."""
+    writer's own when None), unless ``ask_as`` names another (external review: the merge gate, whose
+    hand-off keeps coming back, rather than a person on the pull request). Returns the ticket's
+    review rounds."""
     rounds = t.review_rounds + (1 if counted else 0)
     store.transition(t.id, t.version, State.REJECTED, by=by, cause=cause, rejected_by=rejected_by, feedback=feedback,
                      review_rounds=rounds, **fields)
     if counted and threshold and rounds % threshold == 0:
-        events.attention(COORDINATOR, f"{t.id} has been rejected {rounds} times", ticket=t.id, src=by)
+        events.attention(COORDINATOR, f"{t.id} has been rejected {rounds} times", ticket=t.id, src=ask_as or by)
     return rounds
 
 
