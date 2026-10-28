@@ -50,20 +50,22 @@ def test_a_task_is_done_in_its_folder_and_reviewed_with_nothing_merged(env):
 
 def test_the_scheduler_is_no_machine_and_starts_none(env):
     """It announces nothing of itself and publishes nothing as itself: its offers go out as the
-    worker's and reviewer's queues, its answers as the asker; it says only what makes the worker's
-    queue act (listens_for, nothing else)."""
+    coordinator's dispatch, its answers as the asker; it announces only dispatch, an instance of the
+    coordinator (what makes it act and that it is a program; no package), and nothing for the
+    worker or the reviewer, whose instances say what they listen for."""
     project, store, events, _repo = env
     a_ticket(store)
     run_scheduler(project, store, events)
     evs, _ = events.bus.read(0, limit=10000)
     started = {e["source"]: e["data"] for e in evs if e["type"] == "orchestra.machine.started"}
-    assert started["worker"] == {"listens_for": ["gate.conflict", "gate.rejected", "ticket.created"]}
-    assert set(started) == {"worker", "worker/1", "reviewer/1"}                     # the rest are the machines' own
-    assert {e["source"] for e in evs} <= {"planner", "worker", "worker/1", "reviewer/1"}
+    assert started["coordinator/dispatch"] == {"mode": "continuous", "kind": "program", "log": str(project.logs_dir / "scheduler.log"),
+                                               "listens_for": ["gate.conflict", "gate.rejected", "task.released", "ticket.created"]}
+    assert set(started) == {"coordinator/dispatch", "worker/1", "reviewer/1"}         # the rest are the machines' own
+    assert {e["source"] for e in evs} <= {"planner", "coordinator/dispatch", "worker/1", "reviewer/1"}
 
 
 def test_the_work_passes_between_the_machines_and_the_scheduler_records_it(env):
-    """The worker's queue offers the ticket (task.assigned, as ``worker``); the machine whose
+    """Dispatch offers the ticket (task.assigned, as ``coordinator/dispatch``); the machine whose
     claim is first holds it; the worker asks the reviewers itself (review.requested), a reviewer
     claims that and approves (review.approved). The scheduler records every step in its store,
     naming the event that caused it, and publishes none of them: on the ticket only the machines act."""
@@ -73,7 +75,7 @@ def test_the_work_passes_between_the_machines_and_the_scheduler_records_it(env):
     every = events.bus.read(0, limit=10000)[0]
     evs = [e for e in every if e.get("subject") == t.id]
     assert [(e["type"], e["source"], (e["data"] or {}).get("role")) for e in evs if e["type"] not in ("task.working", "ticket.created")] == [
-        ("task.assigned", "worker", "worker"), ("task.accepted", "worker/1", "worker"), ("review.requested", "worker/1", "reviewer"),
+        ("task.assigned", "coordinator/dispatch", "worker"), ("task.accepted", "worker/1", "worker"), ("review.requested", "worker/1", "reviewer"),
         ("task.accepted", "reviewer/1", "reviewer"), (APPROVED, "reviewer/1", "reviewer")]
     assert not [e for e in every if e["type"] in ("ticket.transitioned", "ticket.note_added")]       # no echoes
     by_id = {e["id"]: e for e in every}

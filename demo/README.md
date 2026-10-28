@@ -17,7 +17,7 @@ removes the state a previous run left for that path (under `~/.orchestrator/<nam
 |---|---|
 | `orchestra run` | Orchestra's host: the Core strip shows it up, and it rediscovers the system dynamics model from the metrics |
 | `orchestra web --port 8071` | Orchestra's web UI, with the task system's Tickets page and Tasks panel (its plugin) |
-| `tasking run --wait` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back. `orchestra run` starts it (the task system's plugin declares it; `tasks.scheduler` on the Core page). It is no machine: what it publishes goes out as the machine it acts for (an offer as `worker`, the worker's queue), so the Machines page does not list it |
+| `tasking run --wait` | the scheduler: offers ready tickets to the roles over the bus, applies what comes back. `orchestra run` starts it (the task system's plugin declares it; `tasks.scheduler` on the Core page). It is no machine: what it publishes goes out as the machine it acts for (an offer as `coordinator/dispatch`: dispatch is the coordinator's), so the Machines page does not list it |
 | `tasking metrics` | the instrument `tasks.tickets`: `orchestra run` runs it every discovery step (the plugin declares it) and writes the ticket levels and transition counters it prints to the metrics store |
 | `machines/shell_worker.py` | the machine `worker` (instance `worker/1`): runs the `sh` code blocks of a ticket's description in its workspace (the ticket's own empty folder; `ORCHESTRA_REPO` names the repository), writes RESULT.md |
 | `machines/check_reviewer.py` | the machine `reviewer` (`reviewer/1`): approves when RESULT.md exists and the acceptance text's `` `files` `` and `"lines"` are there |
@@ -61,11 +61,12 @@ Where to look, at http://127.0.0.1:8071:
   its description, acceptance, notes (the worker's summary, the reviewer's verdict) and the
   blocker or feedback.
 - **Machines**: `worker` and `reviewer` as observed from the bus (each announces where its log
-  is, so its dialog shows it), `planner` (run.py's one-shot requests, a scheduled program) and
+  is, so its dialog shows it), `planner` (run.py's one-shot requests, a scheduled program),
+  `coordinator` (one instance, `dispatch`: the task system's queue, which the scheduler runs) and
   `orchestra-host`; what each publishes and listens for, and the event map between them:
   `task.requested` from the planner and `ticket.created` and `request.done` back as the planner
-  (the scheduler answers for it), the hand-off planner → worker via `ticket.created`,
-  `task.assigned` from `worker` (the worker's queue, which the scheduler runs), `task.accepted`
+  (the scheduler answers for it), the hand-offs planner → coordinator via `ticket.created` and
+  coordinator → worker via `task.assigned`, `task.accepted`
   from the machines, `review.requested` from the worker straight to the reviewer,
   `changes.requested` from the reviewer straight back to the worker. The scheduler is not
   there: it is no machine. `task_web` appears once an operator control has been pressed.

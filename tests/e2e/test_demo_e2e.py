@@ -102,7 +102,7 @@ def test_tickets_are_worked_reviewed_and_done_or_blocked_by_programs(demo):
     evs = get(url + "/api/events")["events"]                       # the last 500: the whole demo is fewer
     assert not [e for e in evs if e["type"] in ("ticket.transitioned", "ticket.note_added") or e["source"] == "task_scheduler"]
     protocol = [(e["type"], e["source"]) for e in evs if e.get("subject") == "DEMO-1" and e["type"] != "task.working"]
-    assert protocol == [("ticket.created", "planner"), ("task.assigned", "worker"), ("task.accepted", "worker/1"),
+    assert protocol == [("ticket.created", "planner"), ("task.assigned", "coordinator/dispatch"), ("task.accepted", "worker/1"),
                         ("review.requested", "worker/1"), ("task.accepted", "reviewer/1"), ("review.approved", "reviewer/1")]
     four = [(e["type"], e["source"], (e["data"] or {}).get("to")) for e in evs if e.get("subject") == "DEMO-4" and e["type"] == "changes.requested"]
     assert four == [("changes.requested", "reviewer/1", "worker/1")]                    # the rejection went to the worker itself
@@ -161,15 +161,19 @@ def test_orchestra_observes_the_machines_and_not_the_scheduler(demo):
     assert not [e for e in d["edges"] if "task_scheduler" in (e["from"], e["to"])]
     edges = {(h["from"], h["via"], h["to"]) for h in d["handoffs"]}
     assert not [e for e in edges if "task_scheduler" in (e[0], e[2])], edges
-    assert {("planner", "ticket.created", "worker"), ("worker", "review.requested", "reviewer"),
-            ("reviewer", "changes.requested", "worker")} <= edges, edges
+    assert {("planner", "ticket.created", "coordinator"), ("coordinator", "task.assigned", "worker"),
+            ("worker", "review.requested", "reviewer"), ("reviewer", "changes.requested", "worker")} <= edges, edges
+    assert not [e for e in edges if e[2] == "worker" and e[0] in ("planner", "merge_gate")], edges   # work reaches a worker only by an offer
     assert seen["planner"]["mode"] == "scheduled" and seen["planner"]["kind"] == "program"
     for m in ("worker", "reviewer"):
         assert seen[m]["mode"] == "continuous" and seen[m]["kind"] == "program" and seen[m]["package"] is None
         assert seen[m]["logs"] == ["1"], "the demo's programs say where their log is"
         assert [i["id"] for i in seen[m]["instances"]] == ["1"]
         assert "task.assigned" in seen[m]["subscribes"]
-    assert "ticket.created" in seen["worker"]["subscribes"]                             # its queue offers what a planner creates
+    # dispatch, the coordinator's, offers what a planner creates: one instance of the coordinator, a program
+    coordinator = seen["coordinator"]
+    assert "ticket.created" in coordinator["subscribes"] and "ticket.created" not in seen["worker"]["subscribes"]
+    assert coordinator["kind"] == "program" and coordinator["package"] is None and [i["id"] for i in coordinator["instances"]] == ["dispatch"]
     # the ticket measurements arrive through the instrument the plugin declares
     wait_until("the instrument", lambda: any(i["name"] == "tasks.tickets" and i.get("points") for i in get(url + "/api/instruments")["instruments"]),
                timeout_s=60)

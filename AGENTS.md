@@ -12,12 +12,14 @@ broken without updating the spec and saying so in the commit.
    where the scheduler relays between machines, where anything else writes the record, or where a
    machine's words are translated into another state.
    **The scheduler is no machine** (the owner's decision of 2026-10-27, D17 refined). It is one
-   daemon standing in for each machine's own scheduling: the worker's and the reviewer's queues,
-   the merge gate, the answers to a planner's requests. It never announces itself and never
+   daemon standing in for each machine's own scheduling: the coordinator's dispatch, the leases
+   of the worker's and the reviewer's turns, the merge gate, the answers to a planner's requests. It never announces itself and never
    publishes as `task_scheduler` (`tasking/events.py` refuses it, and the store refuses a move it
    records without naming the machine it is for). Every event it publishes goes out as the
    machine whose responsibility it implements at that moment, and only for an act that machine's
-   own process did not already announce: offers and releases as `worker` or `reviewer`, the gate,
+   own process did not already announce: offers, and withdrawals of offers nobody claimed, as
+   `coordinator/dispatch` (dispatch is the coordinator's), a held turn taken back as its role
+   (`worker`, `reviewer`), the gate,
    its pause and staging as `merge_gate`, a request's answer and what it made as the asker,
    attention as the machine whose work is stuck (SPEC section 3, "Who publishes what"). It writes
    no metrics: an instrument the plugin declares reads them from the record. Never add an event

@@ -10,7 +10,11 @@ machine's own scheduler: the worker's queue, the reviewer's, the merge gate, the
 planner's requests. So it never publishes as itself (``task_scheduler``) and never announces
 itself: every event it publishes is published as the machine whose responsibility it implements
 at that moment (``src``), and only for an act that machine's own process did not already announce
-(SPEC.md section 3, "Who publishes what"). A publish as ``task_scheduler`` is refused. The web
+(SPEC.md section 3, "Who publishes what"). Choosing the next ticket to offer (readiness,
+priority, capacity) is dispatch, the coordinator's responsibility, so the queue's offers and its
+withdrawals of offers nobody took go out as ``coordinator/dispatch``: an instance of the
+coordinator machine, beside whatever else fills that role (an AI agent). A publish as
+``task_scheduler`` is refused. The web
 plugin's operator controls publish as ``task_web``, the command line as ``task_cli``, a planner
 asking through ``tasking api`` as whatever it says it is. The bus itself is opened as Orchestra
 opens it (``[events] url`` or ORCHESTRA_EVENTS_URL), so there is one place that decides where the
@@ -41,11 +45,12 @@ if TYPE_CHECKING:
     from .config import Project
 
 SCHEDULER = "task_scheduler"  # the daemon's name in its log and on the record's notes: never an event's source
-WORKER, REVIEWER = "worker", "reviewer"   # the roles a turn is offered to, and the machines their queues are published as
+WORKER, REVIEWER = "worker", "reviewer"   # the roles a turn is offered to; a held turn taken back is published as its role
 OPERATOR = "task_web"         # the operator's console (the web plugin's controls): pause, capacity ceiling, stop
 GATE = "merge_gate"           # the merge gate, a machine of the task system's own: it takes approved work
 ATTENTION = "task.attention_needed"
 COORDINATOR, SUPERVISOR = "coordinator", "supervisor"     # the planner roles attention is addressed to: names, not programs here
+DISPATCH = f"{COORDINATOR}/dispatch"   # the queue: the coordinator's dispatch, an instance of that machine (offers, and withdrawing them)
 
 
 def flat(ev: dict) -> dict:
@@ -92,4 +97,4 @@ class Events(OrchestraEvents):
         return [flat(e) for e in evs], nxt
 
 
-__all__ = ["ATTENTION", "COORDINATOR", "GATE", "OPERATOR", "REVIEWER", "SCHEDULER", "SUPERVISOR", "WORKER", "Events"]
+__all__ = ["ATTENTION", "COORDINATOR", "DISPATCH", "GATE", "OPERATOR", "REVIEWER", "SCHEDULER", "SUPERVISOR", "WORKER", "Events"]
