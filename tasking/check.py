@@ -1,7 +1,7 @@
 """What the task system says against a merged configuration (Orchestra's ``project.config.raw``):
-a list of problems, empty when its sections read cleanly. It is the plugin's reader for
-Orchestra's ``config_edit`` (``check=``), so a change that makes it say something new is refused
-with what it said; the operator's guide (``guide.md``) names it.
+a list of problems, empty when its sections read cleanly (or are absent). It is the plugin's
+``Plugin.check``, which Orchestra's ``config_edit`` runs on every change, so a change that makes it
+say something new is refused with what it said; the operator's guide (``guide.md``) names it.
 
 It says what is wrong whatever order settings are made in: an unknown key, a value of the wrong
 kind, an entry without its name or command, a placeholder a command cannot be given (the gate

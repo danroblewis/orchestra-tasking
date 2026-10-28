@@ -69,3 +69,23 @@ def test_the_operators_controls_need_a_login_and_orchestras_own_pages(project):
     assert browser.get("/api/plugins/tasks/board").json()["pickup_paused"] is False
     assert browser.post("/api/plugins/tasks/control", json={"action": "pause"}, headers=page).json()["ok"]
     assert browser.get("/api/plugins/tasks/board").json()["pickup_paused"] is True
+
+
+def test_config_edit_runs_the_task_system_s_check(project):
+    """Plugin.check is tasking.check.check: config_edit refuses what it newly says, by name, and
+    allows what touches none of its sections."""
+    import pytest
+    from orchestra import config_edit
+    from orchestra.config import ConfigError
+
+    from tasking.web import plugin
+
+    o = load_orchestra_project(project.repo_root)
+    assert plugin(o).check({}, None) == [] and plugin(o).check({"tasks": {"wokers": 1}}, None)
+    config_edit._LOADED.clear()
+    try:
+        with pytest.raises(ConfigError, match=r"tasks: .*wokers"):
+            o.config_edit.set("tasks.wokers", 3)
+        assert o.config_edit.set("tasks.workers", 3).changed
+    finally:
+        config_edit._LOADED.clear()

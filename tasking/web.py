@@ -38,7 +38,15 @@ def plugin(orchestra_project) -> Plugin:
     return Plugin("tasks", [Page("/tickets", "Tickets", STATIC / "tickets.html")],
                   STATIC, router(project), scripts=["tasks-boot.js"], stylesheets=["tasks.css"],
                   processes=processes(project), collectors=collectors(project),
-                  guide=Path(__file__).parent / "guide.md")   # how to configure it, for an AI operator (/api/guides)
+                  guide=Path(__file__).parent / "guide.md",   # how to configure it, for an AI operator (/api/guides)
+                  check=_check)                                # what project.config_edit refuses in its sections
+
+
+def _check(raw: dict, repo_root: Path | None) -> list[str]:
+    """``Plugin.check``: the task system's reader (``check.py``); nothing when it is not set up."""
+    from .check import check
+
+    return check(raw)
 
 
 def set_up(project: Project) -> bool:

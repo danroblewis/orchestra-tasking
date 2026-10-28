@@ -20,11 +20,12 @@ its scheduler running.
 
 **How a setting is checked.** `tasking.check.check(raw)` is the task system's reader: it returns
 the problems in a merged configuration (unknown keys, wrong values, an entry without `name` or
-`command`, a placeholder a command cannot be given, every `[[tasks.recurring]]` problem). Pass it
-to `config_edit` as `check=` (Orchestra does not run it for you), so a change it objects to is refused with
-the reason. It cannot tell you that a command works: a gate command is proven only by running on
-the base branch. After a gate change, read the next gate run (the planner query `list_gate_runs`,
-then `get_gate_run` with its id: each stage's status, exit code and output tail).
+`command`, a placeholder a command cannot be given, every `[[tasks.recurring]]` problem). It is
+the plugin's check (`Plugin.check`), which `config_edit` runs by itself on every change: pass no
+`check=`. A change it objects to is refused with the reason, after `tasks:`. It cannot tell you
+that a command works: a gate command is proven only by running on the base branch. After a gate
+change, read the next gate run (the planner query `list_gate_runs`, then `get_gate_run` with its
+id: each stage's status, exit code and output tail).
 
 ## What the human decides
 
