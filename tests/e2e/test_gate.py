@@ -397,3 +397,27 @@ def test_without_reruns_a_failure_is_not_retried(env, tmp_path):
     run = run_gate(project, store, events, t.id)
     assert run["stages"][0]["status"] == "failed" and run["stages"][0]["attempts"] == 1 and run["reruns"] == 0
     assert not (project.reports_dir / f"{run['id']}.rerun1").exists()
+
+
+def checks_orchestra_repo(check: str) -> str:
+    """A unit spec that passes when ORCHESTRA_REPO is the directory it runs in and ``check`` holds."""
+    return f"""[[gate.unit]]\nname = "unit"\ncommand = '[ "$(cd "$ORCHESTRA_REPO" && pwd -P)" = "$(pwd -P)" ] && {check}'\n"""
+
+
+def test_a_stage_command_finds_the_tree_it_checks_in_orchestra_repo(env):
+    """ORCHESTRA_REPO names the gate's worktree, where the command runs, not the main checkout: a
+    script that reads it checks the merged files. The ticket's BROKEN file is seen, so it is
+    rejected; the base check, in the base's own worktree, passes, so the base is not blamed."""
+    project, store, events, ms, repo = env
+    set_config(project, repo, checks_orchestra_repo('test ! -f "$ORCHESTRA_REPO/BROKEN"'))
+    t = merging_ticket(store, ms, repo, "breaks it", lambda wt: (wt / "BROKEN").write_text("x"))
+    run = run_gate(project, store, events, t.id)
+    assert run["status"] == "rejected", run["stages"]
+    assert [s["status"] for s in run["base_check"]] == ["passed"]
+
+
+def test_a_stage_command_reading_orchestra_repo_lands_a_good_ticket(env):
+    project, store, events, ms, repo = env
+    set_config(project, repo, checks_orchestra_repo('test -f "$ORCHESTRA_REPO/NEW.md"'))
+    t = merging_ticket(store, ms, repo, "adds NEW.md", lambda wt: (wt / "NEW.md").write_text("ok\n"))
+    assert run_gate(project, store, events, t.id)["status"] == "landed"

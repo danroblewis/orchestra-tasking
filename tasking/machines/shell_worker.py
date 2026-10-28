@@ -14,7 +14,8 @@ workspace, says it is still working while they run, and asks the reviewers direc
   command that wants it (``cd "$ORCHESTRA_REPO" && …``). What the commands printed goes to
   RESULT.md there;
 - code (the offer names a branch): the workspace is a git worktree of the repository on that
-  branch, so the commands change the repository's files where they are; the worker commits what
+  branch, and ``ORCHESTRA_REPO`` names that worktree (as the merge gate's does for its own), so the
+  commands change the repository's files where they are; the worker commits what
   they changed, with the commands and their exit codes in the commit message, for the reviewer
   and the merge gate, and runs the offer's ``unit_command`` on that commit for the reviewer to
   read. Nothing else is written into the worktree. Commands that changed nothing leave nothing to
@@ -133,6 +134,8 @@ class Job:
     def __init__(self, events: Events, me: str, offer: dict, jobs: dict, env: dict[str, str], since: int = 0):
         self.events, self.me, self.offer, self.jobs, self.env, self.since = events, me, offer, jobs, env, since
         self.folder = Path(offer["workspace"])
+        if offer.get("branch") is not None:             # code: the tree to change and check is the worktree
+            self.env = {**env, "ORCHESTRA_REPO": str(self.folder)}
         self.released, self.done = threading.Event(), threading.Event()
         self.proc: subprocess.Popen | None = None
         threading.Thread(target=self.run, daemon=True).start()

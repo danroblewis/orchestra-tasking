@@ -109,7 +109,8 @@ def test_a_release_stops_the_commands_the_heartbeat_and_the_report(tmp_path):
 
 def test_in_code_mode_the_commands_run_in_the_worktree_and_are_committed_without_a_result_file(tmp_path):
     """A branch in the offer: the workspace is a worktree; what the commands change is committed on
-    it and nothing else (no RESULT.md, no record of the commands) goes into the branch."""
+    it and nothing else (no RESULT.md, no record of the commands) goes into the branch. The unit
+    command finds the worktree in ORCHESTRA_REPO, as it does in the merge gate."""
     repo = tmp_path / "repo"
     repo.mkdir()
     for args in (["init", "-q", "-b", "main"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]):
@@ -118,7 +119,7 @@ def test_in_code_mode_the_commands_run_in_the_worktree_and_are_committed_without
     subprocess.run(["git", "worktree", "add", "-q", "-b", "orchestra/T-1-x", str(wt), "main"], cwd=repo, check=True)
     events, jobs = Recorder(), {}
     offer = {"assignment": "T-1.worker.1", "ticket": "T-1", "role": "worker", "workspace": str(wt), "branch": "orchestra/T-1-x",
-             "base": "main", "unit_command": "test -f collector.py",
+             "base": "main", "unit_command": 'test -f "$ORCHESTRA_REPO/collector.py"',   # ORCHESTRA_REPO: the worktree, as in the gate
              "lease_s": 180.0, "brief": {"title": "Add a collector", "description": "```sh\necho 'x = 1' > collector.py\n```"}}
     env = {"PATH": "/usr/bin:/bin", "ORCHESTRA_REPO": str(repo), "HOME": str(tmp_path),
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}          # no identity of the machine's own

@@ -530,7 +530,9 @@ that each appended a `[[collect]]` entry, it keeps both, the base's first, if th
 and says so in the run's summary), then the
 stages from `orchestra.toml`: `[build]` (the artifact is copied to `<state>/artifacts/<run>/`),
 every `[[gate.unit]]` spec, and if `[acceptance]` and `[[gate.acceptance]]` are set, the artifact
-started on a free port and the acceptance specs run against it. All pass: the base branch is
+started on a free port and the acceptance specs run against it. Every stage command runs in the tree it
+checks, with `ORCHESTRA_REPO` naming that tree (the gate's worktree, or the base's in the base
+check), never the main checkout, so a script that reads `ORCHESTRA_REPO` checks the merged files. All pass: the base branch is
 fast-forwarded (pushed if `push = true`), the ticket is `DONE`, its worktree and branch removed,
 and the build deployed to staging. The repository root's files follow only when it has the base
 branch checked out, clean: then it is fast-forwarded there (an untracked file at a path the landing

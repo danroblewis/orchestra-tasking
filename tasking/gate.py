@@ -30,9 +30,18 @@ from .staging import Staging, build_python
 from .store import LocalStore
 
 
+def checked_env(cwd: Path) -> dict[str, str]:
+    """What a stage command runs with: ``ORCHESTRA_REPO`` names the tree being checked (the gate's
+    worktree with the ticket merged in, or the base alone), the directory it runs in, never the
+    main checkout; Orchestra's ``load_project`` resolves a worktree to its repository, so the
+    project and its state are the same."""
+    return {**os.environ, "ORCHESTRA_REPO": str(cwd)}
+
+
 def _attempt(cmd: str, cwd: Path, timeout: float) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, timeout=timeout, check=False)
+        p = subprocess.run(cmd, shell=True, cwd=str(cwd), env=checked_env(cwd), capture_output=True, text=True, timeout=timeout,
+                           check=False)
         return p.returncode, (p.stdout or "") + ("\n" + p.stderr if p.stderr else "")
     except subprocess.TimeoutExpired as e:
         return 124, f"timed out after {timeout}s\n{(e.stdout or b'')[-4000:]!r}"
@@ -132,7 +141,7 @@ class _Target:
         self.placeholders = {"artifact": artifact or "", "port": str(self.port), "url": self.url, "python": python}
         cmd = (cfg.acceptance_start or "").format(**self.placeholders)
         self.log = (log_dir / "target.log").open("w", encoding="utf-8")
-        self.proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), stdout=self.log, stderr=subprocess.STDOUT,
+        self.proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), env=checked_env(cwd), stdout=self.log, stderr=subprocess.STDOUT,
                                      start_new_session=True)
         ready = (cfg.acceptance_ready or "").format(**self.placeholders)
         if ready.startswith("http"):
