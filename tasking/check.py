@@ -8,22 +8,25 @@ kind, an entry without its name or command, a placeholder a command cannot be gi
 fills commands with ``str.format``, and a run whose command cannot be filled is a gate error that
 pauses the pipeline), and every problem ``recurring.check`` finds. Settings that are valid but do
 nothing together (``[[gate.acceptance]]`` without ``[acceptance] start``) are the guide's to
-explain, not refused here: a configuration is often written one setting at a time."""
+explain, not refused here: a configuration is often written one setting at a time. With the project
+root, the worktrees ``[tasks] worktree_paths`` names are looked at too (``_worktree_paths``)."""
 
 from __future__ import annotations
 
 import string
+from pathlib import Path
 from typing import Any
 
 from orchestra.config import ConfigError, parse_duration
 
-from . import recurring
+from . import adopt, recurring
 from .config import Config
 
 SECTIONS: dict[str, set[str]] = {
     "project": {"base_branch", "ticket_prefix", "work", "push"},
     "tasks": {"workers", "reviewers", "tick", "return_timeout", "review_rounds_before_escalation", "aging_days_per_level",
-              "reuse_worktrees", "worktree_pool", "worktree_clean_ignored", "recurring"},
+              "reuse_worktrees", "worktree_pool", "worktree_clean_ignored", "worktree_paths",
+              "worktree_setup", "worktree_setup_timeout", "recurring"},
     "build": {"command", "artifact", "timeout"},
     "acceptance": {"start", "ready", "ready_timeout"},
     "gate": {"timeout", "mode", "rerun_failures", "test_reports", "external", "stacking", "stack_depth", "unit", "acceptance"},
@@ -40,7 +43,7 @@ PLACEHOLDERS = {"build.command": {"reports"}, "gate.unit": {"reports"}, "gate.ac
                 "acceptance.start": TARGET, "acceptance.ready": TARGET, "staging.start": {"artifact", "port", "python"},
                 "staging.stop": {"port", "pid"}}
 CHOICES = {"project.work": ("tasks", "code"), "gate.mode": ("land", "external")}
-DURATIONS = ("tasks.tick", "tasks.return_timeout", "build.timeout", "acceptance.ready_timeout", "gate.timeout",
+DURATIONS = ("tasks.tick", "tasks.worktree_setup_timeout", "tasks.return_timeout", "build.timeout", "acceptance.ready_timeout", "gate.timeout",
              "gate.external.settle", "staging.health_timeout")
 
 
@@ -123,9 +126,35 @@ def _entries(raw: dict) -> list[str]:
     return out
 
 
-def check(raw: dict) -> list[str]:
-    """Every problem the task system finds in ``raw``; [] when its sections read cleanly."""
-    out = _sections(raw) + _entries(raw)
+def _worktree_paths(raw: dict, repo_root: Path | None) -> list[str]:
+    """``[tasks] worktree_paths``: worktrees the owner already has as the pool's slots
+    (tasking/adopt.py). Listing them turns ``reuse_worktrees`` on, so ``reuse_worktrees = false``
+    beside them contradicts it; ``worktree_pool`` may be fewer (the first ones are used), never
+    more. With the project root known, each path is looked at: a worktree of the same repository,
+    not the root, listed once, and (not adopted yet) nothing in it a reset would destroy."""
+    t = raw.get("tasks")
+    paths = t.get("worktree_paths") if isinstance(t, dict) else None
+    if not paths:
+        return []
+    if not isinstance(paths, list) or not all(isinstance(p, str) and p.strip() for p in paths):
+        return ['[tasks] worktree_paths: a list of paths, such as ["~/Code/worktree_2"]']
+    out = []
+    if t.get("reuse_worktrees") is False:
+        out.append("[tasks] reuse_worktrees = false with worktree_paths: listing worktrees turns the pool on; "
+                   "remove one of the two")
+    size = t.get("worktree_pool")
+    if isinstance(size, int) and size > len(paths):
+        out.append(f"[tasks] worktree_pool = {size} is more than the {len(paths)} worktree_paths: the pool is "
+                   "those worktrees and makes no others; remove worktree_pool or list more")
+    if repo_root is not None:
+        out += adopt.problems(paths, Path(repo_root))
+    return out
+
+
+def check(raw: dict, repo_root: Path | None = None) -> list[str]:
+    """Every problem the task system finds in ``raw`` (for the project at ``repo_root``, when
+    given: what ``worktree_paths`` names is looked at on disk); [] when its sections read cleanly."""
+    out = _sections(raw) + _entries(raw) + _worktree_paths(raw, repo_root)
     for key, allowed in PLACEHOLDERS.items():
         if "." in key and not key.startswith("gate.") and _at(raw, key) is not None:
             section, k = key.rsplit(".", 1)

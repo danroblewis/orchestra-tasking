@@ -520,6 +520,41 @@ names (section 3). Off (the default), nothing here applies.
   pool larger than its size (after `worktree_pool` was lowered; the extra worktrees stay until
   removed by hand). Turning the option off leaves the pool's worktrees on disk; turning it on
   while tickets have their own worktrees leaves those until the tickets land.
+- *Adopted worktrees* (`[tasks] worktree_paths`, `tasking/adopt.py`): the pool's slots are
+  worktrees the owner already has, in the order listed (`~` expanded, relative paths from the
+  project root), and the pool's size is their count (`worktree_pool` may be smaller, the first ones
+  used; larger is refused). Listing them turns `reuse_worktrees` on; `reuse_worktrees = false`
+  beside them is refused. Nothing is made under `<state>/pool/`, and no listed worktree is ever
+  made, removed or replaced. Each must be a worktree of the project's repository (the same `git
+  rev-parse --git-common-dir`), not the project root, listed once: the check (`Plugin.check`, with
+  the project root) refuses otherwise. A listed worktree is *adopted* before its first use only if
+  a reset would lose nothing in it: no uncommitted change, no untracked file that is not ignored,
+  no merge, rebase, cherry-pick, revert or `am` in progress (commits are never at risk: the pool
+  checks a ticket's branch out and leaves the owner's branch). Otherwise it is *refused*: never
+  reset, recorded with what is in it (`runtime.json` `pool_refused`), said once in the scheduler log
+  and once to the supervisor role (`task.attention_needed` from `coordinator/dispatch`), shown in
+  `orchestra tasks status` and `doctor`, and looked at again at most once a minute; the check
+  refuses writing such a path too. Adopting marks it: `orchestra-pool`, holding the project's key,
+  in the worktree's own git directory (`git rev-parse --git-dir`; nothing in the working tree).
+  A marked worktree is the pool's: reset, detached and handed out like a made slot, and a ticket
+  branch checked out there is released as from any idle slot; one marked by another project is
+  refused; one whose marker is removed is looked at again. Between tickets an adopted worktree is
+  left as any slot: detached at the last commit it worked on. A worktree taken out of the list is
+  forgotten once free and its marker removed; with no list, adopted slots are forgotten and the
+  pool makes its own again. The owner must not work in a listed worktree while Orchestra runs.
+- *Setup* (`[tasks] worktree_setup`, `worktree_setup_timeout` default 10m; `tasking/setup.py`): a
+  shell command run once in each worktree the task system makes or adopts, after it exists and
+  before its first use: a pool slot (made or adopted), a ticket's own worktree when the pool is
+  off, a gate worktree. `sh -c`, in the worktree, in Orchestra's child environment plus
+  `ORCHESTRA_PROJECT` (the project root) and `ORCHESTRA_WORKTREE`. A success is recorded in the
+  worktree's git directory (`orchestra-setup`, a hash of the command): it runs again only when the
+  command changes or the worktree is made again, never on a reset, so what it makes must survive
+  one (ignored files, or tracked ones marked `skip-worktree`). A failure leaves the worktree
+  unused: a pool slot is released and skipped, a ticket's own worktree is not offered, and the
+  ticket waits; the output's tail goes to the scheduler log, the supervisor is told once per
+  failure, and it is tried again after a back-off (one minute, doubling, at most 30). In a gate
+  worktree a failure is a gate error (the pipeline pauses). The stack worktree (`<state>/stack/`,
+  rebases only, no machine works there) is not set up.
 
 **The merge gate** (`tasking/gate.py`) lands approved code, one ticket per run: a gate
 worktree on a temporary branch from the base head, `git merge --no-ff` of the reviewed commit (a
@@ -807,6 +842,9 @@ review_rounds_before_escalation = 3
 aging_days_per_level = 2 # a ticket gains one priority level per N days of age; 0 disables
 reuse_worktrees = false  # code: keep a pool of worktrees and reset one per turn (section 5)
 worktree_pool = 4        # the pool's size, the gate's included (default workers + reviewers + 1)
+# worktree_paths = ["~/Code/worktree_2"]   # the pool is these worktrees of the owner's (section 5)
+# worktree_setup = "ln -sf $ORCHESTRA_PROJECT/.env .env"   # once per worktree made or adopted
+# worktree_setup_timeout = "10m"
 worktree_clean_ignored = false   # a reset also removes ignored files (build caches)
 
 [build]                  # code, optional: the artifact the gate builds
@@ -958,7 +996,7 @@ the instrument `orchestra run` runs (section 8), so where they go is decided in 
     .lock                              # one file lock around every read-modify-write
     workspaces/<ticket>/               # tasks mode
     worktrees/<ticket>/                # code mode
-    pool/<n>/                          # code mode with reused worktrees
+    pool/<n>/                          # code mode with reused worktrees (none with worktree_paths)
     stack/                             # code mode with stacking: where a branch with no worktree of its own is restacked
     gate/<run>/  artifacts/<run>/  staging/
     reports/<run>/  reports/<run>.rerun<n>/     # code: the gate's test reports and gate.xml (section 5)

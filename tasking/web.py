@@ -46,7 +46,7 @@ def _check(raw: dict, repo_root: Path | None) -> list[str]:
     """``Plugin.check``: the task system's reader (``check.py``); nothing when it is not set up."""
     from .check import check
 
-    return check(raw)
+    return check(raw, repo_root)
 
 
 def set_up(project: Project) -> bool:

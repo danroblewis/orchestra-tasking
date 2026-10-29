@@ -17,7 +17,9 @@ from tasking.assignments import (
     pass_on,
 )
 from tasking.config import init_project
+from tasking.events import Events
 from tasking.scheduler import Scheduler
+from tasking.store import LocalStore
 
 UNIT = "test -f README.md && test ! -f BROKEN"     # the starter unit command: passes unless a worker breaks the tree
 
@@ -47,6 +49,48 @@ def project(tmp_path, monkeypatch):
     git("commit", "-qm", "orchestra config", cwd=repo)
     monkeypatch.setenv("ORCHESTRA_REPO", str(repo))
     return p
+
+
+@pytest.fixture
+def owner_layout(tmp_path, monkeypatch):
+    """The layout of an owner with a large repository: one bare clone ``Code/bare/.git`` with
+    worktrees ``Code/worktree_1..4`` beside it (worktree_1 on main, the others on branches
+    ``mine-<n>``), the project in worktree_1, in code mode, with ``tasks`` added to its ``[tasks]``,
+    ``files`` committed upstream and ``unit`` as the gate's unit command. ``HOME`` is the
+    temporary directory, so ``~/Code/...`` names the worktrees. Returns (project, store, events, Code)."""
+    def make(tasks: str = "", files: dict[str, str] | None = None, unit: str = UNIT):
+        monkeypatch.setenv("ORCHESTRATOR_HOME", str(tmp_path / "home"))
+        monkeypatch.delenv("ORCHESTRA_EVENTS_URL", raising=False)
+        monkeypatch.delenv("ORCHESTRA_METRICS_URL", raising=False)
+        src = tmp_path / "src"
+        src.mkdir()
+        git("init", "-q", "-b", "main", cwd=src)
+        for name, text in {"README.md": "# monorepo\n", ".gitignore": "cache/\n", **(files or {})}.items():
+            (src / name).parent.mkdir(parents=True, exist_ok=True)
+            (src / name).write_text(text)
+        git("add", "-A", cwd=src)
+        git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init", cwd=src)
+        code = tmp_path / "Code"
+        bare = code / "bare" / ".git"
+        git("clone", "-q", "--bare", str(src), str(bare), cwd=tmp_path)
+        git("config", "user.email", "t@t", cwd=bare)
+        git("config", "user.name", "t", cwd=bare)
+        git("worktree", "add", "-q", "../../worktree_1", "main", cwd=bare)
+        for i in (2, 3, 4):
+            git("worktree", "add", "-q", "-b", f"mine-{i}", f"../../worktree_{i}", "main", cwd=bare)
+        wt1 = code / "worktree_1"
+        project = init_project(wt1, prefix="T", unit_command=unit)
+        toml = wt1 / "orchestra.toml"
+        text = toml.read_text().replace('work = "tasks"', 'work = "code"')
+        toml.write_text(text.replace("[tasks]\n", f"[tasks]\n{tasks}\n"))
+        git("add", "-A", cwd=wt1)
+        git("commit", "-qm", "orchestra config", cwd=wt1)
+        monkeypatch.setenv("ORCHESTRA_REPO", str(wt1))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        project.reload_config()
+        events = Events.for_project(project, source="task_scheduler")
+        return project, LocalStore(project, events), events, code
+    return make
 
 
 def free_port() -> int:

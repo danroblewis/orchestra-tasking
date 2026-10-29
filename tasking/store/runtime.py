@@ -17,7 +17,7 @@ from .files import read, write
 
 EMPTY_RUNTIME = {"assignments": {}, "untaken": {}, "worktrees": {}, "pool": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
                  "capacity": {}, "operator_capacity": {}, "pickup_paused": False, "scheduler": None, "staging": {},
-                 "pipeline": {"paused": False, "reason": None}, "desk": None, "pool_waiting": 0,
+                 "pipeline": {"paused": False, "reason": None}, "desk": None, "pool_waiting": 0, "pool_refused": {},
                  "external": None}
 
 
@@ -104,21 +104,31 @@ class Runtime:
         r = self._r()
         return {n: {**s, "free": _free(s, r["assignments"])} for n, s in r["pool"].items()}
 
-    def claim_slot(self, holder: str, ticket: str, size: int, prefer: str | None = None) -> tuple[dict, bool] | None:
+    def claim_slot(self, holder: str, ticket: str, size: int, prefer: str | None = None,
+                   paths: dict[str, str] | None = None, skip: set[str] | frozenset[str] = frozenset()) -> tuple[dict, bool] | None:
         """A free slot for ``holder``, or a new one while there are fewer than ``size``; None when
         the pool is full. A slot is free when nobody holds it, or its holder is an assignment that
         is no longer recorded (released, settled, or never offered): the assignments are the
         truth, so whatever drops one frees its worktree. A gate's hold lasts until it is
         released (``release_slot``) or the scheduler restarts. The slot that last served
         ``prefer`` comes first, then the one claimed longest ago. Returns the slot and whether it
-        is new (its worktree is still to be made)."""
+        is new (its worktree is still to be made). With ``paths`` (adopted worktrees, by slot
+        name: tasking/adopt.py), only those may be given, each as the slot of its name; ``size``
+        does not apply, the paths are the pool. A slot whose path is in ``skip`` (its setup failed:
+        tasking/setup.py) is not given."""
         def fn(d):
             slots = d["pool"]
-            free = [s for s in slots.values() if _free(s, d["assignments"])]
+            free = [s for s in slots.values() if _free(s, d["assignments"]) and s["path"] not in skip
+                    and (paths.get(s["name"]) == s["path"] if paths is not None else not s.get("adopted"))]
             pick = next((s for s in free if prefer and s.get("ticket") == prefer), None) \
                 or min(free, key=lambda s: s.get("since") or 0, default=None)
             new = pick is None
-            if new:
+            if new and paths is not None:
+                name = next((n for n in paths if n not in slots), None)
+                if name is None:
+                    return None
+                pick = slots[name] = {"name": name, "path": paths[name], "adopted": True}
+            elif new:
                 if len(slots) >= size:
                     return None
                 name = next(str(i) for i in range(1, len(slots) + 2) if str(i) not in slots)
@@ -137,6 +147,22 @@ class Runtime:
 
     def forget_slot(self, name: str) -> None:
         self._mutate_runtime(lambda d: d["pool"].pop(name, None))
+
+    def pool_refused(self) -> dict[str, str]:
+        """The listed worktrees the pool may not use, by path, with why (tasking/adopt.py)."""
+        return dict(self._r()["pool_refused"])
+
+    def set_pool_refused(self, path: str, reason: str | None) -> bool:
+        """Record (or, ``reason`` None, clear) why a listed worktree is refused; whether that changed."""
+        def fn(d):
+            if d["pool_refused"].get(path) == reason:
+                return False
+            if reason is None:
+                d["pool_refused"].pop(path, None)
+            else:
+                d["pool_refused"][path] = reason
+            return True
+        return self._mutate_runtime(fn)
 
     def save_gate_run(self, run: dict) -> None:
         self._mutate_runtime(lambda d: d["gate_runs"].__setitem__(run["id"], run))
