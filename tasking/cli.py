@@ -242,6 +242,12 @@ def cmd_doctor(args) -> int:
             print(f"orphan pool worktree: {p}")
             if args.fix:
                 git.worktree_remove(p)
+    if project.config.worktree_paths:                 # the owner's worktrees as the pool's slots (tasking/adopt.py)
+        from .adopt import refusal
+        for path in project.adopted_paths:
+            why = refusal(path, project.repo_root, project.key)
+            problems += bool(why)
+            print(f"listed worktree refused: {why}" if why else f"listed worktree: {path}")
     if len(slots) > project.config.worktree_pool:
         print(f"note: the pool holds {len(slots)} worktrees, more than [tasks] worktree_pool = {project.config.worktree_pool}; "
               "none is made beyond it, and the extra ones stay until removed by hand")
@@ -307,7 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true", help="the same as JSON")
     s.set_defaults(fn=cmd_recurring)
 
-    s = sub.add_parser("doctor", help="orphan worktrees (a ticket's or the pool's) and, in code mode, missing gate specs")
+    s = sub.add_parser("doctor", help="orphan worktrees (a ticket's or the pool's), listed worktrees the pool refuses and, in code mode, missing gate specs")
     s.add_argument("--fix", action="store_true", help="remove the orphan worktrees")
     s.set_defaults(fn=cmd_doctor)
     return p

@@ -1,5 +1,5 @@
 """One-screen status: what needs a decision, the scheduler, who holds work, the queue; in code
-mode the merge gate and the pipeline; staging when it is configured."""
+mode the merge gate and the pipeline, and the worktree pool when it is used; staging when it is configured."""
 
 from __future__ import annotations
 
@@ -79,7 +79,30 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
                      for t in tickets if t.state == State.IN_EXTERNAL_REVIEW],
         "counts": {k: v for k, v in counts.items() if v},
         "staging": staging,
+        "pool": _pool(project, store) if cfg.work == "code" and cfg.reuse_worktrees else None,
     }
+
+
+def _pool(project: Project, store: LocalStore) -> dict:
+    """The worktree pool: each slot's worktree, whether it is adopted (one of the owner's, listed in
+    ``[tasks] worktree_paths``), who holds it, the ticket it last served; and the listed worktrees
+    it refuses, with why."""
+    return {"size": project.config.worktree_pool, "adopted": bool(project.config.worktree_paths),
+            "slots": [{"name": s["name"], "path": s["path"], "adopted": bool(s.get("adopted")), "free": s["free"],
+                       "holder": s.get("holder") if not s["free"] else None, "ticket": s.get("ticket")}
+                      for s in sorted(store.pool().values(), key=lambda s: int(s["name"]) if s["name"].isdigit() else 0)],
+            "listed": [str(p) for p in project.adopted_paths],
+            "refused": store.pool_refused()}
+
+
+def _slot_state(slot: dict | None, refused: str | None) -> str:
+    if refused:
+        return f"REFUSED: {refused}"
+    if slot is None:
+        return "not used yet"
+    if not slot["free"]:
+        return f"in use by {slot['holder']}" + (f" ({slot['ticket']})" if slot.get("ticket") else "")
+    return "free" + (f", last {slot['ticket']}" if slot.get("ticket") else "")
 
 
 def _first_paragraph(text: str | None) -> str:
@@ -134,6 +157,12 @@ def render(d: dict) -> str:
     for t in d["on_the_way"]:
         L.append(f"  in flight: {t['id']} {t['state']:17} {t['title'][:40]}")
     L.append("tickets:   " + ("  ".join(f"{k}={v}" for k, v in d["counts"].items()) or "none"))
+    if pool := d.get("pool"):
+        L.append("")
+        L.append(f"worktree pool: {pool['size']}" + (" of your worktrees ([tasks] worktree_paths)" if pool["adopted"] else ""))
+        used = {x["path"]: x for x in pool["slots"]}
+        for path in pool["listed"] or [x["path"] for x in pool["slots"]]:
+            L.append(f"  {'◆' if pool['adopted'] else '○'} {path}  {_slot_state(used.get(path), pool['refused'].get(path))}")
     s = d["staging"]
     if s["configured"]:
         L.append("")

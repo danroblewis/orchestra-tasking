@@ -18,10 +18,10 @@ the configuration every tick (3 s), so a change is live without a restart. The t
 switched on for a project by the presence of `[project]` or `[tasks]`: then `orchestra run` keeps
 its scheduler running.
 
-**How a setting is checked.** `tasking.check.check(raw)` is the task system's reader: it returns
+**How a setting is checked.** `tasking.check.check(raw, repo_root)` is the task system's reader: it returns
 the problems in a merged configuration (unknown keys, wrong values, an entry without `name` or
-`command`, a placeholder a command cannot be given, every `[[tasks.recurring]]` problem, and
-`stacking = "git-spice"` with git-spice not on PATH). It is
+`command`, a placeholder a command cannot be given, every `[[tasks.recurring]]` problem,
+`stacking = "git-spice"` with git-spice not on PATH, and a listed worktree the pool cannot use). It is
 the plugin's check (`Plugin.check`), which `config_edit` runs by itself on every change: pass no
 `check=`. A change it objects to is refused with the reason, after `tasks:`. It cannot tell you
 that a command works: a gate command is proven only by running on the base branch. After a gate
@@ -34,6 +34,8 @@ Ask; never choose these yourself:
 
 - **`work = "code"`**: whether machines (AI agents included) may change the repository's code.
   Tasks mode touches nothing of the repository.
+- **`worktree_paths`**: which of the owner's own worktrees the pool may take over (they cannot
+  work in them while Orchestra runs). Offer it; never pick the worktrees yourself.
 - **`push = true`**: whether the gate pushes the base branch to `origin` after every landing.
 - **`[gate] mode = "external"`**: whether code reaches the base branch through the company's pull
   requests instead of the gate. The human pushes and opens each pull request.
@@ -290,6 +292,66 @@ The default size is workers + reviewers + 1; smaller makes turns wait (back-pres
 error). Ignored files (`.venv`, `node_modules`, build caches) survive a reset, which is the
 point, and also the risk: a stale cache can make a stage pass that a clean checkout fails. Set
 `worktree_clean_ignored = true` if the gate must prove a clean build.
+
+**The owner's own worktrees as the pool.** When the owner says they already have worktrees of
+the repository, or their disk holds only a few checkouts (a monorepo where `git worktree add`
+takes minutes: one bare clone `~/Code/bare/.git` with `~/Code/worktree_1..N` beside it, Orchestra
+in `worktree_1`), offer to make the pool *those* worktrees instead of new ones:
+
+```toml
+[tasks]
+worktree_paths = ["~/Code/worktree_2", "~/Code/worktree_3", "~/Code/worktree_4"]
+```
+
+Listing them turns `reuse_worktrees` on (writing `reuse_worktrees = false` beside them is
+refused); the pool is exactly these, in order, and its size is their count (`worktree_pool` may
+be smaller, using the first ones, never larger). Nothing is made under the state directory and no
+listed worktree is ever removed. `~` is expanded; a relative path is from the project root. The
+check refuses a path that does not exist, is not a worktree of the same repository (`git rev-parse
+--git-common-dir`), is the project root (the worktree Orchestra runs in) or is listed twice.
+
+Which worktrees to hand over is **the owner's decision**, and say this to them plainly: **while
+Orchestra runs, a listed worktree belongs to it. Do not work in it.** The pool resets a worktree
+before every turn: tracked changes discarded, untracked files deleted, the ticket's branch checked
+out. So the first time it takes a worktree it looks: one with uncommitted changes, untracked
+(non-ignored) files, or a merge, rebase, cherry-pick or revert in progress is **refused**: never
+reset, said once in the scheduler log and to you (an attention event naming the path and what is
+in it), shown as `REFUSED` in `orchestra tasks status` and `orchestra tasks doctor`, and looked at
+again every minute until it is clean; the check refuses writing such a path into the
+configuration too. Commits are never at risk: the owner's branches stay where they are. A clean
+one is adopted: a marker `orchestra-pool` with the project's key goes in the worktree's own git
+directory (`git rev-parse --git-dir`, nothing in the working tree), and from then on it is reset
+like any slot. Deleting the marker makes the pool look again before using it. Between tickets an
+adopted worktree is left detached at the last commit it worked on. To give one back, take it out
+of `worktree_paths`: the pool forgets it when it is free and removes its marker. Ignored files
+survive as above; with `worktree_clean_ignored = true` the owner's ignored files (a `.env`, IDE
+settings) in a listed worktree are deleted on every reset, so do not combine the two without
+asking.
+
+**Preparing each worktree.** A worktree the task system makes or adopts is a plain checkout: it
+lacks what the project checkout has that git does not (local, uncommitted files: a policy file
+the owner edited, a `.env`, built dependencies). When agents need those, offer a setup command:
+
+```toml
+[tasks]
+worktree_setup = "ln -sf $ORCHESTRA_PROJECT/.claude/policy.yaml .claude/policy.yaml && git update-index --skip-worktree .claude/policy.yaml"
+worktree_setup_timeout = "10m"   # the default; a monorepo's builds are slow
+```
+
+That is a real case: the company's Claude Code policy hooks read a yaml under `.claude/` that the
+owner edited in the project checkout only, and workers in pool worktrees got the unedited copy.
+The command links the file and hides it from git: with `skip-worktree` the link is invisible to
+`git status`, survives the pool's reset (`reset --hard`, `clean`, checking out a ticket's branch),
+and a worker's `git add -A` never commits it. It runs once in each worktree, right after it is
+made or adopted and before its first use: the pool's slots, a ticket's own worktree when the pool
+is off, the gate's worktrees. It runs with `sh -c` in the worktree, with `ORCHESTRA_PROJECT` (the
+project root) and `ORCHESTRA_WORKTREE` (the worktree) set. It runs again only when the command
+changes or the worktree is made again, never on a reset, so what it makes must survive one:
+ignored files, or tracked ones marked `skip-worktree`; an untracked file it writes is deleted by
+the next reset. A failure (a non-zero exit, or the timeout) leaves the worktree unused and the
+ticket waiting: the output's tail goes to the scheduler log, you are told once, and it is tried
+again after a back-off (a minute, doubling to half an hour); fix the command and the next try
+takes it. In a gate worktree a failure is a gate error: the pipeline pauses until resumed.
 
 ## Staging
 

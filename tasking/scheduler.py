@@ -50,6 +50,7 @@ from .probes import Prober, config_probes
 from .recurring import Recurring
 from .reports import Reports
 from .requests import Desk
+from .setup import Setup, SetupError
 from .stacks import CONFLICT as STACK_CONFLICT
 from .stacks import Stacks
 from .staging import Staging
@@ -102,7 +103,11 @@ class Scheduler:
         self.prober = Prober(project, store, Events.for_project(project, source=PROBES))
         self.reports = Reports(project, store, events, self.git, log)
         self.recurring = Recurring(project, store, events, log)    # [[tasks.recurring]]: the planner's scheduled engagement
-        self.pool = Pool(project, store, self.git, log)    # used only with [tasks] reuse_worktrees
+        # the pool is used only with [tasks] reuse_worktrees; a listed worktree it refuses, or a
+        # worktree whose [tasks] worktree_setup fails, is the supervisor's to raise with the owner
+        say = lambda reason: self.events.attention(SUPERVISOR, reason, src=DISPATCH)
+        self.setup = Setup(project, log, attention=say)
+        self.pool = Pool(project, store, self.git, log, attention=say, setup=self.setup)
         self.pool_waiting: set[tuple[str, str]] = set()     # (ticket, role or "gate") waiting for a free worktree
         self.offset = events.end()                   # read on from here: what the assignees say back (tasking/assignments.py)
         # external review: tickets follow their pull requests (tasking/external.py); it reads the bus on from its own record
@@ -124,6 +129,8 @@ class Scheduler:
                 run["finished_at"] = run.get("finished_at") or now()
                 self.store.save_gate_run(run)
         self.store.release_gate_slots()
+        if self.cfg.work == "code" and self.cfg.reuse_worktrees and self.cfg.worktree_paths:
+            self.pool.survey()                       # the listed worktrees adopted, or refused and said so, at start
         for p in self.project.gate_dir.glob("*"):
             self.git.worktree_remove(p)
         self.git.run("worktree", "prune", check=False)
@@ -373,7 +380,8 @@ class Scheduler:
 
     def _worktree(self, t: Ticket, aid: str) -> tuple[Path | None, str]:
         """The worker's worktree on the ticket's branch: its own (made once, kept until it lands),
-        or with reused worktrees one of the pool's reset for it (None: the pool is full)."""
+        or with reused worktrees one of the pool's reset for it (None: the pool is full, or the
+        worktree's ``[tasks] worktree_setup`` failed and waits to be tried again)."""
         branch = t.branch or f"orchestra/{t.id}-{t.slug}"
         self.stacks.prepare(t, branch)               # with stacking: a new branch from its parent's, tracked by git-spice
         if self.cfg.reuse_worktrees:
@@ -383,6 +391,10 @@ class Scheduler:
             self.git.worktree_remove(path)
             self.git.worktree_add(branch, path, self.cfg.base_branch)
         self.store.set_worktree(t.id, str(path), branch)
+        try:
+            self.setup.ensure(path)                  # [tasks] worktree_setup, once: never worked in unprepared
+        except SetupError:
+            return None, branch                      # said once per failure; the ticket waits for the retry
         return path, branch
 
     def _workspace(self, t: Ticket) -> Path:
@@ -408,7 +420,7 @@ class Scheduler:
             if role == "worker":
                 path, branch = (self._workspace(t), None) if tasks else self._worktree(t, aid)
                 if path is None:
-                    return self._pool_got(None, t.id, role)
+                    return self._pool_got(None, t.id, role) if self.cfg.reuse_worktrees else False
             else:
                 if tasks:
                     path, branch = self.project.workspaces_dir / t.id, None

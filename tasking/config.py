@@ -84,6 +84,9 @@ class Config:
     reuse_worktrees: bool = False      # code mode: keep a pool of worktrees and reset one per turn (tasking/pool.py)
     worktree_pool: int = 3             # how many worktrees the pool may hold, the gate's included; never more
     worktree_clean_ignored: bool = False   # a reset also removes ignored files (git clean -x): no warm caches
+    worktree_setup: str | None = None      # run once in each worktree made or adopted, before its first use (tasking/setup.py)
+    worktree_setup_timeout: float = 600.0
+    worktree_paths: tuple[str, ...] = ()   # the pool's slots are these worktrees the owner has (tasking/adopt.py), as written
     build_command: str | None = None
     build_artifact: str | None = None
     build_timeout: float = 600.0
@@ -141,6 +144,12 @@ class Config:
         if stacking not in ("", "off", "git-spice"):
             raise ConfigError(f'[gate] stacking = "{stacking}": "git-spice" or "off"')
 
+        paths = a.get("worktree_paths") or ()
+        if not isinstance(paths, (list, tuple)) or not all(isinstance(x, str) and x.strip() for x in paths):
+            raise ConfigError("[tasks] worktree_paths: a list of paths, such as [\"~/Code/worktree_2\"]")
+        paths = tuple(paths)
+        pool = max(1, int(a.get("worktree_pool", len(paths) or int(a.get("workers", 1)) + int(a.get("reviewers", 1)) + 1)))
+
         def specs(items: list[dict]) -> list[TestSpec]:
             return [TestSpec(name=i["name"], command=i["command"], timeout=parse_duration(i.get("timeout"), gt)) for i in items]
 
@@ -155,8 +164,11 @@ class Config:
             return_timeout=parse_duration(a.get("return_timeout"), 60.0),
             review_rounds_before_escalation=int(a.get("review_rounds_before_escalation", 3)),
             aging_days_per_level=float(a.get("aging_days_per_level", 2.0)),
-            reuse_worktrees=bool(a.get("reuse_worktrees", False)),
-            worktree_pool=max(1, int(a.get("worktree_pool", int(a.get("workers", 1)) + int(a.get("reviewers", 1)) + 1))),
+            reuse_worktrees=bool(a.get("reuse_worktrees", bool(paths))),     # listing worktrees turns the pool on
+            worktree_pool=min(pool, len(paths)) if paths else pool,             # listed: at most their count
+            worktree_paths=paths,
+            worktree_setup=str(a["worktree_setup"]) if a.get("worktree_setup") else None,
+            worktree_setup_timeout=parse_duration(a.get("worktree_setup_timeout"), 600.0),
             worktree_clean_ignored=bool(a.get("worktree_clean_ignored", False)),
             build_command=b.get("command"),
             build_artifact=b.get("artifact"),
@@ -200,6 +212,13 @@ aging_days_per_level = 2        # a ticket gains one priority level per N days o
 # reuse_worktrees = true         # code mode: reuse a pool of worktrees instead of one per ticket
 # worktree_pool = 2              # at most this many (default workers + reviewers + 1); a turn waits for a free one
 # worktree_clean_ignored = false # true: a reset also removes ignored files (build caches, node_modules)
+# worktree_paths = ["~/Code/worktree_2", "~/Code/worktree_3"]   # the pool's slots are these worktrees of yours
+#                                # (turns reuse_worktrees on; size = their count). Orchestra resets them before
+#                                # every turn: don't work in them while it runs. One with uncommitted or untracked
+#                                # files is refused until it has none.
+# worktree_setup = "ln -sf $ORCHESTRA_PROJECT/.env .env"   # run once in each worktree made or adopted, before its
+#                                # first use (sh -c; $ORCHESTRA_PROJECT, $ORCHESTRA_WORKTREE); again only if it changes
+# worktree_setup_timeout = "10m"
 
 # [build]
 # command = "uv build"
@@ -291,6 +310,17 @@ class Project:
     @property
     def pool_dir(self) -> Path:
         return self.state_dir / "pool"
+
+    @property
+    def adopted_paths(self) -> list[Path]:
+        """``[tasks] worktree_paths`` resolved (``~`` expanded, relative to the project root), in
+        order, each once, at most ``worktree_pool`` of them; [] when none are listed (tasking/adopt.py)."""
+        from .adopt import resolve
+        out: list[Path] = []
+        for p in resolve(self.config.worktree_paths, self.repo_root):
+            if p not in out:
+                out.append(p)
+        return out[:self.config.worktree_pool] if out else []
 
     @property
     def stack_dir(self) -> Path:

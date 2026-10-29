@@ -98,6 +98,23 @@ is free. With the pool full a turn waits; the scheduler's log says so, and
 `tasks_worktrees{state="waiting"}` counts it (read by the instrument `tasks.tickets`, which
 `orchestra run` runs every discovery step: `orchestra tasks metrics`). SPEC.md section 5 has the details.
 
+The pool can be **worktrees you already have**, for a repository where a checkout takes minutes
+and the disk holds only a few (a bare clone with `~/Code/worktree_1..N` beside it, Orchestra in
+`worktree_1`):
+
+    [tasks]
+    worktree_paths = ["~/Code/worktree_2", "~/Code/worktree_3"]   # turns reuse_worktrees on; the pool is these
+    worktree_setup = "ln -sf $ORCHESTRA_PROJECT/.env .env"          # optional: run once in each worktree made or adopted
+
+Nothing is made under the state directory and no listed worktree is removed. **While Orchestra
+runs, the listed worktrees are its own: don't work in them**; each is reset before every turn. One
+that has uncommitted changes or untracked files when the pool first takes it is refused (never
+touched, said in the scheduler log, to the supervisor, and in `orchestra tasks status`) until it is
+clean; a clean one is marked as the pool's (`orchestra-pool` in its own git directory). Between
+tickets it is left detached at the last commit it worked on; take it out of the list to have it
+back. `worktree_setup` (with `$ORCHESTRA_PROJECT` and `$ORCHESTRA_WORKTREE`) prepares what git
+does not carry; it runs again only when the command changes, never on a reset.
+
 **Flaky tests and test counts.** The gate can run a failed stage again, and counts your tests from
 the reports your runner writes:
 

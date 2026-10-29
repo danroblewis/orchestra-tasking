@@ -26,6 +26,7 @@ from .git import Git, GitError
 from .model import Note, State, now
 from .pool import Pool
 from .reports import send_back
+from .setup import Setup
 from .staging import Staging, build_python
 from .store import LocalStore
 
@@ -218,6 +219,7 @@ def run_gate(project: Project, store: LocalStore, events: Events, ticket_id: str
             pool.reset(where, branch)
         else:
             git.worktree_add(branch, where, base)
+            Setup(project).ensure(where)             # [tasks] worktree_setup: a failure is the run's error
 
     def drop(branch: str, where: Path) -> None:
         if pool:
