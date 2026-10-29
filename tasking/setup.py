@@ -17,7 +17,10 @@ tick. SPEC.md section 5."""
 from __future__ import annotations
 
 import hashlib
+import os
+import signal
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -55,6 +58,9 @@ class Setup:
                  attention: Callable[[str], None] | None = None):
         self.project, self.log, self.attention = project, log, attention
         self._failed: dict[str, tuple[float, float]] = {}      # path -> (try again at, back-off so far)
+        self._running: set[subprocess.Popen] = set()           # setups under way (the scheduler runs them in threads)
+        self._lock = threading.Lock()
+        self.stopped = False                                    # set by ``stop``: what it ended is no failure
 
     def waiting(self, path: Path) -> bool:
         """Whether ``path`` failed its setup and its back-off has not run out."""
@@ -73,15 +79,11 @@ class Setup:
         timeout = self.project.config.worktree_setup_timeout
         self.log(f"worktree setup: running in {path}")
         try:
-            p = subprocess.run(["sh", "-c", command], cwd=path, env=env, capture_output=True, text=True,
-                               timeout=timeout, check=False)
-            ok, what = p.returncode == 0, f"exit {p.returncode}"
-            out = (p.stdout or "") + (p.stderr or "")
-        except subprocess.TimeoutExpired as e:
-            ok, what = False, f"timed out after {timeout:g}s"
-            out = "".join(x.decode(errors="replace") if isinstance(x, bytes) else (x or "") for x in (e.stdout, e.stderr))
+            ok, what, out = self._run(command, path, env, timeout)
         except OSError as e:
             ok, what, out = False, str(e), ""
+        if self.stopped and not ok:
+            raise SetupError(f"worktree_setup in {path} was stopped: the task system shut down")
         if ok:
             self._failed.pop(str(path), None)
             d = git_dir(path)
@@ -96,3 +98,36 @@ class Setup:
         if self.attention:
             self.attention(f"{reason}: {out.strip()[-500:]}")
         raise SetupError(reason)
+
+    def _run(self, command: str, path: Path, env: dict, timeout: float) -> tuple[bool, str, str]:
+        """The command in its own process group, so a timeout or ``stop`` ends all it started."""
+        p = subprocess.Popen(["sh", "-c", command], cwd=path, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, start_new_session=True)
+        with self._lock:
+            self._running.add(p)
+        try:
+            out, _ = p.communicate(timeout=timeout)
+            return p.returncode == 0, f"exit {p.returncode}", out or ""
+        except subprocess.TimeoutExpired:
+            _kill(p)
+            out, _ = p.communicate()
+            return False, f"timed out after {timeout:g}s", out or ""
+        finally:
+            with self._lock:
+                self._running.discard(p)
+
+    def stop(self) -> None:
+        """Every setup under way ended (the scheduler shuts down): a worktree whose setup did not
+        finish is not recorded as prepared, so it runs again on its next use."""
+        self.stopped = True
+        with self._lock:
+            running = list(self._running)
+        for p in running:
+            _kill(p)
+
+
+def _kill(p: subprocess.Popen) -> None:
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass

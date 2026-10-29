@@ -31,7 +31,9 @@ broken without updating the spec and saying so in the commit.
    no metrics: an instrument the plugin declares reads them from the record. Never add an event
    as the scheduler, a machine declared for it, or a card of its own.
 2. **No zombies.** A ticket is `IN_PROGRESS`, `IN_REVIEW` or `MERGING` only while an assignment
-   with a live lease holds it, whoever offered it: the scheduler sees every claim. A lease that
+   with a live lease holds it, whoever offered it: the scheduler sees every claim; and `PREPARING`
+   only while this scheduler prepares its worktree (`tasking/prepare.py`), going back to where it
+   waited on a failure, a stop, a restart or a shutdown. A lease that
    runs out, an end of a turn the task system cannot apply, the operator's stop: each releases the
    assignment and sends the ticket back to waiting in the same code path; on start, every holder is told to stop and every active ticket goes back; on
    shutdown, the gate finishes its run first, then the same.

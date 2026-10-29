@@ -44,34 +44,58 @@ class Pool:
         when the pool is full: the caller waits. Its contents are as the last holder left them
         until ``reset``. With adopted worktrees, only those ``survey`` finds usable are given, and
         none is ever made. A slot is first prepared by ``[tasks] worktree_setup``; one whose setup
-        fails is not given (another is, or None: the turn waits)."""
-        usable = self.survey() if self.cfg.worktree_paths else self._give_back()
+        fails is not given (another is, or None: the turn waits). ``take`` and ``ready`` in one,
+        for a caller that may wait; the scheduler takes in its loop and readies in a thread."""
         unready: set[str] = set()                    # slots whose setup failed: never used unprepared
         while True:
-            got = self.store.claim_slot(holder, ticket, self.cfg.worktree_pool, prefer, paths=usable, skip=unready)
-            if got is None:
+            slot = self.take(holder, ticket, prefer, skip=unready)
+            if slot is None:
                 return None
-            slot, new = got
-            path = Path(slot["path"])
             try:
-                if usable is not None:
-                    if bad := adopt.invalid(path, self.project.repo_root):
-                        raise GitError(bad)
-                elif new or not self._is_worktree(path):
-                    self._make(path)
-                if self.setup is not None:
-                    self.setup.ensure(path)
+                return self.ready(slot)
             except SetupError:
                 self.store.release_slot(holder)      # kept, unprepared: tried again after its back-off
-                unready.add(str(path))
-                continue
+                unready.add(slot["path"])
             except GitError:
-                if new:
-                    self.store.forget_slot(slot["name"])
-                else:
-                    self.store.release_slot(holder)
+                self.give_up(slot)
                 raise
-            return path
+
+    def take(self, holder: str, ticket: str, prefer: str | None = None, skip: set[str] | frozenset[str] = frozenset()) -> dict | None:
+        """A slot recorded as ``holder``'s, or None when the pool is full; nothing is done on disk
+        (``ready``). A slot whose setup failed and waits out its back-off is not given. The slot
+        record has ``new`` (its worktree is still to be made) and ``usable`` (adopted: it must be
+        a valid worktree)."""
+        usable = self.survey() if self.cfg.worktree_paths else self._give_back()
+        waiting = {s["path"] for s in self.store.pool().values() if self.setup is not None and self.setup.waiting(Path(s["path"]))}
+        got = self.store.claim_slot(holder, ticket, self.cfg.worktree_pool, prefer, paths=usable, skip=set(skip) | waiting)
+        if got is None:
+            return None
+        slot, new = got
+        return {**slot, "new": new, "usable": usable is not None}
+
+    def ready(self, slot: dict, branch: str | None = None) -> Path:
+        """The slot ``take`` gave, made on disk when it is new or no longer a worktree (or checked
+        when adopted), prepared by ``[tasks] worktree_setup``, and with ``branch`` reset to it. The
+        slow part, which the scheduler runs in a thread: it writes nothing to the record. Raises
+        ``SetupError`` (the setup failed or waits for its back-off) or ``GitError``."""
+        path = Path(slot["path"])
+        if slot.get("usable"):
+            if bad := adopt.invalid(path, self.project.repo_root):
+                raise GitError(bad)
+        elif slot.get("new") or not self._is_worktree(path):
+            self._make(path)
+        if self.setup is not None:
+            self.setup.ensure(path)
+        if branch is not None:
+            self.reset(path, branch)
+        return path
+
+    def give_up(self, slot: dict) -> None:
+        """A slot ``take`` gave that could not be made ready: a new one forgotten, any other freed."""
+        if slot.get("new"):
+            self.store.forget_slot(slot["name"])
+        else:
+            self.store.release_slot(slot["holder"])
 
     def claim_for(self, holder: str, ticket: str, branch: str) -> Path | None:
         """``claim``, then ``reset`` to the ticket's branch; the slot it last used comes first."""
@@ -172,7 +196,8 @@ class Pool:
         needs this. A worktree in use, or one outside the task system's state, is not touched:
         that is an error. An adopted worktree (``[tasks] worktree_paths``) is the pool's as any
         other; one of the owner's that is not adopted is not touched."""
-        live = {str(Path(a["workspace"]).resolve()) for a in self.store.assignments().values() if a.get("workspace")}
+        live = {str(Path(a["workspace"]).resolve()) for a in [*self.store.assignments().values(), *self.store.preparing().values()]
+                if a.get("workspace")}
         ours = (self.project.pool_dir.resolve(), self.project.worktrees_dir.resolve())
         adopted = self.adopted() if self.cfg.worktree_paths else set()
         for wt, b in self._checked_out():

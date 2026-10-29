@@ -246,7 +246,9 @@ class Tickets:
             counts[x.state.value] += 1
         by_id = {x.id: x for x in tickets}
         milestones = {k: Milestone.from_dict(v) for k, v in data["milestones"].items()}
-        offered = {a["ticket"] for a in self.assignments().values() if a.get("role") == "worker"}   # held or offered to a worker
+        preparing = {p["ticket"]: p for p in self.preparing().values()}
+        offered = {a["ticket"] for a in self.assignments().values() if a.get("role") == "worker"} \
+            | {k for k, p in preparing.items() if p["role"] == "worker"}       # held, offered, or being prepared for a worker
         untaken = {r["ticket"]: r for r in self.untaken().values() if r["role"] == "worker"}
         cap = self.capacity()
         eff = effective_priorities(by_id, self.project.config.aging_days_per_level)
@@ -254,6 +256,9 @@ class Tickets:
         def view(x: Ticket) -> dict:
             d = x.to_dict()
             d["priority_info"] = eff.get(x.id)
+            if x.id in preparing:
+                d["preparing"] = {"role": preparing[x.id]["role"], "since": preparing[x.id].get("since")}
+                d["why_waiting"] = f"its worktree is being prepared for a {preparing[x.id]['role']}"
             if x.state == State.OPEN:
                 waiting = [dep for dep in x.depends_on if dep not in by_id or by_id[dep].state != State.DONE]
                 ms = milestones.get(x.milestone_id)
@@ -281,6 +286,7 @@ class Tickets:
                             "base_branch": self.project.config.base_branch, "work": self.project.config.work},
                 "capacity": self.capacity(),
                 "assignments": list(self.assignments().values()),
+                "preparing": list(self.preparing().values()),
                 "worktrees": list(self.worktrees().values()),
                 "worktree_pool": list(self.pool().values()),
                 "gate_runs": self.gate_runs()[-20:],

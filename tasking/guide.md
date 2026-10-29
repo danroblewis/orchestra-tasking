@@ -353,6 +353,15 @@ ticket waiting: the output's tail goes to the scheduler log, you are told once, 
 again after a back-off (a minute, doubling to half an hour); fix the command and the next try
 takes it. In a gate worktree a failure is a gate error: the pipeline pauses until resumed.
 
+A slow worktree (a monorepo's `git worktree add`, a pool reset, a setup that builds) does not hold
+the task system up: it is made in the background while the scheduler goes on with other work.
+A ticket whose worktree takes longer than a couple of seconds shows `PREPARING` (on the Tasks
+panel and in `orchestra tasks status`, with how long), and goes back to `OPEN` or `REJECTED` and
+is offered when the worktree is ready; a reviewer's worktree being reset shows on its
+`READY_FOR_REVIEW` ticket the same way. A ticket that stays `PREPARING` long is the setup to look
+at (the scheduler log has its output); a planner may cancel a `PREPARING` ticket like any waiting
+one. `worktree_setup_timeout` bounds it.
+
 ## Staging
 
 One long-lived instance of the last build that landed, restarted when it dies or stops answering

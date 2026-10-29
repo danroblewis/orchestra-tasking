@@ -3,13 +3,13 @@
 // state colour, with its id, title, worker-turns badge and state, and a lane that says which
 // machine instance holds it now, since when and what it last said it was doing (the scheduler
 // offers it: worker/1 takes it, then reviewer/1, then a worker again after a rejection), that it
-// is offered and to whom, that its offers were not taken (no machine serving the role took it
+// is offered and to whom, that its worktree is being prepared for the offer and for how long, that its offers were not taken (no machine serving the role took it
 // within the lease: it goes out again after a pause), or what it waits for. Above the cards, the queue by state and the operator's capacity and pause controls;
 // below them, the recurring tickets' next due times (read-only: they are configured in [[tasks.recurring]]).
 // A card opens the ticket.
 (function () {
   if (!window.Orchestra || !Orchestra.panels) return;
-  const ORDER = ["OPEN", "IN_PROGRESS", "READY_FOR_REVIEW", "IN_REVIEW", "REJECTED", "BLOCKED", "APPROVED", "IN_EXTERNAL_REVIEW", "MERGING", "DONE", "CANCELLED"];
+  const ORDER = ["OPEN", "PREPARING", "IN_PROGRESS", "READY_FOR_REVIEW", "IN_REVIEW", "REJECTED", "BLOCKED", "APPROVED", "IN_EXTERNAL_REVIEW", "MERGING", "DONE", "CANCELLED"];
 
   function turns(t) {
     if (!t.worker_turns || t.worker_turns < 2) return "";
@@ -36,6 +36,7 @@
         if (u) return `offered, not taken: no ${u.role} took it in ${u.misses} offer${u.misses === 1 ? "" : "s"} since ${ago(u.since)} ago · `
           + (a ? "offered again now" : `offered again in ${span(u.again_at - D.now)}, or when the ticket changes`);
         if (a) return `offered to a ${a.role} ${ago(a.since)} ago`;
+        if (t.preparing) return `preparing its worktree for a ${t.preparing.role} · ${ago(t.preparing.since)}`;
         return t.state === "BLOCKED" ? (t.blocked_reason || t.waiting || "").split(/\n\s*\n/)[0].replace(/`/g, "") : t.waiting || ""; };
       const q = ORDER.filter((s) => D.counts[s]).map((s) => `<span style="white-space:nowrap"><span class="pill" style="--c:${color(s)}">${esc(s.replace(/_/g, " "))}</span> <b class="num">${D.counts[s]}</b></span>`).join(" ");
       const cards = D.tickets.map((t) => `<div class="work" style="--c:${color(t.state)}" onclick="TasksPanel.ticket('${esc(t.id)}')" title="Open the ticket">

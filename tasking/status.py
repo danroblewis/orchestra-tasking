@@ -1,4 +1,5 @@
-"""One-screen status: what needs a decision, the scheduler, who holds work, the queue; in code
+"""One-screen status: what needs a decision, the scheduler, who holds work, the worktrees being
+prepared for an offer and for how long, the queue; in code
 mode the merge gate and the pipeline, and the worktree pool when it is used; staging when it is configured."""
 
 from __future__ import annotations
@@ -34,6 +35,10 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
                 "title": by_id[a["ticket"]].title if a["ticket"] in by_id else "",
                 "elapsed": round(now - (a.get("accepted_at") or a.get("offered_since") or now))}   # an unanswered offer's age spans its re-offers
                for a in store.assignments().values()]
+    # worktrees being made, reset or set up for an offer (tasking/prepare.py): a worker's ticket is PREPARING meanwhile
+    preparing = [{"ticket": p["ticket"], "role": p["role"], "title": by_id[p["ticket"]].title if p["ticket"] in by_id else "",
+                  "workspace": p.get("workspace"), "elapsed": round(now - (p.get("since") or now))}
+                 for p in store.preparing().values()]
 
     runs = store.gate_runs()
     cur = next((r for r in runs if r.get("status") == "running"), None)
@@ -49,7 +54,7 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
                 "started_at": started}
     last = next((r for r in reversed(runs) if r.get("status") != "running"), None)
     approved = sorted((t for t in tickets if t.state == State.APPROVED), key=lambda t: t.state_since)
-    on_the_way = [t for t in tickets if t.state in (State.IN_REVIEW, State.READY_FOR_REVIEW, State.REJECTED, State.IN_PROGRESS)]
+    on_the_way = [t for t in tickets if t.state in (State.IN_REVIEW, State.READY_FOR_REVIEW, State.REJECTED, State.PREPARING, State.IN_PROGRESS)]
 
     st = Staging(project, store, events)
     sstate = st.state() if cfg.staging_configured else {"configured": False}
@@ -65,8 +70,9 @@ def collect(project: Project, store: LocalStore, events: Events) -> dict:
         "scheduler": {"running": alive(sch.get("pid")), "pid": sch.get("pid")},
         "blocked": [{"id": t.id, "title": t.title, "reason": _first_paragraph(t.blocked_reason)} for t in tickets if t.state == State.BLOCKED],
         "workers": workers,
-        "slots": {"workers": f"{sum(1 for w in workers if w['kind'] == 'worker')}/{store.capacity()['workers']}",
-                  "reviewers": f"{sum(1 for w in workers if w['kind'] == 'reviewer')}/{store.capacity()['reviewers']}"},
+        "preparing": preparing,
+        "slots": {r + "s": f"{sum(1 for w in workers if w['kind'] == r) + sum(1 for x in preparing if x['role'] == r)}/{store.capacity()[r + 's']}"
+                  for r in ("worker", "reviewer")},   # a preparation holds a slot as an offer does
         "pipeline": store.pipeline(),
         "pickup_paused": store.pickup_paused(),
         "gate": gate,
@@ -138,6 +144,8 @@ def render(d: dict) -> str:
              + f"slots: workers {d['slots']['workers']}, reviewers {d['slots']['reviewers']}" + ("   NEW WORKERS PAUSED" if d.get("pickup_paused") else ""))
     for x in d["workers"]:
         L.append(f"  ● {x['id']:24} {x['ticket']} {x['title'][:40]}  {_ago(x['elapsed'])}")
+    for x in d.get("preparing", []):
+        L.append(f"  ◌ {'preparing worktree (' + x['role'] + ')':24} {x['ticket']} {x['title'][:40]}  {_ago(x['elapsed'])}")
     L.append("")
     if code:
         g = d["gate"]

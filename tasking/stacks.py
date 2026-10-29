@@ -401,7 +401,7 @@ class Stacks:
             send_back(self.gate_store, self.gate_events, self.cfg.review_rounds_before_escalation, t, GATE, feedback, counted=False,
                       by=GATE, gate_rejections=t.gate_rejections + 1)
             outcome = "sent back to its worker"
-        elif t.state in (State.OPEN, State.REJECTED):
+        elif t.state in (State.OPEN, State.REJECTED, State.PREPARING):
             self.gate_store.update_ticket(t.id, feedback=((t.feedback + "\n\n") if t.feedback else "") + feedback)
             outcome = "its worker is told when it takes it"
         else:

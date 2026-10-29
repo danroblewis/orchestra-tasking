@@ -49,7 +49,8 @@ worker is told), `review_rounds`, `worker_turns`, `reviewer_rejections`, `gate_r
 with external review `pull` (its pull request, `owner/repo#n`), `pull_head` (the commit the pull
 request carries, or is about to), `pull_state` (`open`, `closed`, `merged`) and
 `pull_rejections`, with external review also `merged_as` (the commit its pull request was merged as),
-with stacking `stacked_on` (the unlanded ticket its branch is based on; section 5), `created_by` (the role that asked for it), a `version` for optimistic concurrency, and
+with stacking `stacked_on` (the unlanded ticket its branch is based on; section 5), while
+`PREPARING` `preparing_from` (the waiting state it came from), `created_by` (the role that asked for it), a `version` for optimistic concurrency, and
 timestamps. **Notes** record what happened: the worker's summary, the reviewer's verdict, the
 gate's result, a blocker, a crash, a planner's note; with external review, what happened on its
 pull request, signed by the machine the bridge named for it (kind `pull`).
@@ -70,6 +71,7 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | | `REJECTED` | a reviewer or the gate sent it back; waits for a worker, who is given `feedback` |
 | | `APPROVED` | approved; in code mode waits for the gate |
 | | `IN_EXTERNAL_REVIEW` | external review: handed off for a pull request; waits for the people and checks on it, and for its merge |
+| preparing | `PREPARING` | code mode: picked for a worker's turn; its worktree is being made, reset or set up (`[tasks] worktree_setup`) for the offer, for longer than a tick's grace. Held by no machine; `state_since` says since when |
 | active | `IN_PROGRESS` | held by a worker |
 | | `IN_REVIEW` | held by a reviewer |
 | | `MERGING` | in a gate run (code mode) |
@@ -81,6 +83,9 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | From | To | Cause |
 |---|---|---|
 | `OPEN`, `REJECTED` | `IN_PROGRESS` | a worker's claim is the first on the bus: of the queue's offer, or of changes requested of it (`worker_turns` + 1; `worker` = the instance) |
+| `OPEN`, `REJECTED` | `PREPARING` | code mode: the queue picked it for a worker and its worktree is not ready within the tick's grace (two seconds); `preparing_from` = the state it left; counted `by` `coordinator` (dispatch prepares the offer) |
+| `PREPARING` | `OPEN`, `REJECTED` (its `preparing_from`) | its worktree is ready: the offer goes out at once, as from the waiting state, and a claim moves it to `IN_PROGRESS` as above; or the worktree could not be made or set up (the setup's back-off applies), the operator stopped it, its pull request was merged, or the scheduler restarted or shut down (with a note) |
+| `PREPARING` | `CANCELLED` | a planner cancels it: no machine holds it; the preparation's result is dropped when it finishes |
 | `IN_PROGRESS` | `READY_FOR_REVIEW` | the worker asks the reviewers (`review.requested`); in code mode the commit it names, on the branch, becomes `reviewed_commit` |
 | `IN_PROGRESS` | `BLOCKED` | the worker reports it with a reason; or the worker went away three times in a row; or in code mode the commit it asks a review of has nothing beyond the base |
 | `IN_PROGRESS` | `OPEN` | the worker went away (lease ran out, no report, or a report or review request the task system cannot use), the operator stopped it, or the scheduler restarted or shut down: offered again |
@@ -103,12 +108,22 @@ ticket pulls its prerequisites forward) and by one level per `aging_days_per_lev
 | `BLOCKED` | `IN_EXTERNAL_REVIEW` | that pull request was reopened |
 | any waiting state | `DONE` | external review: its pull request was merged (whoever held it is released first) |
 
-An offer nobody claims is only a released assignment: no transition, nothing counted. When
+An offer nobody claims is only a released assignment: no transition, nothing counted. `PREPARING`
+ends before the offer goes out, so an offer nobody takes leaves the ticket where it waits; what
+the offers nobody took recorded (how many, the pause, rejected work that waited for its worker
+already) is carried through `PREPARING` and back, which changes nothing else of the ticket. A
+reviewer's worktree (with reused worktrees, a slot reset to the branch) is prepared the same way,
+off the loop, but the ticket stays `READY_FOR_REVIEW`: its work is done and waits for review; the
+preparation shows from the record (`runtime.json` `preparing`) on the status and the pages. Nothing
+is published for a preparation (no echoes, section 3): the offer is published when it goes out,
+and the moves through `PREPARING` are measured (`tasks_tickets{state="PREPARING"}`, the
+transitions counter). When
 `review_rounds` reaches `review_rounds_before_escalation` (and every multiple of it), whether a
 reviewer, the task system or the gate sent it back (`reports.send_back`, the one place a
 rejection is counted), the coordinator role is asked to decide; nothing fails automatically. On start and on shutdown the
 scheduler tells whoever holds work to stop (`task.released`), drops every assignment and moves
-every active ticket to the waiting state before it, with a note: no zombies.
+every active ticket to the waiting state before it, with a note, and every `PREPARING` one to
+its `preparing_from`: no zombies.
 
 ## 3. The contract on the bus
 
@@ -395,7 +410,20 @@ per project: a second `orchestra tasks run` for the same project exits, naming t
    starts), then, unless pickup is paused, ready `OPEN` and `REJECTED` tickets in
    effective-priority order, up to the role's capacity (every recorded offer and turn counts,
    the ones machines offered each other included; an offer not yet claimed holds a slot for its
-   lease). A `REJECTED` ticket goes first to the worker that did it (`to`, for the return
+   lease, and a worktree being prepared for one holds it too). In code mode the offer's worktree
+   is prepared off the loop (`tasking/prepare.py`): the loop records the preparation and claims
+   the pool slot, a thread per preparation makes the worktree (`git worktree add`, a pool reset,
+   `[tasks] worktree_setup`), and the loop waits for it at most two seconds per tick in all
+   (`GRACE_S`). One ready by then is offered in the same tick; one that is not leaves a worker's
+   ticket `PREPARING` (section 2), and the loop goes on: it follows the bus, renews leases,
+   offers other work and runs the gate meanwhile, and each tick (after following the bus) offers
+   the preparations that finished. The thread writes nothing to the record. A worktree that
+   could not be made frees its slot (a new pool slot is forgotten) and the ticket waits; a setup
+   that failed is said once and tried again after its back-off, as before. On shutdown the setups
+   under way are ended (their worktree is not recorded as set up, so it is set up again on its
+   next use) and their threads waited for briefly; on start a half-made worktree is made again
+   (a pool slot that is no longer a worktree is remade; a ticket's own worktree on another
+   branch, or none, is made again). A `REJECTED` ticket goes first to the worker that did it (`to`, for the return
    timeout), unless it already waited for it since it was rejected. Capacity is the operator's ceiling from the Dashboard if set, otherwise
    `[tasks] workers`/`reviewers`, with a planner's dial (`set_capacity`) under it;
 4. in code mode, with external review, hands every `APPROVED` ticket off for its pull request
@@ -494,7 +522,8 @@ names (section 3). Off (the default), nothing here applies.
   comes back. Ignored files (build caches, `node_modules`: the reason to reuse) are kept, or
   removed too with `worktree_clean_ignored = true` (`-x`). A worktree that is not clean after
   this is an error, and the turn is not offered.
-- *Free*: a worktree is free when no recorded assignment holds it and no gate run does. The store's
+- *Free*: a worktree is free when no recorded assignment holds it, no preparation for one
+  (section 4) and no gate run does. The store's
   record of the pool (`runtime.json`) names each worktree's holder, an assignment's id or the
   gate's; an assignment that is dropped, for whatever reason (a report, a lease run out, a
   restart, the operator), frees its worktree with it, so a crash never leaves one held. A
@@ -507,7 +536,8 @@ names (section 3). Off (the default), nothing here applies.
   claimed longest ago. A preference, never a wait.
 - *The gate uses the pool too*: a gate worktree is as large as a worker's, and the pool's size is
   the number of checkouts on disk, which is the point. The scheduler claims the gate's worktree
-  before it makes any offer in a tick, so landing comes before new work; the base check after a
+  before it makes any offer in a tick, so landing comes before new work, and the gate run's
+  thread makes it ready (made, set up) off the loop; the base check after a
   failure runs in the same worktree, reset to the base. The gate's temporary branches are deleted
   as before; a worktree left on one by a crash is detached when the next scheduler starts.
 - *Pool full*: the turn is not offered; it waits for a worktree, never a new one beyond the
@@ -999,7 +1029,7 @@ the instrument `orchestra run` runs (section 8), so where they go is decided in 
   tasks/                               # the task system's
     tickets.json                       # tickets, milestones, notes, counters, the metric counters,
                                        # per recurring definition the last due time handled
-    runtime.json                       # scheduler pid, assignments, capacity, pause, kill requests,
+    runtime.json                       # scheduler pid, assignments, worktrees being prepared, capacity, pause, kill requests,
                                        # worktrees, the worktree pool, gate runs, builds, pipeline, probes, staging,
                                        # where the desk reads requests from next, the turns waiting for a pool worktree
     .lock                              # one file lock around every read-modify-write
@@ -1112,7 +1142,7 @@ API at `/api/plugins/tasks`:
 | Route | What |
 |---|---|
 | `GET /state` | what the Tickets page draws: tickets with readiness and priority, milestones, counts by state, whether the scheduler runs (the whole snapshot is the `snapshot` query on the bus) |
-| `GET /board` | the Tasks panel: tickets in flight (held or offered) with their assignment (instance, since when), counts by state, capacity, pause, scheduler |
+| `GET /board` | the Tasks panel: tickets in flight (held, offered, or with a worktree being prepared for the offer: `preparing`, role and since when) with their assignment (instance, since when), counts by state, capacity, pause, scheduler |
 | `GET /attention` | the blocked tickets |
 | `GET /tickets/{id}` | one ticket with its notes |
 | `GET /recurring` | the recurring tickets (section 7): each definition's schedule in words, next due time (epoch and local), and last occurrence (id, outcome, ticket); `problems`: what is wrong with the definitions not used. Read-only; `/board` carries the same list for the Tasks panel |
@@ -1144,7 +1174,7 @@ PLUGINS.md §4.10), and `main(argv)` takes the arguments after `tasks`, its usag
 | `orchestra tasks init [--prefix P] [--unit-command C] [--base-branch B]` | write the task system's sections into `orchestra.toml` and register the project with Orchestra |
 | `orchestra tasks run [--once] [--wait]` | the scheduler (`orchestra run` starts it with `--wait`; §4) |
 | `orchestra tasks metrics` | the measurements as Prometheus text, from the record: the command the instrument `tasks.tickets` runs (§8) |
-| `orchestra tasks status [--json]` | one screen: what needs a decision, scheduler, who holds what, queue; the gate in code mode, staging when configured |
+| `orchestra tasks status [--json]` | one screen: what needs a decision, scheduler, who holds what, the worktrees being prepared and for how long, queue; the gate in code mode, staging when configured |
 | `orchestra tasks ticket list\|show ID`, `orchestra tasks milestone list\|show ID` | read the store |
 | `orchestra tasks api [--as ROLE] OP [--args JSON]` | one request over the bus, answered by the running scheduler |
 | `orchestra tasks staging status\|logs\|deploy\|restart\|stop` | staging |

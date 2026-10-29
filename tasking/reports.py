@@ -14,10 +14,11 @@ from .assignments import APPROVED
 from .config import Project
 from .events import COORDINATOR, GATE, REVIEWER, SCHEDULER, WORKER, Events
 from .git import Git
-from .model import RECOVERY, Note, State, Ticket
-
-ROLE_OF = {State.IN_PROGRESS: WORKER, State.IN_REVIEW: REVIEWER, State.MERGING: GATE}   # whose turn an active state is
+from .model import RECOVERY, Note, State, Ticket, fallback
 from .store import LocalStore
+
+# whose turn an active state is; a worktree prepared for an offer is dispatch's (the coordinator's)
+ROLE_OF = {State.IN_PROGRESS: WORKER, State.IN_REVIEW: REVIEWER, State.MERGING: GATE, State.PREPARING: COORDINATOR}
 
 CRASH_BUDGET = 2          # worker turns that may end without a report before the ticket is blocked
 NO_VERDICT_BUDGET = 3     # reviews that may end without a verdict before the ticket is sent back
@@ -153,16 +154,19 @@ class Reports:
         return "the workspace is as it left it"
 
     def back_to_waiting(self, tid: str, note: str, feedback: str | None = None) -> None:
-        """An active ticket to the waiting state before it, with a note saying why (and, for a
-        worker's turn, what the next worker is told); counted as the move of the machine whose
-        turn it was (``ROLE_OF``)."""
+        """An active (or preparing) ticket to the waiting state before it, with a note saying why
+        (and, for a worker's turn, what the next worker is told); counted as the move of the
+        machine whose turn it was (``ROLE_OF``)."""
         t = self.store.get_ticket(tid)
-        if t.state not in RECOVERY:
+        if t.state not in RECOVERY and t.state != State.PREPARING:
             return
-        self.store.add_note(tid, Note(author=SCHEDULER, text=f"{note}; back to {RECOVERY[t.state]}"))
+        to = fallback(t)
+        self.store.add_note(tid, Note(author=SCHEDULER, text=f"{note}; back to {to}"))
         fields = {"feedback": feedback} if feedback and t.state == State.IN_PROGRESS else {}
-        self.store.transition(tid, t.version, RECOVERY[t.state], by=ROLE_OF[t.state], **fields)
-        self.log(f"{tid}: {t.state} -> {RECOVERY[t.state]} ({note})")
+        if t.state == State.PREPARING:
+            fields["preparing_from"] = None
+        self.store.transition(tid, t.version, to, by=ROLE_OF[t.state], **fields)
+        self.log(f"{tid}: {t.state} -> {to} ({note})")
 
     def _trailing(self, tid: str, who: str) -> int:
         """How many of the latest notes in a row are ``who``'s crash notes: any other note (an
