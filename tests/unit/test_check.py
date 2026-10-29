@@ -35,3 +35,16 @@ def test_the_readers_own_refusals_and_recurring_problems_are_reported():
     assert check({"gate": {"stacking": "graphite"}}) == ['[gate] stacking = "graphite": "git-spice" or "off"']
     said = check({"tasks": {"recurring": [{"name": "brief", "every": "day", "at": "7am", "timezone": "UTC", "title": "x", "milestone": "M1"}]}})
     assert said and said[0].startswith("[[tasks.recurring]] brief:")
+
+
+def test_stacking_without_git_spice_on_path_is_a_problem_with_its_fix(monkeypatch):
+    import shutil
+
+    raw = {"project": {"work": "code"}, "gate": {"stacking": "git-spice"}}
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    (said,) = check(raw)
+    assert "git-spice is not on PATH" in said and "brew install git-spice" in said and 'stacking = "off"' in said
+    assert check({"project": {"work": "code"}, "gate": {"stacking": "off"}}) == []
+    assert check({"project": {"work": "tasks"}, "gate": {"stacking": "git-spice"}}) == []      # stacking is code mode's
+    monkeypatch.setattr(shutil, "which", lambda cmd: f"/bin/{cmd}")
+    assert check(raw) == []
