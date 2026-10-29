@@ -28,6 +28,7 @@ class State(StrEnum):
     REJECTED = "REJECTED"
     APPROVED = "APPROVED"
     IN_EXTERNAL_REVIEW = "IN_EXTERNAL_REVIEW"   # external review: handed off for a pull request, which people outside review and merge
+    PREPARING = "PREPARING"     # picked for a worker's turn; its worktree is being made, reset or set up (code mode)
     IN_PROGRESS = "IN_PROGRESS"
     IN_REVIEW = "IN_REVIEW"
     MERGING = "MERGING"
@@ -37,18 +38,23 @@ class State(StrEnum):
 
 ACTIVE = {State.IN_PROGRESS, State.IN_REVIEW, State.MERGING}
 TERMINAL = {State.DONE, State.CANCELLED}
+PREPARED_FROM = {State.OPEN, State.REJECTED}    # the waiting states a worker's turn is prepared from, and goes back to
 
 # Only a waiting state may be cancelled: an active ticket is held by a machine (or a gate run),
 # and cancelling it underneath the holder would leave an assignment on a terminal ticket. It
 # settles first (SPEC.md section 2). With external review (``[gate] mode = "external"``) a
 # ticket's pull request merged on the other side is final, whatever state the ticket waits in:
-# DONE from any waiting state (an active one is released first; tasking/external.py).
+# DONE from any waiting state (an active one is released first; tasking/external.py). PREPARING
+# is held by no machine (its worktree is being made for the offer): it may be cancelled, and goes
+# back to the state it came from (``preparing_from``) when the offer goes out, or the worktree
+# could not be made, or the preparation is abandoned (tasking/prepare.py).
 TRANSITIONS: dict[State, set[State]] = {
-    State.OPEN: {State.IN_PROGRESS, State.CANCELLED, State.DONE},
+    State.OPEN: {State.PREPARING, State.IN_PROGRESS, State.CANCELLED, State.DONE},
+    State.PREPARING: {State.OPEN, State.REJECTED, State.CANCELLED},
     State.IN_PROGRESS: {State.READY_FOR_REVIEW, State.BLOCKED, State.OPEN},
     State.READY_FOR_REVIEW: {State.IN_REVIEW, State.REJECTED, State.CANCELLED, State.DONE},   # REJECTED: its folder or worktree is missing at review time
     State.IN_REVIEW: {State.APPROVED, State.REJECTED, State.READY_FOR_REVIEW},
-    State.REJECTED: {State.IN_PROGRESS, State.CANCELLED, State.DONE},
+    State.REJECTED: {State.PREPARING, State.IN_PROGRESS, State.CANCELLED, State.DONE},
     State.APPROVED: {State.MERGING, State.DONE, State.CANCELLED, State.IN_EXTERNAL_REVIEW,   # DONE directly when nothing is merged (work = "tasks")
                      State.REJECTED},     # REJECTED: with stacking, restacking it on its parent conflicts (tasking/stacks.py)
     State.IN_EXTERNAL_REVIEW: {State.REJECTED, State.DONE, State.BLOCKED, State.CANCELLED},
@@ -58,7 +64,8 @@ TRANSITIONS: dict[State, set[State]] = {
     State.CANCELLED: set(),
 }
 
-# The waiting state an active state falls back to on crash recovery.
+# The waiting state an active state falls back to on crash recovery. PREPARING falls back to the
+# one it came from, its ``preparing_from`` (``fallback``).
 RECOVERY = {
     State.IN_PROGRESS: State.OPEN,
     State.IN_REVIEW: State.READY_FOR_REVIEW,
@@ -68,6 +75,13 @@ RECOVERY = {
 
 class TransitionError(ValueError):
     pass
+
+
+def fallback(t: Ticket) -> State:
+    """The waiting state an active or preparing ticket goes back to."""
+    if t.state == State.PREPARING:
+        return State(t.preparing_from) if t.preparing_from in PREPARED_FROM else State.OPEN
+    return RECOVERY[t.state]
 
 
 def check_transition(src: State, dst: State) -> None:
@@ -144,6 +158,7 @@ class Ticket:
     pull_head: str | None = None  # the commit its pull request carries, or is about to: what feedback must be about to count
     pull_state: str | None = None  # open | closed | merged, as the bridge last said
     merged_as: str | None = None  # external review: the commit its pull request was merged as (a squash's), as the bridge said
+    preparing_from: str | None = None  # PREPARING: the waiting state it came from (OPEN, REJECTED), and goes back to
     stacked_on: str | None = None  # with stacking: the unlanded ticket whose branch its branch is based on (tasking/stacks.py)
     created_by: str = ""         # the role that asked for it
     occurrence: str | None = None   # a recurring ticket's occurrence, ``<definition>@<local due time>`` (tasking/recurring.py)

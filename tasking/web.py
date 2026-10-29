@@ -188,23 +188,26 @@ def router(project: Project) -> APIRouter:
         one counts, and so does one whose offers nobody took), with the machine instance it is
         assigned to now (since when it holds it, or since when it was first offered, and what it
         last said it was doing) and the offers nobody took, blocked ones first,
-        then the held, then the offered, then the rest by when they reached their state; the
+        then the held, then the offered or being prepared (its worktree being made for the offer:
+        ``preparing``, with the role and since when), then the rest by when they reached their state; the
         queue by state, the capacity and the pause; and the recurring tickets' next due times."""
         views = store.ticket_views()
         held = {a["ticket"]: a for a in store.assignments().values()}
         untaken = {r["ticket"]: r for r in store.untaken().values()}
-        waiting = {"READY_FOR_REVIEW": "waiting for a reviewer", "REJECTED": "rejected: waiting for its worker",
+        preparing = {p["ticket"]: p for p in store.preparing().values()}
+        waiting = {"PREPARING": "its worktree is being prepared for a worker", "READY_FOR_REVIEW": "waiting for a reviewer", "REJECTED": "rejected: waiting for its worker",
                    "APPROVED": "approved", "BLOCKED": "blocked: waiting for a decision",
                    "IN_EXTERNAL_REVIEW": "in external review: waiting for its pull request"}
         rank = lambda t: (0 if t["state"] == "BLOCKED" else 1 if (held.get(t["id"]) or {}).get("instance")
-                          else 2 if t["id"] in held or t["id"] in untaken else 3)
+                          else 2 if t["id"] in held or t["id"] in untaken or t["id"] in preparing else 3)
         flight = []
         for t in sorted(views["tickets"], key=lambda t: (rank(t), t.get("state_since") or "")):
-            if t["state"] in ("OPEN", "DONE", "CANCELLED") and t["id"] not in held and t["id"] not in untaken:
+            if t["state"] in ("OPEN", "DONE", "CANCELLED") and t["id"] not in held and t["id"] not in untaken and t["id"] not in preparing:
                 continue
-            a, u = held.get(t["id"]), untaken.get(t["id"])
+            a, u, p = held.get(t["id"]), untaken.get(t["id"]), preparing.get(t["id"])
             flight.append({**{k: t.get(k) for k in ("id", "title", "state", "worker_turns", "reviewer_rejections", "gate_rejections", "pull_rejections", "blocked_reason")},
-                           "waiting": None if a or u else waiting.get(t["state"], ""),
+                           "waiting": None if a or u or p else waiting.get(t["state"], ""),
+                           "preparing": {"role": p["role"], "since": p.get("since")} if p else None,
                            "assignment": ({"role": a["role"], "instance": a.get("instance"), "since": a.get("accepted_at") or a.get("offered_since"),
                                            "text": a.get("text") or ""} if a else None),
                            # offers of it nobody took: how many, since when, and when the next one goes out

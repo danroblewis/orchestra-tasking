@@ -46,15 +46,18 @@ function taskSummary(D, { finished = true } = {}) {
   const k = {
     working: D.tickets.filter((t) => t.assignment && t.assignment.instance).length,
     offered: offers.length,
+    preparing: D.tickets.filter((t) => t.preparing).length,
     untaken: resting.length,
     blocked: n("BLOCKED"),
     start: n("OPEN") + n("REJECTED") - of(offers, "worker") - of(resting, "worker"),
-    review: n("READY_FOR_REVIEW") - of(offers, "reviewer") - of(resting, "reviewer"),
+    review: n("READY_FOR_REVIEW") - of(offers, "reviewer") - of(resting, "reviewer")
+      - D.tickets.filter((t) => t.preparing && t.preparing.role === "reviewer").length,
     landing: n("APPROVED") + n("MERGING"),
     external: n("IN_EXTERNAL_REVIEW"),
     done: n("DONE"), cancelled: n("CANCELLED") };
   const parts = [`${k.working} being worked`];
   if (k.offered) parts.push(`${k.offered} offered`);
+  if (k.preparing) parts.push(`${k.preparing} preparing a worktree`);
   if (k.untaken) parts.push(`${k.untaken} offered, not taken`);
   if (k.blocked) parts.push(`${k.blocked} blocked`);
   parts.push(`${k.start} waiting to start`);

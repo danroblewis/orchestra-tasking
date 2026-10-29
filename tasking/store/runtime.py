@@ -1,5 +1,5 @@
 """The runtime half of the store: what the scheduler holds while it runs, in ``runtime.json``:
-assignments, the offers nobody took, worktrees, the worktree pool, gate runs, capacity, pickup,
+assignments, the worktrees being prepared for an offer (tasking/prepare.py), the offers nobody took, worktrees, the worktree pool, gate runs, capacity, pickup,
 kill requests, probes, the pipeline, the scheduler's own record, staging and builds, and where
 external review reads the bus. The operator's changes are published as the operator's console
 (``task_web``: ``capacity.changed``, ``pickup.*``, ``kill.requested``) and the gate's pause as the
@@ -15,7 +15,7 @@ from ..events import GATE, OPERATOR
 from ..model import now
 from .files import read, write
 
-EMPTY_RUNTIME = {"assignments": {}, "untaken": {}, "worktrees": {}, "pool": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
+EMPTY_RUNTIME = {"assignments": {}, "preparing": {}, "untaken": {}, "worktrees": {}, "pool": {}, "gate_runs": {}, "builds": {}, "probes": {}, "kill_requests": {},
                  "capacity": {}, "operator_capacity": {}, "pickup_paused": False, "scheduler": None, "staging": {},
                  "pipeline": {"paused": False, "reason": None}, "desk": None, "pool_waiting": 0, "pool_refused": {},
                  "external": None}
@@ -66,6 +66,33 @@ class Runtime:
                     s["holder"] = rec["id"]
         self._mutate_runtime(fn)
 
+    def preparing(self) -> dict[str, dict]:
+        """The worktrees being prepared for an offer, by the assignment id the offer will have:
+        ticket, role, from (the state the ticket waited in), since, workspace (once known). A pool
+        slot held by one of them is not free (``_free``) until the offer is recorded or it is dropped."""
+        return dict(self._r()["preparing"])
+
+    def put_preparing(self, rec: dict) -> None:
+        self._mutate_runtime(lambda d: d["preparing"].__setitem__(rec["id"], rec))
+
+    def update_preparing(self, aid: str, **fields: Any) -> None:
+        self._mutate_runtime(lambda d: d["preparing"].get(aid, {}).update(fields) if aid in d["preparing"] else None)
+
+    def drop_preparing(self, aid: str) -> dict | None:
+        return self._mutate_runtime(lambda d: d["preparing"].pop(aid, None))
+
+    def offer_prepared(self, aid: str, rec: dict) -> None:
+        """A preparation done: its offer recorded in its place, in one write, so the pool slot it
+        holds (the holder is the same id) is never free in between."""
+        def fn(d):
+            d["preparing"].pop(aid, None)
+            d["assignments"][rec["id"]] = rec
+        self._mutate_runtime(fn)
+
+    def forget_preparing(self) -> None:
+        """Every preparation dropped (a restart: none runs any more)."""
+        self._mutate_runtime(lambda d: d.__setitem__("preparing", {}))
+
     def untaken(self) -> dict[str, dict]:
         """The offers nobody took within their lease, by ``<ticket>/<role>``: ticket, role, since
         (the first of them), misses (how many), version (the ticket's, when last offered) and
@@ -102,7 +129,7 @@ class Runtime:
         ``gate:<ticket>`` for a gate run, or None), ticket (the last one it was reset for) and
         since (when it was last claimed), each with ``free`` worked out as ``claim_slot`` does."""
         r = self._r()
-        return {n: {**s, "free": _free(s, r["assignments"])} for n, s in r["pool"].items()}
+        return {n: {**s, "free": _free(s, r)} for n, s in r["pool"].items()}
 
     def claim_slot(self, holder: str, ticket: str, size: int, prefer: str | None = None,
                    paths: dict[str, str] | None = None, skip: set[str] | frozenset[str] = frozenset()) -> tuple[dict, bool] | None:
@@ -118,7 +145,7 @@ class Runtime:
         tasking/setup.py) is not given."""
         def fn(d):
             slots = d["pool"]
-            free = [s for s in slots.values() if _free(s, d["assignments"]) and s["path"] not in skip
+            free = [s for s in slots.values() if _free(s, d) and s["path"] not in skip
                     and (paths.get(s["name"]) == s["path"] if paths is not None else not s.get("adopted"))]
             pick = next((s for s in free if prefer and s.get("ticket") == prefer), None) \
                 or min(free, key=lambda s: s.get("since") or 0, default=None)
@@ -302,6 +329,9 @@ class Runtime:
         return self._mutate_runtime(fn)
 
 
-def _free(slot: dict, assignments: dict) -> bool:
+def _free(slot: dict, runtime: dict) -> bool:
+    """Nobody holds it: no holder, or one that is neither a gate run, a recorded assignment nor a
+    preparation for one."""
     holder = slot.get("holder")
-    return holder is None or (not holder.startswith("gate:") and holder not in assignments)
+    return holder is None or (not holder.startswith("gate:") and holder not in runtime["assignments"]
+                              and holder not in runtime.get("preparing", {}))

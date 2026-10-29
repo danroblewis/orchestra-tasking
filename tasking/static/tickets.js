@@ -3,7 +3,7 @@
 let STATE = null, fitted = false;
 const view = { x: 20, y: 20, k: 1 };
 const DONE = new Set(["DONE", "CANCELLED"]);
-const ACTIVE = new Set(["IN_PROGRESS", "IN_REVIEW", "MERGING"]);
+const ACTIVE = new Set(["PREPARING", "IN_PROGRESS", "IN_REVIEW", "MERGING"]);   // PREPARING: its worktree is being made for a worker
 const TW = 200, TH = 46, MW = 180, MH = 46;
 const opened = new Set(JSON.parse(sessionStorage.getItem("graph.open") || "[]"));
 
