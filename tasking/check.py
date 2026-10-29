@@ -6,13 +6,16 @@ say something new is refused with what it said; the operator's guide (``guide.md
 It says what is wrong whatever order settings are made in: an unknown key, a value of the wrong
 kind, an entry without its name or command, a placeholder a command cannot be given (the gate
 fills commands with ``str.format``, and a run whose command cannot be filled is a gate error that
-pauses the pipeline), and every problem ``recurring.check`` finds. Settings that are valid but do
+pauses the pipeline), every problem ``recurring.check`` finds, and a tool a setting needs that is
+not on PATH (``stacking = "git-spice"`` without git-spice: the scheduler then stacks nothing,
+tasking/stacks.py). Settings that are valid but do
 nothing together (``[[gate.acceptance]]`` without ``[acceptance] start``) are the guide's to
 explain, not refused here: a configuration is often written one setting at a time. With the project
 root, the worktrees ``[tasks] worktree_paths`` names are looked at too (``_worktree_paths``)."""
 
 from __future__ import annotations
 
+import shutil
 import string
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,7 @@ from orchestra.config import ConfigError, parse_duration
 
 from . import adopt, recurring
 from .config import Config
+from .spice import COMMAND as SPICE
 
 SECTIONS: dict[str, set[str]] = {
     "project": {"base_branch", "ticket_prefix", "work", "push"},
@@ -161,9 +165,14 @@ def check(raw: dict, repo_root: Path | None = None) -> list[str]:
             out += _placeholders(f"[{section}] {k}", _at(raw, key), allowed)
     if not out:                       # what the reader itself refuses, once the shapes are right
         try:
-            Config.from_raw(raw)
+            cfg = Config.from_raw(raw)
         except Exception as e:  # noqa: BLE001 - whatever the reader raises is a problem to report, never a crash
             out.append(f"{type(e).__name__}: {e}" if not isinstance(e, ConfigError) else str(e))
+        else:
+            if cfg.stacked and shutil.which(SPICE) is None:
+                out.append(f'[gate] stacking = "git-spice", but {SPICE} is not on PATH, so no branch is stacked (dependent '
+                           f'tickets wait for their dependency to land): install it (`brew install git-spice`), or set '
+                           f'[gate] stacking = "off"')
     if isinstance(raw.get("tasks") or {}, dict):
         for label, reasons in recurring.check(raw).problems.items():
             out += [f"[[tasks.recurring]] {label}: {r}" for r in reasons]

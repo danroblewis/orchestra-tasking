@@ -8,7 +8,8 @@ from tasking.config import Config, ConfigError
 from tasking.events import Events
 from tasking.git import Git
 from tasking.model import State
-from tasking.stacks import Stacks
+from tasking.spice import Spice
+from tasking.stacks import MISSING, Stacks
 from tasking.store import LocalStore
 
 
@@ -23,7 +24,8 @@ def test_the_setting():
 
 
 @pytest.fixture
-def env(project):
+def env(project, monkeypatch):
+    monkeypatch.setattr(Spice, "available", lambda self: True)          # on the record alone: git-spice is never run here
     toml = project.repo_root / "orchestra.toml"
     toml.write_text(toml.read_text().replace('work = "tasks"', 'work = "code"').replace("[gate]\n", '[gate]\nstacking = "git-spice"\nstack_depth = 2\n'))
     project.reload_config()
@@ -86,3 +88,35 @@ def test_the_gate_and_the_offers_see_the_parent(env):
     assert stacks.base(b) == a.branch and not stacks.may_land(b) and stacks.may_land(a)
     _at(store, a.id, State.DONE, a.branch, True, None)
     assert stacks.base(store.get_ticket(b.id)) == "main"    # landed: its branch moves onto the base next tick
+
+
+def test_without_git_spice_a_ticket_that_would_stack_waits_and_says_why_once(env, monkeypatch):
+    store, stacks, ticket, ready = env
+    said = []
+    stacks.log = said.append
+    a = ticket("a", State.READY_FOR_REVIEW)
+    b = store.create_ticket(src="planner", title="b", milestone_id=a.milestone_id, depends_on=[a.id])
+    plain = store.create_ticket(src="planner", title="plain", milestone_id=a.milestone_id)
+    monkeypatch.setattr(Spice, "available", lambda self: False)
+    for _ in range(3):
+        assert not ready(b) and ready(plain)               # waits for a to land, as with stacking off; the plain one is ready
+    assert said.count(f"stacking: {MISSING}") == 1 and sum(f"waits for {a.id} to land" in m for m in said) == 1
+    assert [n["text"] for n in store.notes(b.id) if "git-spice" in n["text"]] == [
+        f"{b.id} would branch from {a.branch} ({a.id}, not landed yet), but git-spice is not on PATH: it waits for {a.id} to land"]
+    _at(store, a.id, State.DONE, a.branch, True, None)
+    assert ready(b)                                        # landed: it starts from the base
+    monkeypatch.setattr(Spice, "available", lambda self: True)
+    assert stacks.usable() and "git-spice is on PATH now" in said[-1]
+
+
+def test_without_git_spice_a_branch_from_the_base_and_git_spice_never_asked(env, monkeypatch):
+    store, stacks, _ticket, _ready = env
+    monkeypatch.setattr(Spice, "available", lambda self: False)
+    monkeypatch.setattr(Spice, "run", lambda self, *a, **k: pytest.fail(f"git-spice asked {a}"))
+    ms = store.create_milestone(src="planner", name="n")
+    t = store.create_ticket(src="planner", title="t", milestone_id=ms.id)
+    stacks.prepare(t, "orchestra/t")
+    g = Git(store.project.repo_root)
+    assert g.rev_parse("orchestra/t") == g.rev_parse("main")
+    stacks.prepare(t, "orchestra/t")                       # made already: still nothing asked
+    stacks.tick()
