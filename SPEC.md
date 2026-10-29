@@ -700,8 +700,17 @@ the branch structure is kept apart from the ticket graph; the ticket keeps its p
 - *What git-spice is not asked.* No `upstack restack` or `repo restack` from the repository root:
   they check each branch out in the current worktree, skip (with exit 0) a branch checked out in
   another worktree, and can leave the root on another branch. No `repo sync`: it needs the forge's
-  API and moves the local trunk. git-spice must be on `PATH`; without it no stacked branch is made
-  and the scheduler's log says why.
+  API and moves the local trunk.
+- *Without git-spice.* git-spice must be on `PATH` for a branch to stack; it is looked for every
+  time it is needed, so installing it takes effect without a restart. Without it, stacking is as if
+  off and nothing fails: every ticket's branch is made from the base, untracked (git-spice is not
+  asked anything; a branch made so is tracked when a child first stacks on it), and a ticket that
+  would stack waits for its dependency to land, with a gate note on it saying so once. A branch
+  stacked already is not restacked, and in land mode does not land, until git-spice is back. The
+  absence is said once (again only if it goes missing after being found) in the scheduler's log and
+  as `task.attention_needed` to the supervisor, published as `merge_gate`; the plugin's check
+  (`tasking/check.py`) reports it with its fix (`brew install git-spice`, or `stacking = "off"`), so
+  `config_edit` refuses turning stacking on where git-spice is missing.
 
 **Staging** (`tasking/staging.py`): when `[staging] start` is set, one long-lived instance of the
 last build that passed the gate, started with the artifact and port as placeholders, probed at

@@ -20,7 +20,8 @@ its scheduler running.
 
 **How a setting is checked.** `tasking.check.check(raw)` is the task system's reader: it returns
 the problems in a merged configuration (unknown keys, wrong values, an entry without `name` or
-`command`, a placeholder a command cannot be given, every `[[tasks.recurring]]` problem). It is
+`command`, a placeholder a command cannot be given, every `[[tasks.recurring]]` problem, and
+`stacking = "git-spice"` with git-spice not on PATH). It is
 the plugin's check (`Plugin.check`), which `config_edit` runs by itself on every change: pass no
 `check=`. A change it objects to is refused with the reason, after `tasks:`. It cannot tell you
 that a command works: a gate command is proven only by running on the base branch. After a gate
@@ -257,7 +258,11 @@ every "thanks" re-engages a worker.
 `[gate] stacking = "git-spice"` (code mode): a ticket whose single unlanded dependency is
 already up for review branches from that dependency's branch instead of waiting for it to land,
 and the scheduler keeps the stack rebased. It needs [git-spice](https://abhinav.github.io/git-spice/)
-on PATH (without it no stacked branch is made, and the scheduler's log says why). A ticket with
+on PATH. Without it nothing fails: every ticket still gets its branch from the base, and one
+that would stack waits for its dependency to land (as with stacking off), with a note on the
+ticket; the scheduler's log says so once, the supervisor gets one `task.attention_needed`, and the
+plugin's check reports it (so turning stacking on where git-spice is missing is refused). The fix:
+`brew install git-spice` (picked up without a restart), or `stacking = "off"`. A ticket with
 two or more unlanded dependencies still waits. In land mode the bottom of a stack lands first;
 in external mode each pull request's base is its parent's branch (`orchestra tasks stack` lists
 them). Turn it on where tickets often depend on each other and review is the bottleneck; leave

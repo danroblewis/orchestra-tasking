@@ -36,6 +36,12 @@ The policy:
   the squash commit replaces the parent's commits. Each restack of a branch in external review is
   ``stack.restacked`` {pull}: the owner pushes it.
 
+**Without git-spice** on PATH (looked for every time it is needed, so installing it takes effect
+without a restart), stacking is as if off: every ticket's branch is made from the base and nothing
+asks git-spice anything, and a ticket that would stack waits for its dependency to land, with a
+note saying why. It is said once in the scheduler's log and as ``attention`` to the supervisor
+(``MISSING``), and the plugin's check (tasking/check.py) reports it.
+
 Every restack and conflict is the merge gate's act (``merge_gate``; the owner's decision D17:
 keeping branches mergeable is the gate's responsibility), counted as ``tasks_restacks_total``."""
 
@@ -48,7 +54,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .config import Project
-from .events import COORDINATOR, GATE, Events
+from .events import COORDINATOR, GATE, SUPERVISOR, Events
 from .git import Git, GitError
 from .model import ACTIVE, TERMINAL, MilestoneStatus, Note, State, Ticket, is_ready
 from .pool import Pool
@@ -60,6 +66,10 @@ RESTACKED, CONFLICT = "stack.restacked", "stack.conflict"
 FETCH_EVERY_S = 60.0          # a squash commit not here is fetched for at most this often
 STANDS = {State.READY_FOR_REVIEW, State.IN_REVIEW, State.APPROVED, State.IN_EXTERNAL_REVIEW}   # work a child may stack on (not MERGING: it is landing)
 SENT_BACK = {State.READY_FOR_REVIEW, State.APPROVED, State.IN_EXTERNAL_REVIEW}    # a conflict in these rejects the ticket
+MISSING = ('[gate] stacking = "git-spice", but git-spice is not on PATH: no branch is stacked. Every ticket still gets its branch '
+           'from the base, and one that depends on work not landed yet waits for it to land, as with stacking off (a branch '
+           'stacked already is not restacked, and in land mode does not land, until git-spice is back). Install '
+           'git-spice (`brew install git-spice`) and stacking starts without a restart, or set [gate] stacking = "off"')
 
 
 def short(sha: str | None) -> str:
@@ -92,6 +102,22 @@ class Stacks:
         if key not in self.said:
             self.said.add(key)
             self.log(msg)
+
+    def usable(self) -> bool:
+        """Whether git-spice is on PATH, looked for every time (installing it takes effect without a
+        restart). Its absence is said once, in the log and as attention to the supervisor; said
+        again if it goes missing after it was found."""
+        if self.spice.available():
+            if "no-spice" in self.said:
+                self.said.discard("no-spice")
+                self.log("stacking: git-spice is on PATH now; dependent tickets stack on unlanded work again")
+            return True
+        if "no-spice" not in self.said:
+            self.said.add("no-spice")
+            self.log(f"stacking: {MISSING}")
+            with contextlib.suppress(Exception):
+                self.gate_events.attention(SUPERVISOR, MISSING)
+        return False
 
     # what may start, and on what
 
@@ -127,7 +153,24 @@ class Stacks:
         ms = milestones.get(t.milestone_id)
         if not self.on or t.state != State.OPEN or ms is None or ms.status != MilestoneStatus.OPEN:
             return False
-        return self.parent(t, tickets) is not None
+        p = self.parent(t, tickets)
+        if p is None:
+            return False
+        if not self.usable():
+            self._unstacked(t, p)
+            return False
+        return True
+
+    def _unstacked(self, t: Ticket, p: Ticket) -> None:
+        """``t`` would stack on ``p`` but git-spice is missing: it waits for ``p`` to land, noted once on it."""
+        text = f"{t.id} would branch from {p.branch} ({p.id}, not landed yet), but git-spice is not on PATH: it waits for {p.id} to land"
+        if f"unstacked:{t.id}" in self.said:
+            return
+        self.said.add(f"unstacked:{t.id}")
+        self.log(text)
+        with contextlib.suppress(Exception):
+            if not any(n.get("text") == text for n in self.store.notes(t.id)):
+                self.gate_store.add_note(t.id, Note(author=GATE, kind="gate", text=text))
 
     def base(self, t: Ticket) -> str:
         """The branch ``t``'s branch is based on: its parent's while the parent is not landed, else
@@ -146,23 +189,32 @@ class Stacks:
 
     def prepare(self, t: Ticket, branch: str) -> None:
         """Before a worker's worktree is made: the ticket's branch, when new, from its parent's head
-        (recorded as ``stacked_on``) or from the base, tracked by git-spice either way."""
+        (recorded as ``stacked_on``) or from the base, tracked by git-spice either way. Without
+        git-spice, from the base and not tracked: git-spice is not asked anything."""
         if not self.on:
             return
-        self._init()
-        tree = self.spice.tree()
+        spice = self.usable()
         if self.git.branch_exists(branch):
-            if branch not in tree:
-                self.spice.track(branch, self.base(t))
+            if spice:
+                self._init()
+                if branch not in self.spice.tree():
+                    self.spice.track(branch, self.base(t))
             return
         tickets = self.store.tickets_by_id()
-        p = self.parent(t, tickets)
+        p = self.parent(t, tickets) if spice else None
         if p is None and not is_ready(t, tickets, self.store.milestones_by_id()):
-            # its dependency moved on since the queue looked (the gate took it): a branch from the base now would miss it
-            raise GitError(f"{t.id} waits: its dependency is neither landed nor standing for review now")
+            # its dependency moved on since the queue looked (the gate took it, or git-spice went missing): a branch from the base now would miss it
+            raise GitError(f"{t.id} waits: its dependency is neither landed nor standing for review now"
+                           + ("" if spice else " (and git-spice, which stacking needs, is not on PATH)"))
         base = p.branch if p else self.cfg.base_branch
+        if spice:
+            self._init()
+            tree = self.spice.tree()
+            if p and p.branch not in tree:          # made while git-spice was missing: tracked now, so a branch can stack on it
+                self.spice.track(p.branch, self.base(p))
         self.git.run("branch", branch, base)
-        self.spice.track(branch, base)
+        if spice:
+            self.spice.track(branch, base)
         if p:
             self.gate_store.update_ticket(t.id, stacked_on=p.id, branch=branch)
             self.gate_store.add_note(t.id, Note(author=GATE, kind="gate", text=f"{branch} branches from {p.branch} ({p.id}, not landed yet) "
@@ -181,7 +233,7 @@ class Stacks:
     def tick(self) -> None:
         """Every stacked branch that is not on its parent's head (or, the parent landed, on the
         base) restacked, parents first; see the module's policy."""
-        if not self.on:
+        if not self.on or not self.usable():       # without git-spice: said once (``usable``), nothing restacked
             return
         tickets = self.store.tickets_by_id()
         stacked = [t for t in tickets.values() if t.stacked_on and t.state not in TERMINAL and t.branch]
